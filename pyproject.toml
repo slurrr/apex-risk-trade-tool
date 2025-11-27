@@ -1,0 +1,17 @@
+[project]
+name = "apex-risk-trade-tool"
+version = "0.1.0"
+description = "Lightweight risk-managed trade tool for ApeX Omni"
+requires-python = ">=3.11"
+
+dependencies = [
+    "fastapi",
+    "uvicorn[standard]",
+    "pydantic",
+    "python-dotenv",
+    "apexomni",
+    "httpx"
+]
+
+[tool.setuptools.packages.find]
+where = ["backend"]
