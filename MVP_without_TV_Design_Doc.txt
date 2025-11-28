@@ -1,0 +1,584 @@
+Apex Omni Risk Management Trade Routing Tool – Trade Sizer
+
+1. Goal & Scope
+
+Goal:
+Build a minimal trading tool that:
+
+Connects to ApeX Omni via the official Python SDK.
+
+Lets you specify:
+
+symbol
+
+entry price
+
+stop-loss price
+
+risk % per trade
+
+Automatically calculates a position size so that, if your stop is hit, the loss ≈ risk% × account equity.
+
+Submits the order to ApeX with appropriate safety checks (min size, leverage limits, etc.).
+
+Gives basic visibility into open positions and orders.
+
+No charts, no TradingView. Just a tight UI and a solid risk engine.
+
+2. ApeX Omni Integration (Python SDK)
+2.1 Installing & Initializing the SDK
+
+Install the official ApeX Omni SDK:
+
+pip install apexomni
+
+
+It wraps REST + WebSocket, including all the Zero-Knowledge signature machinery so you don’t have to hand-roll signatures. 
+
+Research Report - ApeX Omni Tra…
+
+Typical private client initialization on testnet:
+
+from apexomni.http_private_v3 import HttpPrivateSign
+from apexomni.constants import APEX_OMNI_HTTP_TEST, NETWORKID_OMNI_TEST_BNB
+
+client = HttpPrivateSign(
+    APEX_OMNI_HTTP_TEST,
+    network_id=NETWORKID_OMNI_TEST_BNB,
+    zk_seeds="your_seed",
+    zk_l2Key="your_l2Key",
+    api_key_credentials={
+        "key": API_KEY,
+        "secret": API_SECRET,
+        "passphrase": PASSPHRASE,
+    },
+)
+
+
+The SDK adds all required headers (APEX-API-KEY, APEX-PASSPHRASE, APEX-SIGNATURE, etc.) and handles ZK proofs for you. 
+
+Research Report - ApeX Omni Tra…
+
+2.2 Credentials & Keys
+
+You need two layers of credentials: 
+
+Research Report - ApeX Omni Tra…
+
+API key triple (key, secret, passphrase), created in the ApeX web UI (API Management).
+
+ZK keys:
+
+seeds (Omni key)
+
+l2Key (derived Stark/L2 key)
+
+You can get seeds via the portal or derive the keys programmatically from an Ethereum private key using SDK utilities. Treat seeds and l2Key exactly like private keys.
+
+Best practices:
+
+Never hard-code keys in code.
+
+Put them in env vars or encrypted config.
+
+If you persist ZK keys to disk, protect that file (permissions / encryption). 
+
+Research Report - ApeX Omni Tra…
+
+2.3 Key API Methods for the Tool
+
+You only need a narrow slice of the SDK:
+
+Account / Equity:
+
+get_account_v3() → total equity, balances, open positions. 
+
+Research Report - ApeX Omni Tra…
+
+Configs (symbol specs):
+
+configs_v3() → list of instruments with minOrderSize, maxOrderSize, stepSize, tickSize, maxLeverage, etc. Cache this at startup; you’ll feed it to the risk engine. 
+
+Research Report - ApeX Omni Tra…
+
+Orders:
+
+create_order_v3(...) – main order placement function. Takes:
+
+symbol, side, type, price, size
+
+flags like reduceOnly, postOnly
+
+optional SL/TP fields (TPSL) in the same call. 
+
+Research Report - ApeX Omni Tra…
+
+open_orders_v3(), get_order_v3(...), history_orders_v3(), fills_v3(...) – for UI lists. 
+
+Research Report - ApeX Omni Tra…
+
+delete_order_v3(...), delete_order_by_client_order_id_v3(...), delete_open_orders_v3(symbol) – cancel logic. 
+
+Research Report - ApeX Omni Tra…
+
+WebSocket (optional but nice):
+
+Private WS channel "ws_zk_accounts_v3" → push updates for orders, fills, positions, and balances in one stream. 
+
+Research Report - ApeX Omni Tra…
+
+For a first pass, you can do everything with REST and add WS later for faster UI refresh.
+
+3. Risk-Based Position Sizing
+3.1 Core Formula
+
+For a USDT-margined perp, the basic idea is: 
+
+Research Report - ApeX Omni Tra…
+
+\text{Position Size} = \frac{\text{Account Equity} \times \text{Risk % per Trade}}{\text{Price Difference Between Entry and Stop}}
+
+Where:
+
+equity ← from get_account_v3()
+
+risk_pct ← user input (e.g., 1–2%)
+
+entry_price ← user input
+
+stop_price ← user input
+
+per_unit_loss = |entry_price - stop_price|
+
+Then:
+
+risk_amount = equity * (risk_pct / 100)
+raw_size    = risk_amount / per_unit_loss
+
+
+If stop_price < entry_price ⇒ long (BUY).
+If stop_price > entry_price ⇒ short (SELL). 
+
+Research Report - ApeX Omni Tra…
+
+3.2 Leverage & Margin
+
+Leverage does not change the size required to risk X dollars; it just changes margin required: 
+
+Research Report - ApeX Omni Tra…
+
+\text{required_margin} = \frac{\text{position_notional}}{\text{leverage}} = \frac{\text{size} \times \text{entry_price}}{\text{leverage}}
+
+Use symbol config to enforce:
+
+maxLeverage (or margin rate)
+
+maxOrderSize / maxPositionSize
+
+If the user’s requested leverage + size combination would violate these, shrink size or reject the trade.
+
+3.3 Exchange Constraints
+
+From configs_v3():
+
+minOrderSize
+
+maxOrderSize
+
+stepSize (lot size increment)
+
+tickSize (price increment) 
+
+Research Report - ApeX Omni Tra…
+
+You must:
+
+Round size down to nearest stepSize.
+
+Ensure size ≥ minOrderSize.
+
+Optionally cap by maxOrderSize.
+
+Round entry/stop to valid tickSize before sending the order.
+
+If the computed size is below minOrderSize, the tool should:
+
+either refuse the trade with a clear error, or
+
+optionally offer: “min size is X, this risks slightly more than your risk%.”
+
+3.4 Slippage & Fees
+
+To be conservative you can:
+
+Apply a slippage factor by inflating the effective risk distance slightly (e.g., assume stop executes 0.1% worse). 
+
+Research Report - ApeX Omni Tra…
+
+Ignore fees or reserve a small chunk of the risk budget for them (e.g., assume ~0.05% taker fee each side, subtract that from risk_amount first).
+
+This shrinks size a bit and keeps realized loss closer to your risk% even in messy fills.
+
+3.5 Risk Caps
+
+On top of per-trade risk:
+
+Max risk per trade (e.g., hard cap even if 2% of huge account is massive). 
+
+Research Report - ApeX Omni Tra…
+
+Daily loss limit – if cumulative realized loss for the day ≥ X%, block new trades.
+
+Total open risk limit – if sum of potential loss from all open stops > Y% of equity, block or scale down new trades.
+
+These are enforced in your order_manager before sending any order.
+
+3.6 Pseudocode for the Risk Engine
+
+You can lift/adapt this function almost directly as a pure Python module: 
+
+Research Report - ApeX Omni Tra…
+
+import math
+from dataclasses import dataclass
+from typing import Dict, Optional
+
+@dataclass
+class PositionSizingResult:
+    side: str           # "BUY" or "SELL"
+    size: float         # contracts / base units
+    estimated_loss: float
+    warnings: list[str]
+
+class PositionSizingError(Exception):
+    pass
+
+def calculate_position_size(
+    equity: float,
+    risk_pct: float,
+    entry_price: float,
+    stop_price: float,
+    symbol_info: Dict[str, float],
+    slippage_factor: float = 0.001,  # 0.1%
+) -> PositionSizingResult:
+    if risk_pct <= 0:
+        raise PositionSizingError("Risk% must be positive.")
+
+    risk_amount = equity * (risk_pct / 100.0)
+
+    delta = entry_price - stop_price
+    if delta == 0:
+        raise PositionSizingError("Stop price equals entry price.")
+
+    if delta > 0:
+        side = "BUY"
+        per_unit_loss = delta
+    else:
+        side = "SELL"
+        per_unit_loss = abs(delta)
+
+    # Apply slippage buffer
+    effective_per_unit_loss = per_unit_loss * (1 - slippage_factor)
+    if effective_per_unit_loss <= 0:
+        raise PositionSizingError("Effective per-unit loss is non-positive.")
+
+    raw_size = risk_amount / effective_per_unit_loss
+
+    max_size = float(symbol_info.get("maxOrderSize", float("inf")))
+    raw_size = min(raw_size, max_size)
+
+    step = float(symbol_info.get("stepSize", 0.0))
+    size = math.floor(raw_size / step) * step if step else raw_size
+
+    min_size = float(symbol_info.get("minOrderSize", 0.0))
+    if size < min_size:
+        raise PositionSizingError(
+            f"Calculated size {size} below minimum order size {min_size}"
+        )
+
+    notional = size * entry_price
+    max_leverage = float(symbol_info.get("maxLeverage", 0.0)) or None
+    warnings: list[str] = []
+
+    if max_leverage is not None:
+        max_notional = equity * max_leverage
+        if notional > max_notional:
+            allowed = max_notional / entry_price
+            if step:
+                allowed = math.floor(allowed / step) * step
+            size = allowed
+            warnings.append("Size reduced to fit max leverage constraints.")
+
+    estimated_loss = per_unit_loss * size  # ignore slippage/fees here for display
+
+    return PositionSizingResult(
+        side=side, size=size, estimated_loss=estimated_loss, warnings=warnings
+    )
+
+
+This function takes only numbers and symbol metadata – no network calls – so it’s easy to unit test.
+
+4. Backend Architecture (Lightweight Version)
+
+Strip it down to four core modules: 
+
+Research Report - ApeX Omni Tra…
+
+4.1 exchange_gateway.py
+
+Responsibilities:
+
+Initialize HttpPrivateSign client (testnet or mainnet).
+
+Call configs_v3() on startup; keep configs cached in memory.
+
+Provide simple functions:
+
+get_account_equity()
+
+get_symbol_info(symbol)
+
+get_open_positions()
+
+get_open_orders()
+
+place_order(...) → wraps create_order_v3(...)
+
+cancel_order(order_id) / cancel_all(symbol)
+
+Optional: spawn background task for private WS and push updates to order_manager.
+
+4.2 risk_engine.py
+
+Contains calculate_position_size(...) from above plus helper functions:
+
+compute_risk_reward(entry, stop, tp, size)
+
+validate_risk_caps(...) (per-trade, per-day, total open risk)
+
+No I/O. Takes only primitives and configs passed in.
+
+4.3 order_manager.py
+
+Coordinates user requests into actual ApeX orders. 
+
+Research Report - ApeX Omni Tra…
+
+Flow for a “new trade”:
+
+Gets latest equity via exchange_gateway.get_account_equity().
+
+Gets symbol config via exchange_gateway.get_symbol_info(symbol).
+
+Runs risk_engine.calculate_position_size(...).
+
+If size OK and risk caps OK:
+
+Builds an order payload (including clientOrderId).
+
+Calls exchange_gateway.place_order(...).
+
+Logs the action and returns a summary for the UI.
+
+Tracks open orders / positions in its own in-memory state, updated by:
+
+responses from place_order
+
+optional private WebSocket messages (fills, cancels).
+
+Also enforces:
+
+Idempotency (avoid duplicate orders if user double-clicks).
+
+Daily loss limits and total open risk limits. 
+
+Research Report - ApeX Omni Tra…
+
+4.4 FastAPI app (main.py)
+
+Expose a small REST API to your UI: 
+
+Research Report - ApeX Omni Tra…
+
+ 
+
+Research Report - ApeX Omni Tra…
+
+GET /api/config
+
+risk settings, supported symbols (from configs), etc.
+
+GET /api/positions
+
+GET /api/orders
+
+POST /api/trade
+
+JSON: {symbol, entry_price, stop_price, risk_pct, side_optional, tp_optional}
+
+Calls order_manager flow, returns:
+
+computed side, size, estimated_loss
+
+whether order was actually placed or just “preview”
+
+POST /api/orders/{id}/cancel
+
+(optional) GET /api/symbols → underlying config for frontend.
+
+Optional: a WebSocket /api/ws that broadcasts events like “order filled”, “position closed”. But you can also just poll every few seconds for MVP.
+
+5. Super Lightweight Web UI
+
+Keep the frontend tiny. You can still use React/Next if you want, but the UI flow is simple. 
+
+Research Report - ApeX Omni Tra…
+
+5.1 Views
+
+1. Trade Ticket (main screen)
+
+Fields:
+
+Symbol – dropdown or text, e.g., BTC-USDT.
+
+Entry Price – number input.
+
+Stop Price – number input.
+
+Risk % – default 1–2%.
+
+Take Profit (optional).
+
+Side – optional; if omitted, backend infers from entry vs stop.
+
+Buttons:
+
+Calculate – POST /api/trade with preview=true flag:
+
+Backend calculates size, estimated_loss, risk:reward (if TP).
+
+Returns computed side, size, notional, estimated loss, any warnings.
+
+Show result in a panel:
+
+Side: BUY
+Size: 1.66 ETH
+Notional: $2,988
+Est. Loss @ Stop: $100 (2.0% of equity)
+Warnings: “Size reduced to fit max leverage constraints”
+
+Place Order – POST /api/trade with execute=true:
+
+Same payload; backend re-calculates (to avoid stale equity), enforces risk caps, and actually calls place_order.
+
+2. Positions & Orders (secondary screen or side panel)
+
+Table: symbol, side, size, entry, PnL, stop (if tracked), buttons:
+
+Close – send reduce-only market order via backend.
+
+Table of active orders: symbol, type, size, price, status, Cancel button.
+
+That’s it – no charts, no indicators, just a broker ticket optimized for risk-first entries.
+
+5.2 UX Safeties
+
+If calculate_position_size throws (e.g., below min size, zero distance, etc.), show a clear error toast.
+
+Highlight when:
+
+daily loss limit exceeded
+
+total open risk limit exceeded
+
+size had to be cut due to leverage or max order size
+
+Show which account (testnet/mainnet) is active.
+
+6. Safety, Reliability & Environment
+6.1 Testnet First
+
+Use ApeX testnet endpoints (APEX_OMNI_HTTP_TEST, etc.) and faucet USDT while building and testing. 
+
+Research Report - ApeX Omni Tra…
+
+Put a big “TESTNET / MAINNET” indicator in the UI.
+
+6.2 Rate Limits & Errors
+
+If you see HTTP 403 / “too many requests”, slow down and/or switch to WebSocket for data instead of polling. 
+
+Research Report - ApeX Omni Tra…
+
+Always check code field in responses; log and surface any non-200 codes with meaningful messages (“size too small”, “invalid symbol”, etc.).
+
+6.3 Idempotent Orders
+
+Generate a unique clientOrderId for each trade attempt (e.g., "{symbol}-{timestamp}-{random}"). 
+
+Research Report - ApeX Omni Tra…
+
+If a retry happens with the same clientOrderId, ApeX will treat it idempotently; your order_manager should also de-dupe by that ID.
+
+6.4 Secure Credential Storage
+
+Keep API key + secrets + ZK seeds in env vars or secret storage.
+
+Never expose them to frontend; all ApeX calls are from backend only. 
+
+Research Report - ApeX Omni Tra…
+
+6.5 Time & Nonces
+
+Make sure your server clock is reasonably accurate; the SDK signs using timestamps and will fail auth if the clock is way off. 
+
+Research Report - ApeX Omni Tra…
+
+7. Minimal “First Implementation” Checklist
+
+If you want this as a quick build order:
+
+Backend skeleton (FastAPI): create app, health check route.
+
+ApeX client wrapper (exchange_gateway.py):
+
+load env vars
+
+init HttpPrivateSign on testnet
+
+call configs_v3() and get_account_v3() once
+
+Risk engine module: implement calculate_position_size(...) and add tests for:
+
+basic long, short
+
+tiny stop → large size (should cap)
+
+wide stop → below min size (should error)
+
+Order manager: implement simple open_trade(symbol, entry, stop, risk_pct, tp=None) that:
+
+fetches equity + symbol info
+
+calls risk engine
+
+logs & (for now) returns preview without placing the order
+
+FastAPI endpoints:
+
+POST /api/trade (preview + execute modes)
+
+GET /api/positions, GET /api/orders (stub data at first)
+
+Frontend:
+
+single page with trade ticket form + results panel
+
+simple positions table
+
+Wire in real order execution (ApeX testnet).
+
+Add safety rails: daily loss cap, open-risk cap, idempotent IDs.
+
+Only after all that: consider extra features (position editing, WS push, nicer styling, etc.).

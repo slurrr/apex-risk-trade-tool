@@ -49,6 +49,7 @@ build/
 
 # API keys, creds
 secrets.json
+.codex/
 
 ###############################################
 # LOGS & RUNTIME OUTPUT
