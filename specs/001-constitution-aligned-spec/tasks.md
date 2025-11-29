@@ -39,15 +39,15 @@ description: "Task list for Constitution-Aligned Baseline Specification"
 
 ### Tests for User Story 1 (targeted)
 
-- [ ] T013 [P] [US1] Add unit tests for sizing long/short, stop==entry rejection, below-min-size rejection in `backend/tests/test_risk_engine.py`
+- [x] T013 [P] [US1] Add unit tests for sizing long/short, stop==entry rejection, below-min-size rejection in `backend/tests/test_risk_engine.py`
 
 ### Implementation for User Story 1
 
-- [ ] T014 [US1] Implement pure sizing logic with slippage/fee buffer, tick/step rounding, min/max checks in `backend/risk/risk_engine.py`
-- [ ] T015 [US1] Wire trade preview handler to risk engine (no execution) in `backend/api/routes_trade.py`
-- [ ] T016 [US1] Add Pydantic request/response schemas for preview fields in `backend/trading/schemas.py`
-- [ ] T017 [US1] Ensure preview logs structured inputs/outputs and warnings in `backend/api/routes_trade.py`
-- [ ] T018 [US1] Implement frontend preview form + display (side, size, notional, estimated_loss, warnings) in `ui/js/preview.js` and `ui/index.html`
+- [x] T014 [US1] Implement pure sizing logic with slippage/fee buffer, tick/step rounding, min/max checks in `backend/risk/risk_engine.py`
+- [x] T015 [US1] Wire trade preview handler to risk engine (no execution) in `backend/api/routes_trade.py`
+- [x] T016 [US1] Add Pydantic request/response schemas for preview fields in `backend/trading/schemas.py`
+- [x] T017 [US1] Ensure preview logs structured inputs/outputs and warnings in `backend/api/routes_trade.py`
+- [x] T018 [US1] Implement frontend preview form + display (side, size, notional, estimated_loss, warnings) in `ui/js/preview.js` and `ui/index.html`
 
 ## Phase 4: User Story 2 - Execute validated order (Priority: P1)
 

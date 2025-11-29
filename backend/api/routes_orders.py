@@ -1,4 +1,4 @@
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter
 
 router = APIRouter(prefix="/api", tags=["orders"])
 
@@ -12,4 +12,4 @@ async def list_orders() -> list:
 @router.post("/orders/{order_id}/cancel")
 async def cancel_order(order_id: str) -> dict:
     """Placeholder cancel endpoint."""
-    raise HTTPException(status_code=501, detail=f"Cancel not implemented for {order_id}")
+    return {"canceled": False, "order_id": order_id}
