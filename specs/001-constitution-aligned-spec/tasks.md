@@ -24,13 +24,13 @@ description: "Task list for Constitution-Aligned Baseline Specification"
 
 ## Phase 2: Foundational (Blocking Prerequisites)
 
-- [ ] T006 Implement logging config (structured formatter, levels) in `backend/core/logging.py`
-- [ ] T007 Implement config loading for ApeX endpoints/credentials in `backend/core/config.py`
-- [ ] T008 Create FastAPI app skeleton with health route in `backend/main.py`
-- [ ] T009 Scaffold gateway module in `backend/exchange/exchange_gateway.py` with SDK client init placeholder
-- [ ] T010 Scaffold risk engine module in `backend/risk/risk_engine.py` (pure functions placeholder)
-- [ ] T011 Scaffold order manager module in `backend/trading/order_manager.py` with in-memory stores
-- [ ] T012 Add base router files in `backend/api/routes_trade.py`, `backend/api/routes_orders.py`, `backend/api/routes_positions.py`
+- [x] T006 Implement logging config (structured formatter, levels) in `backend/core/logging.py`
+- [x] T007 Implement config loading for ApeX endpoints/credentials in `backend/core/config.py`
+- [x] T008 Create FastAPI app skeleton with health route in `backend/main.py`
+- [x] T009 Scaffold gateway module in `backend/exchange/exchange_gateway.py` with SDK client init placeholder
+- [x] T010 Scaffold risk engine module in `backend/risk/risk_engine.py` (pure functions placeholder)
+- [x] T011 Scaffold order manager module in `backend/trading/order_manager.py` with in-memory stores
+- [x] T012 Add base router files in `backend/api/routes_trade.py`, `backend/api/routes_orders.py`, `backend/api/routes_positions.py`
 
 ## Phase 3: User Story 1 - Preview risk-based position size (Priority: P1)
 
