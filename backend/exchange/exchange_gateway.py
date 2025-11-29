@@ -16,16 +16,26 @@ class ExchangeGateway:
         self._configs_cache: Dict[str, Any] = {}
 
     async def load_configs(self) -> None:
-        """Fetch and cache symbol configs. Placeholder until SDK wiring."""
+        """Fetch and cache symbol configs. Placeholder data until SDK is wired."""
         logger.info("load_configs called - placeholder implementation")
-        self._configs_cache = {}
+        # Minimal placeholder config for BTC-USDT; extend as needed
+        self._configs_cache = {
+            "BTC-USDT": {
+                "tickSize": 0.1,
+                "stepSize": 0.001,
+                "minOrderSize": 0.001,
+                "maxOrderSize": 10_000,
+                "maxLeverage": 20,
+            }
+        }
 
     def get_symbol_info(self, symbol: str) -> Optional[Dict[str, Any]]:
         return self._configs_cache.get(symbol)
 
     async def get_account_equity(self) -> float:
         logger.info("get_account_equity called - placeholder implementation")
-        return 0.0
+        # Simulate non-zero equity
+        return 10_000.0
 
     async def get_open_positions(self) -> list[Dict[str, Any]]:
         logger.info("get_open_positions called - placeholder implementation")
