@@ -18,7 +18,7 @@ class ExchangeGateway:
         self._client: Any = client if client is not None else self._init_client(settings)
 
     def _init_client(self, settings: Settings) -> Any:
-        from apexomni.constants import APEX_OMNI_HTTP_MAIN, APEX_OMNI_HTTP_TEST, NETWORKID_OMNI_BNB, NETWORKID_OMNI_TEST_BNB
+        from apexomni.constants import APEX_OMNI_HTTP_MAIN, APEX_OMNI_HTTP_TEST, NETWORKID_MAIN, NETWORKID_OMNI_TEST_BNB
         from apexomni.http_private_v3 import HttpPrivateSign
 
         network = settings.apex_network.lower()
@@ -27,7 +27,7 @@ class ExchangeGateway:
             network_id = NETWORKID_OMNI_TEST_BNB
         else:
             endpoint = APEX_OMNI_HTTP_MAIN
-            network_id = NETWORKID_OMNI_BNB
+            network_id = NETWORKID_MAIN
 
         return HttpPrivateSign(
             endpoint,
