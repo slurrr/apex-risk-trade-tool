@@ -1,3 +1,5 @@
+import time
+import uuid
 from typing import Any, Dict, Optional, Tuple
 
 from backend.core.config import Settings
@@ -35,7 +37,8 @@ class ExchangeGateway:
 
     async def place_order(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         logger.info("place_order called - placeholder implementation", extra={"payload": payload})
-        return {"exchange_order_id": "placeholder"}
+        # Simulate an exchange order id
+        return {"exchange_order_id": f"sim-{uuid.uuid4()}"}
 
     async def cancel_order(self, order_id: str) -> Dict[str, Any]:
         logger.info("cancel_order called - placeholder implementation", extra={"order_id": order_id})
@@ -66,6 +69,7 @@ class ExchangeGateway:
             "size": size,
             "price": entry_price,
             "reduceOnly": reduce_only,
+            "clientOrderId": f"{symbol}-{int(time.time())}-{uuid.uuid4().hex[:8]}",
         }
         if tp:
             payload["tp"] = tp
