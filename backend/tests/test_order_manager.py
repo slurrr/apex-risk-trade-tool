@@ -1,3 +1,4 @@
+import asyncio
 import sys
 from pathlib import Path
 
@@ -37,29 +38,31 @@ class FakeGateway:
         return []
 
 
-@pytest.mark.asyncio
-async def test_execute_trade_happy_path():
+def test_execute_trade_happy_path():
     gateway = FakeGateway()
     manager = OrderManager(gateway)
-    result = await manager.execute_trade(
-        symbol="BTC-USDT",
-        entry_price=100,
-        stop_price=95,
-        risk_pct=1,
+    result = asyncio.run(
+        manager.execute_trade(
+            symbol="BTC-USDT",
+            entry_price=100,
+            stop_price=95,
+            risk_pct=1,
+        )
     )
     assert result["executed"] is True
     assert result["exchange_order_id"] == "order-123"
     assert result["sizing"].size > 0
 
 
-@pytest.mark.asyncio
-async def test_execute_trade_unknown_symbol():
+def test_execute_trade_unknown_symbol():
     gateway = FakeGateway()
     manager = OrderManager(gateway)
     with pytest.raises(PositionSizingError):
-        await manager.execute_trade(
-            symbol="UNKNOWN",
-            entry_price=100,
-            stop_price=95,
-            risk_pct=1,
+        asyncio.run(
+            manager.execute_trade(
+                symbol="UNKNOWN",
+                entry_price=100,
+                stop_price=95,
+                risk_pct=1,
+            )
         )

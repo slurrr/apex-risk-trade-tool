@@ -57,7 +57,7 @@ description: "Task list for Constitution-Aligned Baseline Specification"
 ### Tests for User Story 2 (targeted)
 
 - [x] T019 [P] [US2] Add order manager unit tests for re-run sizing, leverage-cap reduction, and risk-cap rejection in `backend/tests/test_order_manager.py`
-- [ ] T020 [P] [US2] Add API tests for execute happy path and validation failures in `backend/tests/test_trade_api.py`
+- [x] T020 [P] [US2] Add API tests for execute happy path and validation failures in `backend/tests/test_trade_api.py`
 
 ### Implementation for User Story 2
 

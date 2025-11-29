@@ -21,8 +21,8 @@ def get_order_manager() -> OrderManager:
 
 @router.post(
     "/trade",
-    response_model=TradePreviewResponse,
-    responses={400: {"model": ErrorResponse}},
+    response_model=None,
+    responses={200: {"description": "Preview or execute trade"}, 400: {"model": ErrorResponse}},
 )
 async def trade(request: TradeRequest, manager: OrderManager = Depends(get_order_manager)):
     """Preview trade sizing or execute when requested."""
