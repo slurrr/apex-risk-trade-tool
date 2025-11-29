@@ -16,11 +16,11 @@ description: "Task list for Constitution-Aligned Baseline Specification"
 
 ## Phase 1: Setup (Shared Infrastructure)
 
-- [ ] T001 Create/verify project structure per plan in `backend/` and `ui/` directories
-- [ ] T002 Create virtual environment and install dependencies listed in `requirements.txt`
-- [ ] T003 Add required env keys to `.env.example` (ApeX creds, network ID, host/port, log level)
-- [ ] T004 [P] Add structured logging stub in `backend/core/logging.py`
-- [ ] T005 [P] Add config loader scaffold in `backend/core/config.py` reading `.env`
+- [x] T001 Create/verify project structure per plan in `backend/` and `ui/` directories
+- [x] T002 Create virtual environment and install dependencies listed in `requirements.txt`
+- [x] T003 Add required env keys to `.env.example` (ApeX creds, network ID, host/port, log level)
+- [x] T004 [P] Add structured logging stub in `backend/core/logging.py`
+- [x] T005 [P] Add config loader scaffold in `backend/core/config.py` reading `.env`
 
 ## Phase 2: Foundational (Blocking Prerequisites)
 
