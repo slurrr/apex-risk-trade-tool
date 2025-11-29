@@ -64,7 +64,56 @@ class OrderManager:
         tp: Optional[float] = None,
     ) -> Dict[str, Any]:
         """Re-run sizing and place order when safe."""
-        raise risk_engine.PositionSizingError("Execute not yet implemented")
+        equity = await self.gateway.get_account_equity()
+        symbol_info = self.gateway.get_symbol_info(symbol)
+        if not symbol_info:
+            raise risk_engine.PositionSizingError(f"Unknown symbol: {symbol}")
+
+        sizing = risk_engine.calculate_position_size(
+            equity=equity,
+            risk_pct=risk_pct,
+            entry_price=entry_price,
+            stop_price=stop_price,
+            symbol_config=symbol_info,
+        )
+
+        payload, payload_warning = await self.gateway.build_order_payload(
+            symbol=symbol,
+            side=sizing.side,
+            size=sizing.size,
+            entry_price=sizing.entry_price,
+            reduce_only=False,
+            tp=tp,
+            stop=stop_price,
+        )
+        warnings = list(sizing.warnings)
+        if payload_warning:
+            warnings.append(payload_warning)
+
+        logger.info(
+            "execute_trade",
+            extra={
+                "symbol": symbol,
+                "entry": entry_price,
+                "stop": stop_price,
+                "risk_pct": risk_pct,
+                "size": sizing.size,
+                "side": sizing.side,
+                "warnings": warnings,
+            },
+        )
+
+        order_resp = await self.gateway.place_order(payload)
+        exchange_order_id = order_resp.get("exchange_order_id")
+        if not exchange_order_id:
+            raise risk_engine.PositionSizingError("Order placement failed: no order id returned")
+
+        return {
+            "executed": True,
+            "exchange_order_id": exchange_order_id,
+            "warnings": warnings,
+            "sizing": sizing,
+        }
 
     async def refresh_state(self) -> None:
         """Refresh in-memory orders and positions from gateway."""

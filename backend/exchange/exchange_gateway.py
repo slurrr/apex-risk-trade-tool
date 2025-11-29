@@ -1,4 +1,4 @@
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Tuple
 
 from backend.core.config import Settings
 from backend.core.logging import get_logger
@@ -44,3 +44,31 @@ class ExchangeGateway:
     async def cancel_all(self, symbol: Optional[str] = None) -> Dict[str, Any]:
         logger.info("cancel_all called - placeholder implementation", extra={"symbol": symbol})
         return {"canceled_all": True, "symbol": symbol}
+
+    async def build_order_payload(
+        self,
+        *,
+        symbol: str,
+        side: str,
+        size: float,
+        entry_price: float,
+        reduce_only: bool = False,
+        tp: Optional[float] = None,
+        stop: Optional[float] = None,
+    ) -> Tuple[Dict[str, Any], Optional[str]]:
+        """
+        Build a placeholder payload; real SDK call will be wired later.
+        Returns (payload, warning).
+        """
+        payload = {
+            "symbol": symbol,
+            "side": side,
+            "size": size,
+            "price": entry_price,
+            "reduceOnly": reduce_only,
+        }
+        if tp:
+            payload["tp"] = tp
+        if stop:
+            payload["sl"] = stop
+        return payload, None

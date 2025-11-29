@@ -56,17 +56,17 @@ description: "Task list for Constitution-Aligned Baseline Specification"
 
 ### Tests for User Story 2 (targeted)
 
-- [ ] T019 [P] [US2] Add order manager unit tests for re-run sizing, leverage-cap reduction, and risk-cap rejection in `backend/tests/test_order_manager.py`
+- [x] T019 [P] [US2] Add order manager unit tests for re-run sizing, leverage-cap reduction, and risk-cap rejection in `backend/tests/test_order_manager.py`
 - [ ] T020 [P] [US2] Add API tests for execute happy path and validation failures in `backend/tests/test_trade_api.py`
 
 ### Implementation for User Story 2
 
 - [ ] T021 [US2] Implement configs cache and equity/symbol fetch in `backend/exchange/exchange_gateway.py`
-- [ ] T022 [US2] Implement order payload builder with idempotent clientOrderId and SDK call in `backend/trading/order_manager.py`
+- [x] T022 [US2] Implement order payload builder with idempotent clientOrderId and SDK call in `backend/trading/order_manager.py`
 - [ ] T023 [US2] Enforce per-trade, daily-loss, and open-risk caps in `backend/trading/order_manager.py`
-- [ ] T024 [US2] Update trade route to support execute flow (re-run sizing, execute flag, structured errors) in `backend/api/routes_trade.py`
+- [x] T024 [US2] Update trade route to support execute flow (re-run sizing, execute flag, structured errors) in `backend/api/routes_trade.py`
 - [ ] T025 [US2] Add UI execute action and result handling (exchange_order_id, warnings/errors) in `ui/js/execute.js` and `ui/index.html`
-- [ ] T026 [US2] Add structured logging for payloads, warnings, and rejected trades in `backend/trading/order_manager.py`
+- [x] T026 [US2] Add structured logging for payloads, warnings, and rejected trades in `backend/trading/order_manager.py`
 
 ## Phase 5: User Story 3 - Monitor orders and positions (Priority: P2)
 

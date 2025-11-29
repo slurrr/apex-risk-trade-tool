@@ -33,5 +33,10 @@ class TradePreviewResponse(BaseModel):
     stop_price: float
 
 
+class TradeExecuteResponse(TradePreviewResponse):
+    executed: bool = True
+    exchange_order_id: str
+
+
 class ErrorResponse(BaseModel):
     detail: str
