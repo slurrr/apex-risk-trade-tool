@@ -19,7 +19,7 @@ class ExchangeGateway:
 
     def _init_client(self, settings: Settings) -> Any:
         from apexomni.constants import APEX_OMNI_HTTP_MAIN, APEX_OMNI_HTTP_TEST, NETWORKID_MAIN, NETWORKID_OMNI_TEST_BNB
-        from apexomni.http_private_v3 import HttpPrivateSign
+        from apexomni.http_private_sign import HttpPrivateSign
 
         network = settings.apex_network.lower()
         if network == "testnet":
