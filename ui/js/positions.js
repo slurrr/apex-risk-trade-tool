@@ -1,13 +1,3 @@
-function normalizePosition(position) {
-  return {
-    symbol: position.symbol || position.market || "-",
-    side: position.side || position.positionSide || position.direction || "-",
-    size: position.size || position.qty || position.quantity || "-",
-    entry: position.entryPrice || position.avgPrice || position.entry_price || "-",
-    pnl: position.unrealizedPnl || position.unrealizedPnlUsd || position.pnl || "-",
-  };
-}
-
 async function fetchPositions() {
   const resp = await fetch("/api/positions");
   const data = await resp.json();
@@ -29,14 +19,13 @@ function renderPositions(positions) {
   emptyState.style.display = "none";
 
   positions.forEach((pos) => {
-    const info = normalizePosition(pos);
     const row = document.createElement("tr");
     row.innerHTML = `
-      <td>${info.symbol}</td>
-      <td>${info.side}</td>
-      <td>${info.size}</td>
-      <td>${info.entry}</td>
-      <td>${info.pnl}</td>
+      <td>${pos.symbol || ""}</td>
+      <td>${pos.side || ""}</td>
+      <td>${pos.size || ""}</td>
+      <td>${pos.entry_price || ""}</td>
+      <td>${pos.pnl || ""}</td>
     `;
     tbody.appendChild(row);
   });

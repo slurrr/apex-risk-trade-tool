@@ -1,13 +1,3 @@
-function normalizeOrder(order) {
-  return {
-    id: order.orderId || order.order_id || order.id || order.clientOrderId || "N/A",
-    symbol: order.symbol || order.market || "-",
-    side: order.side || order.positionSide || "-",
-    size: order.size || order.qty || order.quantity || "-",
-    status: order.status || order.state || "-",
-  };
-}
-
 async function fetchOrders() {
   const resp = await fetch("/api/orders");
   const data = await resp.json();
@@ -39,21 +29,20 @@ function renderOrders(orders) {
   emptyState.style.display = "none";
 
   orders.forEach((order) => {
-    const info = normalizeOrder(order);
     const row = document.createElement("tr");
     const cancelCell = document.createElement("td");
     const cancelBtn = document.createElement("button");
     cancelBtn.textContent = "Cancel";
-    cancelBtn.disabled = !info.id || info.id === "N/A";
-    cancelBtn.dataset.orderId = info.id;
+    cancelBtn.disabled = !order.id;
+    cancelBtn.dataset.orderId = order.id;
     cancelCell.appendChild(cancelBtn);
 
     row.innerHTML = `
-      <td>${info.id}</td>
-      <td>${info.symbol}</td>
-      <td>${info.side}</td>
-      <td>${info.size}</td>
-      <td>${info.status}</td>
+      <td>${order.id || ""}</td>
+      <td>${order.symbol || ""}</td>
+      <td>${order.side || ""}</td>
+      <td>${order.size || ""}</td>
+      <td>${order.status || ""}</td>
     `;
     row.appendChild(cancelCell);
     tbody.appendChild(row);

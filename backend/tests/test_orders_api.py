@@ -16,8 +16,8 @@ from backend.api.routes_trade import configure_order_manager  # noqa: E402
 
 class FakeManager:
     def __init__(self) -> None:
-        self.orders = [{"orderId": "abc", "symbol": "BTC-USDT"}]
-        self.positions = [{"symbol": "BTC-USDT", "size": "1"}]
+        self.orders = [{"id": "abc", "symbol": "BTC-USDT", "side": "BUY", "size": "1", "status": "OPEN", "price": None}]
+        self.positions = [{"symbol": "BTC-USDT", "side": "LONG", "size": "1", "entry_price": "100", "pnl": "5"}]
         self.canceled = []
 
     async def list_orders(self):
@@ -46,7 +46,7 @@ def test_list_orders_returns_manager_data():
     client = build_client(manager)
     resp = client.get("/api/orders")
     assert resp.status_code == 200
-    assert resp.json() == [{"orderId": "abc", "symbol": "BTC-USDT"}]
+    assert resp.json() == [{"id": "abc", "symbol": "BTC-USDT", "side": "BUY", "size": "1", "status": "OPEN", "price": None}]
 
 
 def test_list_positions_returns_manager_data():
@@ -54,7 +54,7 @@ def test_list_positions_returns_manager_data():
     client = build_client(manager)
     resp = client.get("/api/positions")
     assert resp.status_code == 200
-    assert resp.json() == [{"symbol": "BTC-USDT", "size": "1"}]
+    assert resp.json() == [{"symbol": "BTC-USDT", "side": "LONG", "size": "1", "entry_price": "100", "pnl": "5"}]
 
 
 def test_cancel_order_calls_manager_and_returns_response():

@@ -23,7 +23,7 @@ class OrderManager:
         self.daily_loss_cap_pct = daily_loss_cap_pct
         self.open_risk_cap_pct = open_risk_cap_pct
         self.daily_realized_loss: float = 0.0
-        self.open_risk_estimates: list[float] = []
+        self.open_risk_estimates: Dict[str, float] = {}
         self.open_orders: list[Dict[str, Any]] = []
         self.positions: list[Dict[str, Any]] = []
 
@@ -104,7 +104,7 @@ class OrderManager:
 
         if self.open_risk_cap_pct is not None:
             open_risk_limit = equity * (self.open_risk_cap_pct / 100.0)
-            if sum(self.open_risk_estimates) + sizing.estimated_loss > open_risk_limit:
+            if sum(self.open_risk_estimates.values()) + sizing.estimated_loss > open_risk_limit:
                 raise risk_engine.PositionSizingError("Order would exceed open-risk cap.")
 
         payload, payload_warning = await self.gateway.build_order_payload(
@@ -138,7 +138,7 @@ class OrderManager:
         if not exchange_order_id:
             raise risk_engine.PositionSizingError("Order placement failed: no order id returned")
 
-        self.open_risk_estimates.append(sizing.estimated_loss)
+        self.open_risk_estimates[exchange_order_id] = sizing.estimated_loss
 
         return {
             "executed": True,
@@ -149,8 +149,14 @@ class OrderManager:
 
     async def refresh_state(self) -> None:
         """Refresh in-memory orders and positions from gateway."""
-        self.positions = await self.gateway.get_open_positions()
-        self.open_orders = await self.gateway.get_open_orders()
+        self.positions = [self._normalize_position(pos) for pos in await self.gateway.get_open_positions()]
+        raw_orders = await self.gateway.get_open_orders()
+        self.open_orders = [self._normalize_order(order) for order in raw_orders]
+        # drop risk estimates for orders no longer present
+        open_ids = {order["id"] for order in self.open_orders if order.get("id")}
+        self.open_risk_estimates = {
+            order_id: risk for order_id, risk in self.open_risk_estimates.items() if order_id in open_ids
+        }
         logger.info(
             "state_refreshed",
             extra={"positions_count": len(self.positions), "open_orders_count": len(self.open_orders)},
@@ -158,12 +164,13 @@ class OrderManager:
 
     async def list_orders(self) -> list[Dict[str, Any]]:
         """Return open orders from gateway and update cache."""
-        self.open_orders = await self.gateway.get_open_orders()
+        raw_orders = await self.gateway.get_open_orders()
+        self.open_orders = [self._normalize_order(order) for order in raw_orders]
         return self.open_orders
 
     async def list_positions(self) -> list[Dict[str, Any]]:
         """Return open positions from gateway and update cache."""
-        self.positions = await self.gateway.get_open_positions()
+        self.positions = [self._normalize_position(pos) for pos in await self.gateway.get_open_positions()]
         return self.positions
 
     async def cancel_order(self, order_id: str) -> Dict[str, Any]:
@@ -172,8 +179,30 @@ class OrderManager:
         self.open_orders = [
             order
             for order in self.open_orders
-            if str(order.get("orderId") or order.get("order_id")) != order_id
+            if str(order.get("id")) != order_id
         ]
         await self.refresh_state()
+        self.open_risk_estimates.pop(order_id, None)
         logger.info("cancel_order", extra={"order_id": order_id})
         return result
+
+    def _normalize_order(self, order: Dict[str, Any]) -> Dict[str, Any]:
+        """Return a consistent shape for UI/API consumption."""
+        return {
+            "id": str(order.get("orderId") or order.get("order_id") or order.get("clientOrderId") or ""),
+            "symbol": order.get("symbol") or order.get("market"),
+            "side": order.get("side") or order.get("positionSide") or order.get("direction"),
+            "size": order.get("size") or order.get("qty") or order.get("quantity"),
+            "status": order.get("status") or order.get("state") or order.get("orderStatus"),
+            "price": order.get("price") or order.get("avgPrice") or order.get("orderPrice"),
+        }
+
+    def _normalize_position(self, position: Dict[str, Any]) -> Dict[str, Any]:
+        """Return a consistent shape for UI/API consumption."""
+        return {
+            "symbol": position.get("symbol") or position.get("market"),
+            "side": position.get("side") or position.get("positionSide") or position.get("direction"),
+            "size": position.get("size") or position.get("qty") or position.get("quantity"),
+            "entry_price": position.get("entryPrice") or position.get("avgPrice") or position.get("entry_price"),
+            "pnl": position.get("unrealizedPnl") or position.get("unrealizedPnlUsd") or position.get("pnl"),
+        }
