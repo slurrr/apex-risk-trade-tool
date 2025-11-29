@@ -63,7 +63,7 @@ description: "Task list for Constitution-Aligned Baseline Specification"
 
 - [x] T021 [US2] Implement configs cache and equity/symbol fetch in `backend/exchange/exchange_gateway.py`
 - [x] T022 [US2] Implement order payload builder with idempotent clientOrderId and SDK call in `backend/trading/order_manager.py`
-- [ ] T023 [US2] Enforce per-trade, daily-loss, and open-risk caps in `backend/trading/order_manager.py`
+- [x] T023 [US2] Enforce per-trade, daily-loss, and open-risk caps in `backend/trading/order_manager.py`
 - [x] T024 [US2] Update trade route to support execute flow (re-run sizing, execute flag, structured errors) in `backend/api/routes_trade.py`
 - [x] T025 [US2] Add UI execute action and result handling (exchange_order_id, warnings/errors) in `ui/js/execute.js` and `ui/index.html`
 - [x] T026 [US2] Add structured logging for payloads, warnings, and rejected trades in `backend/trading/order_manager.py`
