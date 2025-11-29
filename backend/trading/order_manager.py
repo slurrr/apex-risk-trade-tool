@@ -10,8 +10,20 @@ logger = get_logger(__name__)
 class OrderManager:
     """Coordinates sizing, risk caps, and order placement."""
 
-    def __init__(self, gateway: ExchangeGateway) -> None:
+    def __init__(
+        self,
+        gateway: ExchangeGateway,
+        *,
+        per_trade_risk_cap_pct: Optional[float] = None,
+        daily_loss_cap_pct: Optional[float] = None,
+        open_risk_cap_pct: Optional[float] = None,
+    ) -> None:
         self.gateway = gateway
+        self.per_trade_risk_cap_pct = per_trade_risk_cap_pct
+        self.daily_loss_cap_pct = daily_loss_cap_pct
+        self.open_risk_cap_pct = open_risk_cap_pct
+        self.daily_realized_loss: float = 0.0
+        self.open_risk_estimates: list[float] = []
         self.open_orders: list[Dict[str, Any]] = []
         self.positions: list[Dict[str, Any]] = []
 
@@ -69,6 +81,12 @@ class OrderManager:
         if not symbol_info:
             raise risk_engine.PositionSizingError(f"Unknown symbol: {symbol}")
 
+        # Risk caps
+        if self.per_trade_risk_cap_pct is not None and risk_pct > self.per_trade_risk_cap_pct:
+            raise risk_engine.PositionSizingError(
+                f"Risk % {risk_pct} exceeds per-trade cap {self.per_trade_risk_cap_pct}"
+            )
+
         sizing = risk_engine.calculate_position_size(
             equity=equity,
             risk_pct=risk_pct,
@@ -76,6 +94,18 @@ class OrderManager:
             stop_price=stop_price,
             symbol_config=symbol_info,
         )
+
+        if self.daily_loss_cap_pct is not None:
+            daily_limit = equity * (self.daily_loss_cap_pct / 100.0)
+            if self.daily_realized_loss >= daily_limit:
+                raise risk_engine.PositionSizingError("Daily loss cap exceeded.")
+            if (self.daily_realized_loss + sizing.estimated_loss) > daily_limit:
+                raise risk_engine.PositionSizingError("Order would exceed daily loss cap.")
+
+        if self.open_risk_cap_pct is not None:
+            open_risk_limit = equity * (self.open_risk_cap_pct / 100.0)
+            if sum(self.open_risk_estimates) + sizing.estimated_loss > open_risk_limit:
+                raise risk_engine.PositionSizingError("Order would exceed open-risk cap.")
 
         payload, payload_warning = await self.gateway.build_order_payload(
             symbol=symbol,
@@ -107,6 +137,8 @@ class OrderManager:
         exchange_order_id = order_resp.get("exchange_order_id")
         if not exchange_order_id:
             raise risk_engine.PositionSizingError("Order placement failed: no order id returned")
+
+        self.open_risk_estimates.append(sizing.estimated_loss)
 
         return {
             "executed": True,

@@ -13,9 +13,9 @@ from backend.trading.order_manager import OrderManager  # noqa: E402
 
 
 class FakeGateway:
-    def __init__(self) -> None:
+    def __init__(self, equity: float = 1000.0) -> None:
         self.symbols = {"BTC-USDT": {"tickSize": 0.5, "stepSize": 0.1, "minOrderSize": 0.5, "maxOrderSize": 100.0, "maxLeverage": 5}}
-        self._equity = 1000.0
+        self._equity = equity
         self.placed = []
 
     async def get_account_equity(self) -> float:
@@ -64,5 +64,35 @@ def test_execute_trade_unknown_symbol():
                 entry_price=100,
                 stop_price=95,
                 risk_pct=1,
+            )
+        )
+
+
+def test_execute_trade_rejects_per_trade_cap():
+    gateway = FakeGateway()
+    manager = OrderManager(gateway, per_trade_risk_cap_pct=0.5)
+    with pytest.raises(PositionSizingError):
+        asyncio.run(
+            manager.execute_trade(
+                symbol="BTC-USDT",
+                entry_price=100,
+                stop_price=95,
+                risk_pct=1.0,
+            )
+        )
+
+
+def test_execute_trade_rejects_open_risk_cap():
+    gateway = FakeGateway(equity=10000)
+    manager = OrderManager(gateway, open_risk_cap_pct=2.0)
+    manager.open_risk_estimates = [150.0]  # existing open risk
+    # New estimated loss would be 50 (size 10 * per unit 5)
+    with pytest.raises(PositionSizingError):
+        asyncio.run(
+            manager.execute_trade(
+                symbol="BTC-USDT",
+                entry_price=100,
+                stop_price=95,
+                risk_pct=1.0,
             )
         )
