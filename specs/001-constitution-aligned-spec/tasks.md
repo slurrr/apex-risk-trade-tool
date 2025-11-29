@@ -75,15 +75,15 @@ description: "Task list for Constitution-Aligned Baseline Specification"
 
 ### Tests for User Story 3 (targeted)
 
-- [ ] T027 [P] [US3] Add gateway stubs/tests for positions/orders fetch and cancel in `backend/tests/test_exchange_gateway.py`
-- [ ] T028 [P] [US3] Add API tests for orders/positions retrieval and cancel in `backend/tests/test_orders_api.py`
+- [x] T027 [P] [US3] Add gateway stubs/tests for positions/orders fetch and cancel in `backend/tests/test_exchange_gateway.py`
+- [x] T028 [P] [US3] Add API tests for orders/positions retrieval and cancel in `backend/tests/test_orders_api.py`
 
 ### Implementation for User Story 3
 
-- [ ] T029 [US3] Implement orders/positions fetch endpoints in `backend/api/routes_orders.py` and `backend/api/routes_positions.py`
-- [ ] T030 [US3] Implement cancel endpoint in `backend/api/routes_orders.py`
-- [ ] T031 [US3] Ensure order manager keeps in-memory orders/positions in sync with gateway responses in `backend/trading/order_manager.py`
-- [ ] T032 [US3] Add UI tables for orders and positions with cancel button in `ui/js/orders.js`, `ui/js/positions.js`, and `ui/index.html`
+- [x] T029 [US3] Implement orders/positions fetch endpoints in `backend/api/routes_orders.py` and `backend/api/routes_positions.py`
+- [x] T030 [US3] Implement cancel endpoint in `backend/api/routes_orders.py`
+- [x] T031 [US3] Ensure order manager keeps in-memory orders/positions in sync with gateway responses in `backend/trading/order_manager.py`
+- [x] T032 [US3] Add UI tables for orders and positions with cancel button in `ui/js/orders.js`, `ui/js/positions.js`, and `ui/index.html`
 
 ## Phase 6: Polish & Cross-Cutting Concerns
 

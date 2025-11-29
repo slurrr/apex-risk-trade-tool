@@ -3,9 +3,6 @@ import time
 import uuid
 from typing import Any, Dict, Optional, Tuple
 
-from apexomni.constants import APEX_OMNI_HTTP_MAIN, APEX_OMNI_HTTP_TEST, NETWORKID_OMNI_BNB, NETWORKID_OMNI_TEST_BNB
-from apexomni.http_private_v3 import HttpPrivateSign
-
 from backend.core.config import Settings
 from backend.core.logging import get_logger
 
@@ -15,12 +12,15 @@ logger = get_logger(__name__)
 class ExchangeGateway:
     """Wrapper around ApeX Omni SDK with cached configs and basic helpers."""
 
-    def __init__(self, settings: Settings) -> None:
+    def __init__(self, settings: Settings, client: Optional[Any] = None) -> None:
         self.settings = settings
         self._configs_cache: Dict[str, Any] = {}
-        self._client = self._init_client(settings)
+        self._client: Any = client if client is not None else self._init_client(settings)
 
-    def _init_client(self, settings: Settings) -> HttpPrivateSign:
+    def _init_client(self, settings: Settings) -> Any:
+        from apexomni.constants import APEX_OMNI_HTTP_MAIN, APEX_OMNI_HTTP_TEST, NETWORKID_OMNI_BNB, NETWORKID_OMNI_TEST_BNB
+        from apexomni.http_private_v3 import HttpPrivateSign
+
         network = settings.apex_network.lower()
         if network == "testnet":
             endpoint = APEX_OMNI_HTTP_TEST

@@ -151,3 +151,29 @@ class OrderManager:
         """Refresh in-memory orders and positions from gateway."""
         self.positions = await self.gateway.get_open_positions()
         self.open_orders = await self.gateway.get_open_orders()
+        logger.info(
+            "state_refreshed",
+            extra={"positions_count": len(self.positions), "open_orders_count": len(self.open_orders)},
+        )
+
+    async def list_orders(self) -> list[Dict[str, Any]]:
+        """Return open orders from gateway and update cache."""
+        self.open_orders = await self.gateway.get_open_orders()
+        return self.open_orders
+
+    async def list_positions(self) -> list[Dict[str, Any]]:
+        """Return open positions from gateway and update cache."""
+        self.positions = await self.gateway.get_open_positions()
+        return self.positions
+
+    async def cancel_order(self, order_id: str) -> Dict[str, Any]:
+        """Cancel an order and refresh cached state."""
+        result = await self.gateway.cancel_order(order_id)
+        self.open_orders = [
+            order
+            for order in self.open_orders
+            if str(order.get("orderId") or order.get("order_id")) != order_id
+        ]
+        await self.refresh_state()
+        logger.info("cancel_order", extra={"order_id": order_id})
+        return result
