@@ -3,7 +3,8 @@ from pathlib import Path
 from typing import Optional
 
 from dotenv import load_dotenv
-from pydantic import BaseSettings, Field
+from pydantic import Field
+from pydantic_settings import BaseSettings
 
 
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
@@ -18,6 +19,9 @@ class Settings(BaseSettings):
     app_host: str = Field("127.0.0.1", env="APP_HOST")
     app_port: int = Field(8000, env="APP_PORT")
     log_level: str = Field("INFO", env="LOG_LEVEL")
+    per_trade_risk_cap_pct: Optional[float] = Field(None, env="PER_TRADE_RISK_CAP_PCT")
+    daily_loss_cap_pct: Optional[float] = Field(None, env="DAILY_LOSS_CAP_PCT")
+    open_risk_cap_pct: Optional[float] = Field(None, env="OPEN_RISK_CAP_PCT")
 
     apex_api_key: str = Field(..., env="APEX_API_KEY")
     apex_api_secret: str = Field(..., env="APEX_API_SECRET")

@@ -14,7 +14,12 @@ def create_app() -> FastAPI:
     init_logging(settings.log_level)
 
     gateway = ExchangeGateway(settings)
-    order_manager = OrderManager(gateway)
+    order_manager = OrderManager(
+        gateway,
+        per_trade_risk_cap_pct=settings.per_trade_risk_cap_pct,
+        daily_loss_cap_pct=settings.daily_loss_cap_pct,
+        open_risk_cap_pct=settings.open_risk_cap_pct,
+    )
     configure_order_manager(order_manager)
 
     app = FastAPI(
