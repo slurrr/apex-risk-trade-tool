@@ -46,6 +46,8 @@ build/
 .env.local
 .env.production
 .env.development
+.env.testnet
+.env.mainnet
 
 # API keys, creds
 secrets.json

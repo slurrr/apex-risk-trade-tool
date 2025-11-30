@@ -13,10 +13,13 @@ from backend.trading.order_manager import OrderManager  # noqa: E402
 
 
 class FakeGateway:
-    def __init__(self, equity: float = 1000.0) -> None:
+    def __init__(self, equity: float = 1000.0, orders=None, positions=None) -> None:
         self.symbols = {"BTC-USDT": {"tickSize": 0.5, "stepSize": 0.1, "minOrderSize": 0.5, "maxOrderSize": 100.0, "maxLeverage": 5}}
         self._equity = equity
         self.placed = []
+        self._orders = orders or []
+        self._positions = positions or []
+        self.ensure_configs_loaded_called = False
 
     async def get_account_equity(self) -> float:
         return self._equity
@@ -32,10 +35,13 @@ class FakeGateway:
         return {"exchange_order_id": "order-123"}
 
     async def get_open_positions(self):
-        return []
+        return self._positions
 
     async def get_open_orders(self):
-        return []
+        return self._orders
+
+    async def ensure_configs_loaded(self):
+        self.ensure_configs_loaded_called = True
 
 
 def test_execute_trade_happy_path():
@@ -85,7 +91,7 @@ def test_execute_trade_rejects_per_trade_cap():
 def test_execute_trade_rejects_open_risk_cap():
     gateway = FakeGateway(equity=10000)
     manager = OrderManager(gateway, open_risk_cap_pct=2.0)
-    manager.open_risk_estimates = [150.0]  # existing open risk
+    manager.open_risk_estimates = {"existing": 150.0}  # existing open risk
     # New estimated loss would be 50 (size 10 * per unit 5)
     with pytest.raises(PositionSizingError):
         asyncio.run(
@@ -96,3 +102,29 @@ def test_execute_trade_rejects_open_risk_cap():
                 risk_pct=1.0,
             )
         )
+
+
+def test_list_orders_normalizes_fields():
+    gateway = FakeGateway(
+        orders=[
+            {"orderId": "abc", "symbol": "BTC-USDT", "positionSide": "LONG", "size": "1", "status": "OPEN"},
+        ]
+    )
+    manager = OrderManager(gateway)
+    orders = asyncio.run(manager.list_orders())
+    assert orders == [
+        {"id": "abc", "symbol": "BTC-USDT", "side": "LONG", "size": "1", "status": "OPEN", "price": None}
+    ]
+
+
+def test_list_positions_normalizes_fields():
+    gateway = FakeGateway(
+        positions=[
+            {"symbol": "BTC-USDT", "positionSide": "LONG", "size": "1", "entryPrice": "100", "unrealizedPnl": "5"},
+        ]
+    )
+    manager = OrderManager(gateway)
+    positions = asyncio.run(manager.list_positions())
+    assert positions == [
+        {"symbol": "BTC-USDT", "side": "LONG", "size": "1", "entry_price": "100", "pnl": "5"}
+    ]

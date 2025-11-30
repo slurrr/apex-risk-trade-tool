@@ -1,0 +1,123 @@
+openapi: 3.1.0
+info:
+  title: ApeX Risk Tool - Orders & Positions API
+  version: 1.0.0
+paths:
+  /api/orders:
+    get:
+      summary: List open orders
+      operationId: listOrders
+      responses:
+        "200":
+          description: Open orders retrieved
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/OrderSummary"
+        "400":
+          description: Unable to fetch orders
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /api/positions:
+    get:
+      summary: List open positions
+      operationId: listPositions
+      responses:
+        "200":
+          description: Open positions retrieved
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/PositionSummary"
+        "400":
+          description: Unable to fetch positions
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /api/orders/{order_id}/cancel:
+    post:
+      summary: Cancel an order by ID
+      operationId: cancelOrder
+      parameters:
+        - name: order_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Order canceled or cancel acknowledged
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CancelResponse"
+        "400":
+          description: Cancel failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+components:
+  schemas:
+    OrderSummary:
+      type: object
+      required: [id, symbol, side, size, status]
+      properties:
+        id:
+          type: string
+          description: Canonical order identifier (orderId preferred, clientOrderId fallback).
+        symbol:
+          type: string
+        side:
+          type: string
+          enum: [BUY, SELL]
+        size:
+          type: number
+        price:
+          type: number
+          nullable: true
+        status:
+          type: string
+    PositionSummary:
+      type: object
+      required: [symbol, side, size]
+      properties:
+        symbol:
+          type: string
+        side:
+          type: string
+          enum: [LONG, SHORT, BUY, SELL]
+        size:
+          type: number
+        entry_price:
+          type: number
+          nullable: true
+        pnl:
+          type: number
+          nullable: true
+    CancelResponse:
+      type: object
+      required: [order_id, canceled]
+      properties:
+        order_id:
+          type: string
+        canceled:
+          type: boolean
+        raw:
+          description: Raw exchange response (for diagnostics; must exclude secrets).
+          type: object
+          additionalProperties: true
+          nullable: true
+    ErrorResponse:
+      type: object
+      required: [detail]
+      properties:
+        detail:
+          type: string

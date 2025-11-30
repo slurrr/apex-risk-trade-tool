@@ -5,6 +5,10 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>ApeX Risk & Trade Sizing Tool</title>
   <link rel="stylesheet" href="/css/styles.css">
+  <script>
+    // Point UI fetches to the backend API.
+    window.API_BASE = window.API_BASE || "http://localhost:8000";
+  </script>
 </head>
 <body>
   <main>
@@ -24,8 +28,53 @@
       <button id="execute-button" type="button">Place Order</button>
       <div id="execute-result"></div>
     </section>
+
+    <section id="orders-section">
+      <div class="section-header">
+        <h2>Open Orders</h2>
+        <button id="refresh-orders" type="button">Refresh Orders</button>
+      </div>
+      <div id="orders-error" class="error"></div>
+      <table id="orders-table">
+        <thead>
+          <tr>
+            <th>Order ID</th>
+            <th>Symbol</th>
+            <th>Side</th>
+            <th>Size</th>
+            <th>Status</th>
+            <th>Action</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+      <div id="orders-empty" class="muted">No open orders.</div>
+    </section>
+
+    <section id="positions-section">
+      <div class="section-header">
+        <h2>Open Positions</h2>
+        <button id="refresh-positions" type="button">Refresh Positions</button>
+      </div>
+      <div id="positions-error" class="error"></div>
+      <table id="positions-table">
+        <thead>
+          <tr>
+            <th>Symbol</th>
+            <th>Side</th>
+            <th>Size</th>
+            <th>Entry</th>
+            <th>PnL</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+      <div id="positions-empty" class="muted">No open positions.</div>
+    </section>
   </main>
   <script src="/js/preview.js"></script>
   <script src="/js/execute.js"></script>
+  <script src="/js/orders.js"></script>
+  <script src="/js/positions.js"></script>
 </body>
 </html>

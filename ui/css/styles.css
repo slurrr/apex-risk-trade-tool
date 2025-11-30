@@ -49,3 +49,32 @@ button:hover {
 .error {
   color: #b00020;
 }
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-top: 0.5rem;
+}
+
+th,
+td {
+  border: 1px solid #e5e5e5;
+  padding: 0.5rem;
+  text-align: left;
+}
+
+thead {
+  background: #f6f6f6;
+}
+
+.section-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 1rem;
+}
+
+.muted {
+  color: #666;
+  margin-top: 0.5rem;
+}

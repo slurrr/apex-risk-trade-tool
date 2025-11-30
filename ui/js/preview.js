@@ -1,5 +1,7 @@
+const API_BASE = window.API_BASE || "http://localhost:8000";
+
 async function postPreview(payload) {
-  const response = await fetch("/api/trade", {
+  const response = await fetch(`${API_BASE}/api/trade`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
