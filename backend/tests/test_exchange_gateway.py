@@ -16,6 +16,7 @@ class FakeSettings:
     apex_api_key = "key"
     apex_api_secret = "secret"
     apex_passphrase = "passphrase"
+    apex_http_endpoint = None
 
 
 class FakeClient:
