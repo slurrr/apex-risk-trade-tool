@@ -38,6 +38,7 @@ class OrderManager:
         tp: Optional[float] = None,
     ) -> Tuple[risk_engine.PositionSizingResult, list[str]]:
         """Run sizing without placing an order."""
+        await self.gateway.ensure_configs_loaded()
         equity = await self.gateway.get_account_equity()
         symbol_info = self.gateway.get_symbol_info(symbol)
         if not symbol_info:
@@ -76,6 +77,7 @@ class OrderManager:
         tp: Optional[float] = None,
     ) -> Dict[str, Any]:
         """Re-run sizing and place order when safe."""
+        await self.gateway.ensure_configs_loaded()
         equity = await self.gateway.get_account_equity()
         symbol_info = self.gateway.get_symbol_info(symbol)
         if not symbol_info:

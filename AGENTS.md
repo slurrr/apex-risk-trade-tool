@@ -1,4 +1,4 @@
-# Repository Guidelines
+﻿# Repository Guidelines
 
 ## Project Structure & Module Organization
 - `backend/` holds the FastAPI service. Subpackages: `api/` for route modules, `core/` for config/logging, `exchange/` for Apex Omni client helpers, `risk/` for risk engine logic, `trading/` for order mapping/management, and `tests/` for pytest suites. Entry point is `backend/main.py` (served via Uvicorn). Packages are discovered from `backend/` per `pyproject.toml`.
@@ -32,3 +32,6 @@
 - Never commit secrets; load keys via `.env` and access through `python-dotenv` in `core/config.py` patterns.
 - Validate external input at API boundaries and in `risk/validators.py`; log safely without leaking credentials or PII.
 - Before deploying, pin configs in `spec/` and confirm httpx timeouts/retries in `exchange/` clients.
+
+## Local tooling
+- When running Python-related commands, always invoke the repo venv explicitly: `.\.venv\Scripts\python.exe`, `.\.venv\Scripts\pip.exe`, `.\.venv\Scripts\uvicorn.exe`, `.\.venv\Scripts\pytest.exe` (avoid system-level Python to prevent permission popups).

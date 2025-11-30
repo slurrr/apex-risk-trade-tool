@@ -19,6 +19,7 @@ class FakeGateway:
         self.placed = []
         self._orders = orders or []
         self._positions = positions or []
+        self.ensure_configs_loaded_called = False
 
     async def get_account_equity(self) -> float:
         return self._equity
@@ -38,6 +39,9 @@ class FakeGateway:
 
     async def get_open_orders(self):
         return self._orders
+
+    async def ensure_configs_loaded(self):
+        self.ensure_configs_loaded_called = True
 
 
 def test_execute_trade_happy_path():

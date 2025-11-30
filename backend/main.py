@@ -1,4 +1,5 @@
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 
 from backend.api.routes_orders import router as orders_router
 from backend.api.routes_positions import router as positions_router
@@ -26,6 +27,22 @@ def create_app() -> FastAPI:
         title="ApeX Risk & Trade Sizing Tool",
         version="0.1.0",
     )
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+
+    @app.on_event("startup")
+    async def startup_event() -> None:
+        try:
+            await gateway.load_configs()
+            await order_manager.refresh_state()
+        except Exception:
+            # Continue startup even if refresh fails; errors are logged
+            pass
 
     @app.get("/health", tags=["health"])
     def health() -> dict[str, str]:

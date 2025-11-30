@@ -1,5 +1,7 @@
+const API_BASE = window.API_BASE || "http://localhost:8000";
+
 async function fetchOrders() {
-  const resp = await fetch("/api/orders");
+  const resp = await fetch(`${API_BASE}/api/orders`);
   const data = await resp.json();
   if (!resp.ok) {
     const msg = data?.detail || "Unable to load orders";
@@ -9,7 +11,7 @@ async function fetchOrders() {
 }
 
 async function cancelOrder(orderId) {
-  const resp = await fetch(`/api/orders/${orderId}/cancel`, { method: "POST" });
+  const resp = await fetch(`${API_BASE}/api/orders/${orderId}/cancel`, { method: "POST" });
   const data = await resp.json();
   if (!resp.ok) {
     const msg = data?.detail || "Cancel failed";

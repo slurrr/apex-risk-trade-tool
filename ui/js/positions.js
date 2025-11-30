@@ -1,5 +1,7 @@
+const API_BASE = window.API_BASE || "http://localhost:8000";
+
 async function fetchPositions() {
-  const resp = await fetch("/api/positions");
+  const resp = await fetch(`${API_BASE}/api/positions`);
   const data = await resp.json();
   if (!resp.ok) {
     const msg = data?.detail || "Unable to load positions";
