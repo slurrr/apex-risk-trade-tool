@@ -1,6 +1,7 @@
 import asyncio
 import time
 import uuid
+from decimal import Decimal, ROUND_DOWN
 from typing import Any, Dict, Optional, Tuple, List
 
 import requests
@@ -67,6 +68,14 @@ class ExchangeGateway:
         session.trust_env = False
         session.proxies = {"http": None, "https": None}
         return client
+
+    def _format_with_step(self, value: float, step: Optional[float]) -> str:
+        """Format numeric to a string respecting step precision."""
+        if not step or step <= 0:
+            return str(value)
+        step_decimal = Decimal(str(step))
+        quantized = Decimal(str(value)).quantize(step_decimal, rounding=ROUND_DOWN)
+        return format(quantized, "f").rstrip("0").rstrip(".") if "." in format(quantized, "f") else str(quantized)
 
     async def _get_usdt_price(self, token: str) -> float:
         """Fetch mid price for TOKEN-USDT via depth, fallback to ticker, then hardcoded 1.0 for ETH."""
@@ -164,6 +173,11 @@ class ExchangeGateway:
                     continue
 
             self._configs_cache = mapped
+            # Preserve full config payload for SDK methods that expect configV3
+            try:
+                setattr(self._client, "configV3", payload)
+            except Exception:
+                pass
             logger.info("configs cached", extra={"count": len(self._configs_cache)})
         except Exception as exc:
             logger.exception("failed to load configs", extra={"error": str(exc)})
@@ -171,6 +185,24 @@ class ExchangeGateway:
 
     def get_symbol_info(self, symbol: str) -> Optional[Dict[str, Any]]:
         return self._configs_cache.get(symbol)
+
+    async def get_mark_price(self, symbol: str) -> float:
+        """Return latest mark/last price for symbol via public ticker."""
+        ticker = await asyncio.to_thread(self._public_client.ticker_v3, symbol=symbol)
+        result = ticker.get("result") or ticker.get("data") or ticker
+        entries = result if isinstance(result, list) else [result]
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            price = (
+                entry.get("markPrice")
+                or entry.get("lastPrice")
+                or entry.get("price")
+                or entry.get("indexPrice")
+            )
+            if price:
+                return float(price)
+        raise ValueError(f"No ticker price for {symbol}")
 
     async def ensure_configs_loaded(self) -> None:
         """Load configs if not already cached."""
@@ -192,6 +224,8 @@ class ExchangeGateway:
                 equity_usdt = 0.0
                 for wallet in wallets:
                     bal = float(wallet.get("balance", 0) or 0)
+                    if bal <= 0:
+                        continue  # ignore negative/zero balances when estimating equity
                     token = wallet.get("token") or "USDT"
                     price = await self._get_usdt_price(token)
                     equity_usdt += bal * price
@@ -204,7 +238,9 @@ class ExchangeGateway:
     async def get_open_positions(self) -> list[Dict[str, Any]]:
         try:
             resp = await asyncio.to_thread(self._client.get_account_v3)
-            return resp.get("result", {}).get("positions", []) or []
+            payload = resp.get("result") or resp
+            positions = payload.get("positions", []) or []
+            return positions
         except Exception as exc:
             logger.exception("failed to fetch positions", extra={"error": str(exc)})
             return []
@@ -212,7 +248,9 @@ class ExchangeGateway:
     async def get_open_orders(self) -> list[Dict[str, Any]]:
         try:
             resp = await asyncio.to_thread(self._client.open_orders_v3)
-            return resp.get("result", {}).get("list", []) or []
+            payload = resp.get("result") or resp
+            orders = payload.get("list") or payload.get("orders") or payload.get("data") or []
+            return orders
         except Exception as exc:
             logger.exception("failed to fetch open orders", extra={"error": str(exc)})
             return []
@@ -220,21 +258,72 @@ class ExchangeGateway:
     async def place_order(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         try:
             resp = await asyncio.to_thread(self._client.create_order_v3, **payload)
-            return {
-                "exchange_order_id": resp.get("result", {}).get("orderId"),
-                "raw": resp,
-            }
+            order_id = (
+                resp.get("result", {}).get("orderId")
+                or resp.get("data", {}).get("orderId")
+                or resp.get("orderId")
+                or resp.get("orderID")
+            )
+            return {"exchange_order_id": order_id, "raw": resp}
         except Exception as exc:
             logger.exception("failed to place order", extra={"error": str(exc), "payload": payload})
             raise
 
-    async def cancel_order(self, order_id: str) -> Dict[str, Any]:
+    async def cancel_order(self, order_id: str, client_id: Optional[str] = None) -> Dict[str, Any]:
+        errors: list[str] = []
+        # ensure account/config set on client for signature
         try:
-            resp = await asyncio.to_thread(self._client.delete_order_v3, orderId=order_id)
-            return {"canceled": True, "order_id": order_id, "raw": resp}
+            await asyncio.to_thread(self._client.get_account_v3)
+        except Exception:
+            pass
+        if client_id:
+            try:
+                normalized_client_id = str(client_id).replace("-", "")
+                resp = await asyncio.to_thread(
+                    self._client.delete_order_by_client_order_id_v3, id=normalized_client_id
+                )
+                code = resp.get("code") or resp.get("result", {}).get("code")
+                status = (
+                    resp.get("result", {}).get("status")
+                    or resp.get("data", {}).get("status")
+                    or resp.get("status")
+                    or "canceled"
+                )
+                canceled = (
+                    code in (0, "0", None)
+                    and (str(status).lower() in {"canceled", "cancelled", "success"} or status is True)
+                )
+                if canceled:
+                    return {"canceled": True, "order_id": order_id, "client_id": client_id, "raw": resp}
+                errors.append(f"delete_order_by_client_order_id_v3 code={code} status={status} resp={resp}")
+            except Exception as exc:
+                msg = f"delete_order_by_client_order_id_v3 error={exc}"
+                errors.append(msg)
+                logger.exception(
+                    "failed to cancel order by client id",
+                    extra={"error": str(exc), "order_id": order_id, "client_id": client_id},
+                )
+        try:
+            oid = int(order_id) if str(order_id).isdigit() else str(order_id)
+            resp = await asyncio.to_thread(self._client.delete_order_v3, id=oid)
+            code = resp.get("code") or resp.get("result", {}).get("code")
+            status = (
+                resp.get("result", {}).get("status")
+                or resp.get("data", {}).get("status")
+                or resp.get("status")
+                or "canceled"
+            )
+            success = (
+                code in (0, "0", None)
+                and (str(status).lower() in {"canceled", "cancelled", "success"} or status is True)
+            )
+            if success:
+                return {"canceled": True, "order_id": order_id, "raw": resp}
+            errors.append(f"delete_order_v3 code={code} status={status} resp={resp}")
         except Exception as exc:
-            logger.exception("failed to cancel order", extra={"error": str(exc), "order_id": order_id})
-            raise
+            errors.append(f"delete_order_v3 error={exc}")
+            logger.warning("delete_order_v3 failed", extra={"error": str(exc), "order_id": order_id})
+        return {"canceled": False, "order_id": order_id, "raw": {"errors": errors}}
 
     async def cancel_all(self, symbol: Optional[str] = None) -> Dict[str, Any]:
         try:
@@ -266,12 +355,27 @@ class ExchangeGateway:
             "price": entry_price,
             "size": size,
             "reduceOnly": reduce_only,
-            "clientOrderId": f"{symbol}-{int(time.time())}-{uuid.uuid4().hex[:8]}",
+            "clientId": f"{symbol}-{int(time.time())}-{uuid.uuid4().hex[:8]}",
         }
+        # Format price/size according to symbol precision when available
+        info = self.get_symbol_info(symbol) or {}
+        tick = float(info.get("tickSize") or 0)
+        step = float(info.get("stepSize") or 0)
+        payload["price"] = self._format_with_step(entry_price, tick)
+        payload["size"] = self._format_with_step(size, step)
+
         if tp:
-            payload["tpTriggerBy"] = "LAST_PRICE"
-            payload["takeProfit"] = tp
+            payload["tpPrice"] = self._format_with_step(tp, tick)
+            payload["tpTriggerPrice"] = self._format_with_step(tp, tick)
+            payload["isOpenTpslOrder"] = True
+            payload["isSetOpenTp"] = True
+            payload["tpSide"] = "SELL" if side.upper() == "BUY" else "BUY"
+            payload["tpSize"] = self._format_with_step(size, step)
         if stop:
-            payload["stopLoss"] = stop
-            payload["slTriggerBy"] = "LAST_PRICE"
+            payload["slPrice"] = self._format_with_step(stop, tick)
+            payload["slTriggerPrice"] = self._format_with_step(stop, tick)
+            payload["isOpenTpslOrder"] = True
+            payload["isSetOpenSl"] = True
+            payload["slSide"] = "SELL" if side.upper() == "BUY" else "BUY"
+            payload["slSize"] = self._format_with_step(size, step)
         return payload, None
