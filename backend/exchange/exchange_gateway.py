@@ -373,7 +373,8 @@ class ExchangeGateway:
             status = str(o.get("status") or o.get("orderStatus") or "").lower()
             if status in {"canceled", "cancelled", "filled"}:
                 continue
-            key = str(o.get("orderId") or o.get("order_id") or o.get("clientOrderId") or uuid.uuid4().hex)
+            key = str(o.get("orderId") or o.get("order_id") or o.get("clientOrderId") or o.get("_cache_id") or uuid.uuid4().hex)
+            o["_cache_id"] = key
             mapped[key] = o
         return mapped
 
@@ -410,6 +411,31 @@ class ExchangeGateway:
         except Exception:
             return False
         return size_f > 0
+
+    # --- Cancel helpers ---
+    def _extract_code_status(self, resp: Any) -> Tuple[Optional[Any], Optional[Any]]:
+        if not isinstance(resp, dict):
+            return None, resp if isinstance(resp, str) else None
+        code = resp.get("code") or resp.get("retCode")
+        status = resp.get("status") or resp.get("retMsg")
+        result = resp.get("result") or resp.get("data") or {}
+        if isinstance(result, dict):
+            code = code or result.get("code")
+            status = status or result.get("status") or result.get("retMsg")
+        return code, status
+
+    def _is_conflict_or_notfound(self, exc: Exception) -> bool:
+        msg = str(exc).lower()
+        return "errcode: 409" in msg or "not found" in msg or "could not decode json" in msg
+
+    def _retry_delete_on_conflict(self, func, *args, **kwargs) -> Dict[str, Any]:
+        try:
+            return func(*args, **kwargs)
+        except Exception as exc:
+            if not self._is_conflict_or_notfound(exc):
+                raise
+            time.sleep(0.3)
+            return func(*args, **kwargs)
 
     async def load_configs(self) -> None:
         """Fetch and cache symbol configs."""
@@ -634,55 +660,48 @@ class ExchangeGateway:
             await asyncio.to_thread(self._client.get_account_v3)
         except Exception:
             pass
-        if client_id:
+        client_target = client_id or (order_id if not str(order_id).isdigit() else None)
+        if client_target:
             try:
-                normalized_client_id = str(client_id).replace("-", "")
+                normalized_client_id = str(client_target)
                 resp = await asyncio.to_thread(
-                    self._client.delete_order_by_client_order_id_v3, id=normalized_client_id
+                    self._retry_delete_on_conflict, self._client.delete_order_by_client_order_id_v3, id=normalized_client_id
                 )
-                code = resp.get("code") or resp.get("result", {}).get("code")
-                status = (
-                    resp.get("result", {}).get("status")
-                    or resp.get("data", {}).get("status")
-                    or resp.get("status")
-                    or "canceled"
-                )
+                code, status = self._extract_code_status(resp)
+                if code in (None, "0") and status in (None, "", "success", "canceled", "cancelled"):
+                    if isinstance(resp, dict) and resp.get("data") == normalized_client_id:
+                        status = "canceled"
                 canceled = (
                     code in (0, "0", None)
                     and (str(status).lower() in {"canceled", "cancelled", "success"} or status is True)
                 )
                 if canceled:
-                    return {"canceled": True, "order_id": order_id, "client_id": client_id, "raw": resp}
+                    return {"canceled": True, "order_id": order_id, "client_id": client_target, "raw": resp}
                 errors.append(f"delete_order_by_client_order_id_v3 code={code} status={status} resp={resp}")
             except Exception as exc:
                 msg = f"delete_order_by_client_order_id_v3 error={exc}"
                 errors.append(msg)
                 logger.exception(
                     "failed to cancel order by client id",
-                    extra={"error": str(exc), "order_id": order_id, "client_id": client_id},
+                    extra={"error": str(exc), "order_id": order_id, "client_id": client_target},
                 )
-        try:
-            oid = int(order_id) if str(order_id).isdigit() else str(order_id)
-            resp = await asyncio.to_thread(self._client.delete_order_v3, id=oid)
-            code = resp.get("code") or resp.get("result", {}).get("code")
-            status = (
-                resp.get("result", {}).get("status")
-                or resp.get("data", {}).get("status")
-                or resp.get("status")
-                or "canceled"
-            )
-            success = (
-                code in (0, "0", None)
-                and (str(status).lower() in {"canceled", "cancelled", "success"} or status is True)
-            )
-            if success:
-                with self._lock:
-                    self._ws_orders.pop(str(order_id), None)
-                return {"canceled": True, "order_id": order_id, "raw": resp}
-            errors.append(f"delete_order_v3 code={code} status={status} resp={resp}")
-        except Exception as exc:
-            errors.append(f"delete_order_v3 error={exc}")
-            logger.warning("delete_order_v3 failed", extra={"error": str(exc), "order_id": order_id})
+        if str(order_id).isdigit():
+            try:
+                oid = int(order_id)
+                resp = await asyncio.to_thread(self._retry_delete_on_conflict, self._client.delete_order_v3, id=oid)
+                code, status = self._extract_code_status(resp)
+                success = (
+                    code in (0, "0", None)
+                    and (str(status).lower() in {"canceled", "cancelled", "success"} or status is True)
+                )
+                if success:
+                    with self._lock:
+                        self._ws_orders.pop(str(order_id), None)
+                    return {"canceled": True, "order_id": order_id, "raw": resp}
+                errors.append(f"delete_order_v3 code={code} status={status} resp={resp}")
+            except Exception as exc:
+                errors.append(f"delete_order_v3 error={exc}")
+                logger.warning("delete_order_v3 failed", extra={"error": str(exc), "order_id": order_id})
         return {"canceled": False, "order_id": order_id, "raw": {"errors": errors}}
 
     async def cancel_all(self, symbol: Optional[str] = None) -> Dict[str, Any]:

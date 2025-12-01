@@ -230,8 +230,16 @@ class OrderManager:
 
     def _normalize_order(self, order: Dict[str, Any]) -> Dict[str, Any]:
         """Return a consistent shape for UI/API consumption."""
+        oid = (
+            order.get("orderId")
+            or order.get("order_id")
+            or order.get("clientOrderId")
+            or order.get("_cache_id")
+            or order.get("id")
+            or ""
+        )
         return {
-            "id": str(order.get("orderId") or order.get("order_id") or order.get("clientOrderId") or ""),
+            "id": str(oid),
             "client_id": order.get("clientOrderId") or order.get("clientId"),
             "symbol": order.get("symbol") or order.get("market"),
             "side": order.get("side") or order.get("positionSide") or order.get("direction"),

@@ -38,6 +38,11 @@ class FakeClient:
     def open_orders_v3(self):
         return {"result": {"list": self.orders}}
 
+    def delete_order_by_client_order_id_v3(self, id: str = None, **kwargs):
+        order_identifier = kwargs.get("id") or id
+        self.deleted.append(order_identifier)
+        return {"result": {"status": "canceled", "orderId": order_identifier}}
+
     def delete_order_v3(self, orderId: str = None, **kwargs):
         order_identifier = kwargs.get("id") or orderId
         self.deleted.append(order_identifier)
@@ -54,7 +59,9 @@ def test_get_open_positions_returns_positions():
 def test_get_open_orders_returns_orders():
     gateway = ExchangeGateway(FakeSettings(), client=FakeClient())
     orders = asyncio.run(gateway.get_open_orders())
-    assert orders == [{"orderId": "abc-123", "symbol": "BTC-USDT", "status": "OPEN"}]
+    assert orders[0]["orderId"] == "abc-123"
+    assert orders[0]["symbol"] == "BTC-USDT"
+    assert orders[0]["status"] == "OPEN"
 
 
 def test_cancel_order_uses_client_and_returns_payload():

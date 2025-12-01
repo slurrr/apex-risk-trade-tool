@@ -51,8 +51,9 @@ async function cancelOrder(orderId) {
       const cancelCell = document.createElement("td");
       const cancelBtn = document.createElement("button");
       cancelBtn.textContent = "Cancel";
-      cancelBtn.disabled = !order.id;
-      cancelBtn.dataset.orderId = order.id;
+      const oid = order.client_id || order.id || order._cache_id;
+      cancelBtn.disabled = !oid;
+      cancelBtn.dataset.orderId = oid || "";
       cancelCell.appendChild(cancelBtn);
 
       row.innerHTML = `

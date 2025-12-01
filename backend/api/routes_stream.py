@@ -39,7 +39,13 @@ async def stream_updates(
                         normalized.append(norm)
                 msg = {"type": "positions", "payload": normalized}
             elif event.get("type") == "orders":
-                normalized = [manager._normalize_order(o) for o in event.get("payload") or []]
+                normalized = []
+                for o in event.get("payload") or []:
+                    norm = manager._normalize_order(o)
+                    if norm and not norm.get("id"):
+                        norm["id"] = o.get("_cache_id") or o.get("clientOrderId") or o.get("orderId") or o.get("order_id")
+                    if norm:
+                        normalized.append(norm)
                 msg = {"type": "orders", "payload": normalized}
             await websocket.send_json(msg)
     except WebSocketDisconnect:
