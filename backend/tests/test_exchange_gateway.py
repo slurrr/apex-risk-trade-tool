@@ -24,19 +24,24 @@ class FakeClient:
         self.deleted: list[str] = []
         self.positions = [{"symbol": "BTC-USDT", "size": "1", "side": "LONG"}]
         self.orders = [{"orderId": "abc-123", "symbol": "BTC-USDT", "status": "OPEN"}]
+        self.account = {"totalEquity": 1500, "takerFeeRate": "0.0006"}
 
     def configs_v3(self):
         return {"result": {"symbols": [{"symbol": "BTC-USDT"}]}}
 
+    def get_account_balance_v3(self):
+        return {"result": {"account": self.account}}
+
     def get_account_v3(self):
-        return {"result": {"account": {"totalEquity": 1500}, "positions": self.positions}}
+        return {"result": {"account": self.account, "positions": self.positions}}
 
     def open_orders_v3(self):
         return {"result": {"list": self.orders}}
 
-    def delete_order_v3(self, orderId: str):
-        self.deleted.append(orderId)
-        return {"result": {"status": "canceled", "orderId": orderId}}
+    def delete_order_v3(self, orderId: str = None, **kwargs):
+        order_identifier = kwargs.get("id") or orderId
+        self.deleted.append(order_identifier)
+        return {"result": {"status": "canceled", "orderId": order_identifier}}
 
 
 def test_get_open_positions_returns_positions():

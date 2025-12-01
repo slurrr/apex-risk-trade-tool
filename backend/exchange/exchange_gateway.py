@@ -18,8 +18,10 @@ class ExchangeGateway:
     def __init__(self, settings: Settings, client: Optional[Any] = None) -> None:
         self.settings = settings
         self._configs_cache: Dict[str, Any] = {}
+        self._account_cache: Dict[str, Any] = {}
         self._client: Any = client if client is not None else self._init_client(settings)
         self._public_client: Any = self._init_public_client(settings)
+        self._prime_client()
 
     def _init_client(self, settings: Settings) -> Any:
         from apexomni.constants import (
@@ -58,6 +60,25 @@ class ExchangeGateway:
         session.trust_env = False
         session.proxies = {"http": None, "https": None}
         return client
+
+    def _prime_client(self) -> None:
+        """
+        Best practice from ApeX docs: invoke configs_v3 and get_account_v3 immediately
+        after client initialization so the SDK has configuration and account context.
+        """
+        try:
+            cfg = self._client.configs_v3()
+            if isinstance(cfg, dict):
+                self._account_cache.setdefault("config", cfg)
+        except Exception as exc:
+            logger.warning("prime_client configs_v3 failed", extra={"error": str(exc)})
+        try:
+            acct = self._client.get_account_v3()
+            if isinstance(acct, dict):
+                payload = acct.get("result") or acct
+                self._account_cache.update(payload)
+        except Exception as exc:
+            logger.warning("prime_client get_account_v3 failed", extra={"error": str(exc)})
 
     def _init_public_client(self, settings: Settings) -> Any:
         from apexomni.http_public import HttpPublic
@@ -144,7 +165,8 @@ class ExchangeGateway:
     async def load_configs(self) -> None:
         """Fetch and cache symbol configs."""
         try:
-            result = await asyncio.to_thread(self._public_client.configs_v3)
+            # Use private client per ApeX requirement to ensure configV3 is populated for signatures.
+            result = await asyncio.to_thread(self._client.configs_v3)
             payload = result.get("result") or result.get("data") or {}
 
             symbols: list[Dict[str, Any]] = []
@@ -209,28 +231,90 @@ class ExchangeGateway:
         if not self._configs_cache:
             await self.load_configs()
 
-    async def get_account_equity(self) -> float:
+    async def _ensure_account_cached(self) -> None:
+        """Ensure account info is cached so we can derive fee rates/limits without extra calls."""
+        if self._account_cache:
+            return
         try:
             acct = await asyncio.to_thread(self._client.get_account_v3)
-            if not acct or not isinstance(acct, dict):
+            if isinstance(acct, dict):
+                payload = acct.get("result") or acct
+                self._account_cache.update(payload if isinstance(payload, dict) else {})
+        except Exception as exc:
+            logger.warning("failed to cache account info", extra={"error": str(exc)})
+
+    def _get_taker_fee_rate(self) -> Optional[str]:
+        """Use takerFeeRate from cached account info to cap fee charges on orders."""
+        account = None
+        if isinstance(self._account_cache, dict):
+            account = self._account_cache.get("account") or self._account_cache.get("contractAccount")
+        rate = None
+        if isinstance(account, dict):
+            for key in ("takerFeeRate", "takerFee", "takerRate"):
+                val = account.get(key)
+                if val is not None:
+                    rate = val
+                    break
+        if rate is None:
+            return None
+        try:
+            dec = Decimal(str(rate)).quantize(Decimal("0.000000"), rounding=ROUND_DOWN)
+            return format(dec, "f")
+        except Exception:
+            return str(rate)
+
+    async def get_account_equity(self) -> float:
+        try:
+            # Preferred per docs: account-balance endpoint for totalEquity/availableBalance.
+            account_balance_fn = getattr(self._client, "get_account_balance_v3", None)
+            if callable(account_balance_fn):
+                try:
+                    acct = await asyncio.to_thread(account_balance_fn)
+                    if acct and isinstance(acct, dict):
+                        payload = acct.get("result") or acct.get("data") or acct
+                        if isinstance(payload, dict):
+                            self._account_cache.update(payload)
+                        account = payload.get("account") if isinstance(payload, dict) else None
+                        account_equity = None
+                        if isinstance(account, dict):
+                            account_equity = account.get("totalEquity") or account.get("total_equity")
+                        if account_equity is not None:
+                            return float(account_equity)
+                        wallets = (account or {}).get("contractWallets") or payload.get("contractWallets") or []
+                        if isinstance(wallets, list) and wallets:
+                            equity_usdt = 0.0
+                            for wallet in wallets:
+                                bal = float(wallet.get("balance", 0) or 0)
+                                if bal <= 0:
+                                    continue  # ignore negative/zero balances when estimating equity
+                                token = wallet.get("token") or "USDT"
+                                price = await self._get_usdt_price(token)
+                                equity_usdt += bal * price
+                            return equity_usdt
+                except Exception as exc:
+                    logger.warning("get_account_balance_v3 failed, falling back", extra={"error": str(exc)})
+            # Fallback: legacy account endpoint
+            legacy = await asyncio.to_thread(self._client.get_account_v3)
+            if not legacy or not isinstance(legacy, dict):
                 raise ValueError("Empty account response")
-            payload = acct.get("result") or acct
-            account_equity = payload.get("account", {}).get("totalEquity")
-            if account_equity is not None:
-                return float(account_equity)
-            # Fallback: sum contract wallet balances when totalEquity is missing.
-            wallets = payload.get("contractWallets") or []
+            legacy_payload = legacy.get("result") or legacy
+            if isinstance(legacy_payload, dict):
+                self._account_cache.update(legacy_payload)
+            legacy_account = legacy_payload.get("account", {}) if isinstance(legacy_payload, dict) else {}
+            if legacy_account.get("totalEquity") is not None:
+                return float(legacy_account["totalEquity"])
+            wallets = legacy_payload.get("contractWallets") or []
             if isinstance(wallets, list) and wallets:
                 equity_usdt = 0.0
                 for wallet in wallets:
                     bal = float(wallet.get("balance", 0) or 0)
                     if bal <= 0:
-                        continue  # ignore negative/zero balances when estimating equity
+                        continue
                     token = wallet.get("token") or "USDT"
                     price = await self._get_usdt_price(token)
                     equity_usdt += bal * price
                 return equity_usdt
-            raise ValueError("No equity field in account response")
+            raise ValueError("No equity field in account responses")
         except Exception as exc:
             logger.exception("failed to fetch account equity", extra={"error": str(exc)})
             raise
@@ -363,6 +447,11 @@ class ExchangeGateway:
         step = float(info.get("stepSize") or 0)
         payload["price"] = self._format_with_step(entry_price, tick)
         payload["size"] = self._format_with_step(size, step)
+
+        await self._ensure_account_cached()
+        taker_fee_rate = self._get_taker_fee_rate()
+        if taker_fee_rate is not None:
+            payload["takerFeeRate"] = taker_fee_rate
 
         if tp:
             payload["tpPrice"] = self._format_with_step(tp, tick)
