@@ -1,8 +1,9 @@
 import asyncio
 import time
 import uuid
+import threading
 from decimal import Decimal, ROUND_DOWN
-from typing import Any, Dict, Optional, Tuple, List
+from typing import Any, Dict, Optional, Tuple, List, Any as AnyType
 
 import requests
 
@@ -19,6 +20,15 @@ class ExchangeGateway:
         self.settings = settings
         self._configs_cache: Dict[str, Any] = {}
         self._account_cache: Dict[str, Any] = {}
+        self._ws_prices: Dict[str, float] = {}
+        self._ws_orders: Dict[str, Dict[str, Any]] = {}
+        self._ws_positions: Dict[str, Dict[str, Any]] = {}
+        self._ws_running: bool = False
+        self._ws_public: Optional[Any] = None
+        self._ws_private: Optional[Any] = None
+        self._loop: Optional[asyncio.AbstractEventLoop] = None
+        self._subscribers: set[asyncio.Queue] = set()
+        self._lock = threading.Lock()
         self._client: Any = client if client is not None else self._init_client(settings)
         self._public_client: Any = self._init_public_client(settings)
         self._prime_client()
@@ -89,6 +99,64 @@ class ExchangeGateway:
         session.trust_env = False
         session.proxies = {"http": None, "https": None}
         return client
+
+    # --- WebSocket helpers ---
+    def attach_loop(self, loop: asyncio.AbstractEventLoop) -> None:
+        self._loop = loop
+
+    def _ws_base_endpoint(self) -> str:
+        from apexomni.constants import APEX_OMNI_WS_MAIN, APEX_OMNI_WS_TEST
+        network = self.settings.apex_network.lower()
+        if network in {"base", "base-sepolia", "testnet-base", "testnet"}:
+            return APEX_OMNI_WS_TEST
+        return APEX_OMNI_WS_MAIN
+
+    async def start_streams(self) -> None:
+        if not self.settings.apex_enable_ws or self._ws_running:
+            return
+        self._ws_running = True
+        await asyncio.to_thread(self._start_public_stream)
+        await asyncio.to_thread(self._start_private_stream)
+
+    def _start_public_stream(self) -> None:
+        try:
+            from apexomni.websocket_api import WebSocket
+            self._ws_public = WebSocket(endpoint=self._ws_base_endpoint())
+            self._ws_public.all_ticker_stream(self._handle_ticker)
+            logger.info("public WS stream started")
+        except Exception as exc:
+            logger.warning("public WS stream failed", extra={"error": str(exc)})
+
+    def _start_private_stream(self) -> None:
+        try:
+            from apexomni.websocket_api import WebSocket
+            creds = {
+                "key": self.settings.apex_api_key,
+                "secret": self.settings.apex_api_secret,
+                "passphrase": self.settings.apex_passphrase,
+            }
+            self._ws_private = WebSocket(endpoint=self._ws_base_endpoint(), api_key_credentials=creds)
+            self._ws_private.account_info_stream_v3(self._handle_account_stream)
+            logger.info("private WS stream started")
+        except Exception as exc:
+            logger.warning("private WS stream failed", extra={"error": str(exc)})
+
+    def register_subscriber(self) -> asyncio.Queue:
+        q: asyncio.Queue = asyncio.Queue()
+        self._subscribers.add(q)
+        return q
+
+    def unregister_subscriber(self, queue: asyncio.Queue) -> None:
+        self._subscribers.discard(queue)
+
+    def _publish_event(self, event: Dict[str, Any]) -> None:
+        if not self._subscribers or not self._loop:
+            return
+        for q in list(self._subscribers):
+            try:
+                self._loop.call_soon_threadsafe(q.put_nowait, event)
+            except Exception:
+                continue
 
     def _format_with_step(self, value: float, step: Optional[float]) -> str:
         """Format numeric to a string respecting step precision."""
@@ -162,6 +230,187 @@ class ExchangeGateway:
             return 2000.0
         raise ValueError(f"No price for {symbol}")
 
+    # --- WebSocket callbacks and helpers ---
+    def _handle_ticker(self, message: Dict[str, Any]) -> None:
+        data = message.get("data") if isinstance(message, dict) else None
+        # Flatten possible update wrapper
+        entries: list[AnyType] = []
+        if isinstance(data, dict) and "update" in data:
+            entries.extend(data.get("update") or [])
+        elif isinstance(data, list):
+            entries.extend(data)
+        elif isinstance(data, dict):
+            entries.append(data)
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            symbol = (
+                entry.get("symbol")
+                or entry.get("s")
+                or self._parse_symbol_from_topic(message.get("topic"))
+            )
+            price = (
+                entry.get("markPrice")
+                or entry.get("lastPrice")
+                or entry.get("price")
+                or entry.get("p")
+                or entry.get("xp")
+            )
+            if not symbol or price is None:
+                continue
+            try:
+                price_f = float(price)
+            except Exception:
+                continue
+            publish_positions = False
+            with self._lock:
+                norm_symbol = self._normalize_symbol_value(symbol)
+                self._ws_prices[norm_symbol] = price_f
+                publish_positions = self._update_positions_pnl(norm_symbol, price_f)
+            self._publish_event({"type": "ticker", "symbol": self._normalize_symbol_value(symbol), "price": price_f})
+            if publish_positions:
+                self._publish_event({"type": "positions", "payload": list(self._ws_positions.values())})
+
+    def _handle_account_stream(self, message: Dict[str, Any]) -> None:
+        payload = None
+        if isinstance(message, dict):
+            payload = message.get("contents") or message.get("data") or message
+        if not isinstance(payload, dict):
+            return
+        accounts = payload.get("accounts") or payload.get("account") or payload.get("contractAccounts") or []
+        positions, has_positions_key = self._extract_positions(payload)
+        orders_raw = payload.get("orders") or payload.get("orderList") or []
+        has_orders_key = any(k in payload for k in ("orders", "orderList"))
+
+        publish_orders = False
+        publish_positions = False
+
+        with self._lock:
+            if accounts:
+                acct = accounts[0] if isinstance(accounts, list) and accounts else accounts
+                if isinstance(acct, dict):
+                    self._account_cache.update({"account": acct})
+                    self._publish_event({"type": "account", "payload": acct})
+            if has_positions_key and positions:
+                normalized_pos = {self._normalize_symbol(p): p for p in positions if isinstance(p, dict)}
+                new_positions = {k: v for k, v in normalized_pos.items() if k}
+                if new_positions:
+                    for sym, pos in new_positions.items():
+                        prior = self._ws_positions.get(sym, {})
+                        if pos.get("entryPrice") is None and prior.get("entryPrice") is not None:
+                            pos["entryPrice"] = prior.get("entryPrice")
+                        if pos.get("avgPrice") is None and prior.get("avgPrice") is not None:
+                            pos["avgPrice"] = prior.get("avgPrice")
+                        if pos.get("size") in (None, 0, "0", "0.0") and prior.get("size") not in (None, 0, "0", "0.0"):
+                            pos["size"] = prior.get("size")
+                        if not pos.get("side") and prior.get("side"):
+                            pos["side"] = prior.get("side")
+                    self._ws_positions = new_positions
+                    publish_positions = True
+            if has_orders_key and orders_raw:
+                self._ws_orders = self._filter_and_map_orders(orders_raw)
+                publish_orders = True
+
+        if publish_positions:
+            self._publish_event({"type": "positions", "payload": list(self._ws_positions.values())})
+        if publish_orders:
+            self._publish_event({"type": "orders", "payload": list(self._ws_orders.values())})
+
+    def _parse_symbol_from_topic(self, topic: Optional[str]) -> Optional[str]:
+        if not topic or not isinstance(topic, str):
+            return None
+        parts = topic.split(".")
+        if parts:
+            return parts[-1]
+        return None
+
+    def _normalize_symbol(self, payload: Dict[str, Any]) -> str:
+        raw = payload.get("symbol") or payload.get("market") or payload.get("pair") or ""
+        return self._normalize_symbol_value(raw)
+
+    def _normalize_symbol_value(self, symbol: str) -> str:
+        if not symbol:
+            return ""
+        sym = str(symbol).upper()
+        if "-" in sym:
+            return sym
+        for quote in ("USDT", "USDC", "USDC.E", "USD"):
+            if sym.endswith(quote):
+                return f"{sym[:-len(quote)]}-{quote}"
+        return sym
+
+    def _update_positions_pnl(self, symbol: str, mark_price: float) -> bool:
+        changed = False
+        for pos in self._ws_positions.values():
+            sym = self._normalize_symbol(pos)
+            if sym != symbol:
+                continue
+            entry = (
+                pos.get("entryPrice")
+                or pos.get("avgPrice")
+                or pos.get("avgEntryPrice")
+                or pos.get("entry_price")
+            )
+            size = pos.get("size") or pos.get("positionSize")
+            side = (pos.get("side") or pos.get("positionSide") or pos.get("direction") or "").upper()
+            try:
+                entry_f = float(entry)
+                size_f = float(size)
+            except Exception:
+                continue
+            pnl = (mark_price - entry_f) * size_f
+            if side in {"SHORT", "SELL"}:
+                pnl = -pnl
+            pos["pnl"] = pnl
+            changed = True
+        return changed
+
+    def _filter_and_map_orders(self, orders: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+        mapped: Dict[str, Dict[str, Any]] = {}
+        for o in orders:
+            if not isinstance(o, dict):
+                continue
+            status = str(o.get("status") or o.get("orderStatus") or "").lower()
+            if status in {"canceled", "cancelled", "filled"}:
+                continue
+            key = str(o.get("orderId") or o.get("order_id") or o.get("clientOrderId") or uuid.uuid4().hex)
+            mapped[key] = o
+        return mapped
+
+    def _extract_positions(self, payload: Dict[str, Any]) -> tuple[list[Dict[str, Any]], bool]:
+        if not isinstance(payload, dict):
+            return [], False
+        positions_lists: list[list] = []
+        has_key = False
+        for key in ("positions", "positionVoList", "positionVos", "positionVOs"):
+            if key in payload:
+                has_key = True
+                val = payload.get(key) or []
+                if isinstance(val, list):
+                    positions_lists.append(val)
+        for key, val in payload.items():
+            if "position" in key.lower() and isinstance(val, list):
+                has_key = True
+                positions_lists.append(val)
+        combined: list[Dict[str, Any]] = []
+        for lst in positions_lists:
+            for item in lst:
+                if isinstance(item, dict) and self._is_active_position(item):
+                    combined.append(item)
+        return combined, has_key
+
+    def _is_active_position(self, pos: Dict[str, Any]) -> bool:
+        if not isinstance(pos, dict):
+            return False
+        if str(pos.get("type") or "").upper() in {"CLOSE_POSITION", "LIQUIDATION"}:
+            return False
+        size_raw = pos.get("size") or pos.get("positionSize")
+        try:
+            size_f = float(size_raw)
+        except Exception:
+            return False
+        return size_f > 0
+
     async def load_configs(self) -> None:
         """Fetch and cache symbol configs."""
         try:
@@ -209,7 +458,12 @@ class ExchangeGateway:
         return self._configs_cache.get(symbol)
 
     async def get_mark_price(self, symbol: str) -> float:
-        """Return latest mark/last price for symbol via public ticker."""
+        """Return latest mark/last price for symbol, preferring WS cache."""
+        norm_symbol = self._normalize_symbol_value(symbol)
+        with self._lock:
+            cached = self._ws_prices.get(norm_symbol)
+        if cached is not None:
+            return cached
         ticker = await asyncio.to_thread(self._public_client.ticker_v3, symbol=symbol)
         result = ticker.get("result") or ticker.get("data") or ticker
         entries = result if isinstance(result, list) else [result]
@@ -320,20 +574,40 @@ class ExchangeGateway:
             raise
 
     async def get_open_positions(self) -> list[Dict[str, Any]]:
+        with self._lock:
+            if self._ws_positions:
+                return list(self._ws_positions.values())
         try:
             resp = await asyncio.to_thread(self._client.get_account_v3)
             payload = resp.get("result") or resp
-            positions = payload.get("positions", []) or []
+            positions, has_key = self._extract_positions(payload)
+            if positions:
+                with self._lock:
+                    self._ws_positions = {self._normalize_symbol(p): p for p in positions if isinstance(p, dict)}
+                return positions
+            with self._lock:
+                if self._ws_positions:
+                    return list(self._ws_positions.values())
             return positions
         except Exception as exc:
             logger.exception("failed to fetch positions", extra={"error": str(exc)})
             return []
 
     async def get_open_orders(self) -> list[Dict[str, Any]]:
+        with self._lock:
+            if self._ws_orders:
+                return list(self._ws_orders.values())
         try:
             resp = await asyncio.to_thread(self._client.open_orders_v3)
             payload = resp.get("result") or resp
             orders = payload.get("list") or payload.get("orders") or payload.get("data") or []
+            if orders:
+                with self._lock:
+                    self._ws_orders = self._filter_and_map_orders(orders)
+                return orders
+            with self._lock:
+                if self._ws_orders:
+                    return list(self._ws_orders.values())
             return orders
         except Exception as exc:
             logger.exception("failed to fetch open orders", extra={"error": str(exc)})
@@ -402,6 +676,8 @@ class ExchangeGateway:
                 and (str(status).lower() in {"canceled", "cancelled", "success"} or status is True)
             )
             if success:
+                with self._lock:
+                    self._ws_orders.pop(str(order_id), None)
                 return {"canceled": True, "order_id": order_id, "raw": resp}
             errors.append(f"delete_order_v3 code={code} status={status} resp={resp}")
         except Exception as exc:

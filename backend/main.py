@@ -1,9 +1,11 @@
+import asyncio
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from backend.api.routes_orders import router as orders_router
 from backend.api.routes_positions import router as positions_router
 from backend.api.routes_trade import configure_order_manager, router as trade_router
+from backend.api.routes_stream import router as stream_router
 from backend.core.config import get_settings
 from backend.core.logging import init_logging
 from backend.exchange.exchange_gateway import ExchangeGateway
@@ -38,8 +40,12 @@ def create_app() -> FastAPI:
     @app.on_event("startup")
     async def startup_event() -> None:
         try:
+            loop = asyncio.get_running_loop()
+            gateway.attach_loop(loop)
             await gateway.load_configs()
             await order_manager.refresh_state()
+            if settings.apex_enable_ws:
+                await gateway.start_streams()
         except Exception:
             # Continue startup even if refresh fails; errors are logged
             pass
@@ -51,6 +57,7 @@ def create_app() -> FastAPI:
     app.include_router(trade_router)
     app.include_router(orders_router)
     app.include_router(positions_router)
+    app.include_router(stream_router)
     return app
 
 

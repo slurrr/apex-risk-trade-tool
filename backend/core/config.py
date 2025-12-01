@@ -30,6 +30,7 @@ class Settings(BaseSettings):
     apex_zk_l2key: str = Field(..., env="APEX_ZK_L2KEY")
     apex_network: str = Field("testnet", env="APEX_NETWORK")
     apex_http_endpoint: Optional[str] = Field(None, env="APEX_HTTP_ENDPOINT")
+    apex_enable_ws: bool = Field(False, env="APEX_ENABLE_WS")
 
     class Config:
         env_file = ENV_PATH

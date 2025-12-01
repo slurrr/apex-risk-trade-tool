@@ -1,6 +1,13 @@
 (function () {
   const API_BASE = window.API_BASE || "http://localhost:8000";
 
+  function formatNumber(value) {
+    if (value === null || value === undefined || value === "") return "";
+    const num = Number(value);
+    if (Number.isNaN(num)) return value;
+    return num.toFixed(2);
+  }
+
   async function fetchOrders() {
     const resp = await fetch(`${API_BASE}/api/orders`);
     const data = await resp.json();
@@ -52,7 +59,7 @@ async function cancelOrder(orderId) {
         <td>${order.id || ""}</td>
         <td>${order.symbol || ""}</td>
         <td>${order.side || ""}</td>
-        <td>${order.size || ""}</td>
+        <td>${order.size ?? ""}</td>
         <td>${order.status || ""}</td>
       `;
       row.appendChild(cancelCell);
@@ -66,6 +73,32 @@ async function cancelOrder(orderId) {
     try {
       const orders = await fetchOrders();
       renderOrders(orders);
+    } catch (err) {
+      errorBox.textContent = err.message;
+    }
+  }
+
+  function startStream() {
+    const errorBox = document.getElementById("orders-error");
+    try {
+      const wsUrl = (API_BASE.replace(/^http/, "ws")) + "/ws/stream";
+      const socket = new WebSocket(wsUrl);
+      socket.onmessage = (event) => {
+        try {
+          const msg = JSON.parse(event.data);
+          if (msg.type === "orders" && Array.isArray(msg.payload)) {
+            renderOrders(msg.payload);
+          }
+        } catch (err) {
+          // ignore malformed frames
+        }
+      };
+      socket.onerror = () => {
+        errorBox.textContent = "Stream disconnected; falling back to manual refresh.";
+      };
+      socket.onclose = () => {
+        errorBox.textContent = "Stream closed; refresh to reconnect.";
+      };
     } catch (err) {
       errorBox.textContent = err.message;
     }
@@ -93,5 +126,6 @@ async function cancelOrder(orderId) {
     });
 
     loadOrders();
+    startStream();
   });
 })();
