@@ -87,11 +87,11 @@ description: "Task list for Constitution-Aligned Baseline Specification"
 
 ## Phase 6: Polish & Cross-Cutting Concerns
 
-- [ ] T033 Add quickstart manual testnet checklist documenting env, preview, execute, cancel in `specs/001-constitution-aligned-spec/quickstart.md`
-- [ ] T034 Harden error handling and structured error schema across routes in `backend/api/routes_*`
-- [ ] T035 Verify testnet default and block execution when configs are missing/stale in `backend/core/config.py` and `backend/exchange/exchange_gateway.py`
-- [ ] T036 Add observability sweep (log fields consistency) in `backend/core/logging.py` and `backend/trading/order_manager.py`
-- [ ] T037 Finalize documentation links and ensure no secrets in UI/assets in `ui/` and `README.md`
+- [x] T033 Add quickstart manual testnet checklist documenting env, preview, execute, cancel in `specs/001-constitution-aligned-spec/quickstart.md`
+- [x] T034 Harden error handling and structured error schema across routes in `backend/api/routes_*`
+- [x] T035 Verify testnet default and block execution when configs are missing/stale in `backend/core/config.py` and `backend/exchange/exchange_gateway.py`
+- [x] T036 Add observability sweep (log fields consistency) in `backend/core/logging.py` and `backend/trading/order_manager.py`
+- [x] T037 Finalize documentation links and ensure no secrets in UI/assets in `ui/` and `README.md`
 
 ## Dependencies & Execution Order
 

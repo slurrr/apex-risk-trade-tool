@@ -18,11 +18,15 @@ class ExchangeGateway:
 
     def __init__(self, settings: Settings, client: Optional[Any] = None) -> None:
         self.settings = settings
+        self._network = (getattr(settings, "apex_network", "testnet") or "testnet").lower()
+        self._testnet = self._network in {"base", "base-sepolia", "testnet-base", "testnet"}
+        self.apex_enable_ws = getattr(settings, "apex_enable_ws", False)
         self._configs_cache: Dict[str, Any] = {}
         self._account_cache: Dict[str, Any] = {}
         self._ws_prices: Dict[str, float] = {}
         self._ws_orders: Dict[str, Dict[str, Any]] = {}
         self._ws_positions: Dict[str, Dict[str, Any]] = {}
+        self._configs_loaded_at: Optional[float] = None
         self._ws_running: bool = False
         self._ws_public: Optional[Any] = None
         self._ws_private: Optional[Any] = None
@@ -32,6 +36,20 @@ class ExchangeGateway:
         self._client: Any = client if client is not None else self._init_client(settings)
         self._public_client: Any = self._init_public_client(settings)
         self._prime_client()
+        logger.info(
+            "gateway_initialized",
+            extra={
+                "event": "gateway_initialized",
+                "network": self._network,
+                "testnet": self._testnet,
+                "ws_enabled": self.apex_enable_ws,
+            },
+        )
+        if not self._testnet:
+            logger.warning(
+                "non_testnet_network_detected",
+                extra={"event": "network_warning", "network": self._network},
+            )
 
     def _init_client(self, settings: Settings) -> Any:
         from apexomni.constants import (
@@ -43,7 +61,9 @@ class ExchangeGateway:
         )
         from apexomni.http_private_sign import HttpPrivateSign
 
-        network = settings.apex_network.lower()
+        network = getattr(settings, "apex_network", "testnet").lower()
+        self._network = network
+        self._testnet = network in {"base", "base-sepolia", "testnet-base", "testnet"}
         if network in {"base", "base-sepolia", "testnet-base"}:
             endpoint = settings.apex_http_endpoint or APEX_OMNI_HTTP_TEST
             network_id = NETWORKID_OMNI_TEST_BASE
@@ -93,7 +113,7 @@ class ExchangeGateway:
     def _init_public_client(self, settings: Settings) -> Any:
         from apexomni.http_public import HttpPublic
 
-        endpoint = settings.apex_http_endpoint or "https://omni.apex.exchange"
+        endpoint = getattr(settings, "apex_http_endpoint", None) or "https://omni.apex.exchange"
         client = HttpPublic(endpoint)
         session = client.client
         session.trust_env = False
@@ -112,7 +132,7 @@ class ExchangeGateway:
         return APEX_OMNI_WS_MAIN
 
     async def start_streams(self) -> None:
-        if not self.settings.apex_enable_ws or self._ws_running:
+        if not self.apex_enable_ws or self._ws_running:
             return
         self._ws_running = True
         await asyncio.to_thread(self._start_public_stream)
@@ -284,13 +304,23 @@ class ExchangeGateway:
 
         publish_orders = False
         publish_positions = False
+        total_equity_stream = payload.get("totalEquityValue") or payload.get("totalEquity") or None
+        available_balance_stream = payload.get("availableBalance") or payload.get("available_margin")
 
         with self._lock:
             if accounts:
                 acct = accounts[0] if isinstance(accounts, list) and accounts else accounts
                 if isinstance(acct, dict):
                     self._account_cache.update({"account": acct})
+                    if total_equity_stream is None:
+                        total_equity_stream = acct.get("totalEquityValue") or acct.get("totalEquity")
+                    if available_balance_stream is None:
+                        available_balance_stream = acct.get("availableBalance")
                     self._publish_event({"type": "account", "payload": acct})
+            if total_equity_stream is not None:
+                self._account_cache["totalEquityValue"] = total_equity_stream
+            if available_balance_stream is not None:
+                self._account_cache["availableBalance"] = available_balance_stream
             if has_positions_key and positions:
                 normalized_pos = {self._normalize_symbol(p): p for p in positions if isinstance(p, dict)}
                 new_positions = {k: v for k, v in normalized_pos.items() if k}
@@ -308,7 +338,21 @@ class ExchangeGateway:
                     self._ws_positions = new_positions
                     publish_positions = True
             if has_orders_key and orders_raw:
-                self._ws_orders = self._filter_and_map_orders(orders_raw)
+                incoming = self._filter_and_map_orders(orders_raw)
+                # Merge incoming orders with existing cache; drop any cached entries that share the same clientOrderId.
+                if incoming:
+                    client_ids = {
+                        o.get("clientOrderId") or o.get("clientId") or o.get("client_id")
+                        for o in incoming.values()
+                        if isinstance(o, dict)
+                    }
+                    if client_ids:
+                        self._ws_orders = {
+                            k: v
+                            for k, v in self._ws_orders.items()
+                            if (v.get("clientOrderId") or v.get("clientId") or v.get("client_id")) not in client_ids
+                        }
+                    self._ws_orders.update(incoming)
                 publish_orders = True
 
         if publish_positions:
@@ -371,7 +415,7 @@ class ExchangeGateway:
             if not isinstance(o, dict):
                 continue
             status = str(o.get("status") or o.get("orderStatus") or "").lower()
-            if status in {"canceled", "cancelled", "filled"}:
+            if status in {"canceled", "cancelled", "filled"} or "cancel" in status:
                 continue
             key = str(o.get("orderId") or o.get("order_id") or o.get("clientOrderId") or o.get("_cache_id") or uuid.uuid4().hex)
             o["_cache_id"] = key
@@ -475,7 +519,16 @@ class ExchangeGateway:
                 setattr(self._client, "configV3", payload)
             except Exception:
                 pass
-            logger.info("configs cached", extra={"count": len(self._configs_cache)})
+            self._configs_loaded_at = time.time()
+            logger.info(
+                "configs_cached",
+                extra={
+                    "event": "configs_cached",
+                    "count": len(self._configs_cache),
+                    "network": self._network,
+                    "testnet": self._testnet,
+                },
+            )
         except Exception as exc:
             logger.exception("failed to load configs", extra={"error": str(exc)})
             raise
@@ -508,8 +561,15 @@ class ExchangeGateway:
 
     async def ensure_configs_loaded(self) -> None:
         """Load configs if not already cached."""
-        if not self._configs_cache:
+        needs_refresh = not self._configs_cache
+        if self._configs_loaded_at:
+            age = time.time() - self._configs_loaded_at
+            if age > 300:
+                needs_refresh = True
+        if needs_refresh:
             await self.load_configs()
+        if not self._configs_cache:
+            raise RuntimeError("Exchange symbol configs unavailable; aborting request")
 
     async def _ensure_account_cached(self) -> None:
         """Ensure account info is cached so we can derive fee rates/limits without extra calls."""
@@ -552,13 +612,30 @@ class ExchangeGateway:
                     acct = await asyncio.to_thread(account_balance_fn)
                     if acct and isinstance(acct, dict):
                         payload = acct.get("result") or acct.get("data") or acct
-                        if isinstance(payload, dict):
-                            self._account_cache.update(payload)
                         account = payload.get("account") if isinstance(payload, dict) else None
                         account_equity = None
+                        available_balance = None
+                        if isinstance(payload, dict):
+                            account_equity = payload.get("totalEquityValue")
+                            available_balance = payload.get("availableBalance")
                         if isinstance(account, dict):
+                            account_equity = account_equity or account.get("totalEquityValue")
+                            available_balance = available_balance or account.get("availableBalance")
+                            # preserve account fields for downstream logging
+                            self._account_cache.update({"account": account})
+                        if account_equity is None and isinstance(payload, dict):
+                            account_equity = payload.get("totalEquity") or payload.get("total_equity")
+                        if account_equity is None and isinstance(account, dict):
                             account_equity = account.get("totalEquity") or account.get("total_equity")
+                        if available_balance is not None and account_equity is None:
+                            account_equity = available_balance
                         if account_equity is not None:
+                            self._account_cache.update(
+                                {
+                                    "totalEquityValue": account_equity,
+                                    "availableBalance": available_balance,
+                                }
+                            )
                             return float(account_equity)
                         wallets = (account or {}).get("contractWallets") or payload.get("contractWallets") or []
                         if isinstance(wallets, list) and wallets:
@@ -570,7 +647,9 @@ class ExchangeGateway:
                                 token = wallet.get("token") or "USDT"
                                 price = await self._get_usdt_price(token)
                                 equity_usdt += bal * price
+                            self._account_cache.update({"totalEquityValue": equity_usdt, "availableBalance": available_balance})
                             return equity_usdt
+                        raise ValueError("totalEquityValue not present in account balance response")
                 except Exception as exc:
                     logger.warning("get_account_balance_v3 failed, falling back", extra={"error": str(exc)})
             # Fallback: legacy account endpoint
@@ -676,6 +755,12 @@ class ExchangeGateway:
                     and (str(status).lower() in {"canceled", "cancelled", "success"} or status is True)
                 )
                 if canceled:
+                    with self._lock:
+                        self._ws_orders = {
+                            k: v
+                            for k, v in self._ws_orders.items()
+                            if (v.get("clientOrderId") or v.get("clientId")) != normalized_client_id
+                        }
                     return {"canceled": True, "order_id": order_id, "client_id": client_target, "raw": resp}
                 errors.append(f"delete_order_by_client_order_id_v3 code={code} status={status} resp={resp}")
             except Exception as exc:

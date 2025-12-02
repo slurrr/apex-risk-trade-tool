@@ -24,7 +24,7 @@ class FakeClient:
         self.deleted: list[str] = []
         self.positions = [{"symbol": "BTC-USDT", "size": "1", "side": "LONG"}]
         self.orders = [{"orderId": "abc-123", "symbol": "BTC-USDT", "status": "OPEN"}]
-        self.account = {"totalEquity": 1500, "takerFeeRate": "0.0006"}
+        self.account = {"totalEquityValue": 1500, "totalEquity": 1500, "takerFeeRate": "0.0006"}
 
     def configs_v3(self):
         return {"result": {"symbols": [{"symbol": "BTC-USDT"}]}}

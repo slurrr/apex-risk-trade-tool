@@ -3,7 +3,7 @@ from pathlib import Path
 from typing import Optional
 
 from dotenv import load_dotenv
-from pydantic import Field
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings
 
 
@@ -35,6 +35,15 @@ class Settings(BaseSettings):
     class Config:
         env_file = ENV_PATH
         case_sensitive = False
+
+    @field_validator("apex_network")
+    @classmethod
+    def validate_network(cls, value: str) -> str:
+        normalized = (value or "testnet").strip().lower()
+        allowed = {"testnet", "base", "base-sepolia", "testnet-base", "mainnet"}
+        if normalized not in allowed:
+            raise ValueError(f"Unsupported APEX_NETWORK '{value}'. Use one of {sorted(allowed)}")
+        return normalized
 
 
 @lru_cache()

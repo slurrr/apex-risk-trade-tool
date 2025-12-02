@@ -42,7 +42,7 @@ class OrderManager:
         equity = await self.gateway.get_account_equity()
         symbol_info = self.gateway.get_symbol_info(symbol)
         if not symbol_info:
-            raise risk_engine.PositionSizingError(f"Unknown symbol: {symbol}")
+            raise risk_engine.PositionSizingError(f"Symbol config unavailable for {symbol}; refresh configs and retry.")
 
         result = risk_engine.calculate_position_size(
             equity=equity,
@@ -54,6 +54,7 @@ class OrderManager:
         logger.info(
             "preview_trade",
             extra={
+                "event": "preview_trade",
                 "symbol": symbol,
                 "entry": entry_price,
                 "stop": stop_price,
@@ -81,7 +82,7 @@ class OrderManager:
         equity = await self.gateway.get_account_equity()
         symbol_info = self.gateway.get_symbol_info(symbol)
         if not symbol_info:
-            raise risk_engine.PositionSizingError(f"Unknown symbol: {symbol}")
+            raise risk_engine.PositionSizingError(f"Symbol config unavailable for {symbol}; refresh configs and retry.")
 
         # Risk caps
         if self.per_trade_risk_cap_pct is not None and risk_pct > self.per_trade_risk_cap_pct:
@@ -125,6 +126,7 @@ class OrderManager:
         logger.info(
             "execute_trade",
             extra={
+                "event": "execute_trade",
                 "symbol": symbol,
                 "entry": entry_price,
                 "stop": stop_price,
@@ -164,7 +166,11 @@ class OrderManager:
         }
         logger.info(
             "state_refreshed",
-            extra={"positions_count": len(self.positions), "open_orders_count": len(self.open_orders)},
+            extra={
+                "event": "state_refreshed",
+                "positions_count": len(self.positions),
+                "open_orders_count": len(self.open_orders),
+            },
         )
 
     async def list_orders(self) -> list[Dict[str, Any]]:
@@ -225,7 +231,15 @@ class OrderManager:
         result["canceled"] = canceled
         if canceled:
             self.open_risk_estimates.pop(order_id, None)
-        logger.info("cancel_order", extra={"order_id": order_id, "canceled": canceled, "still_open": still_open})
+        logger.info(
+            "cancel_order",
+            extra={
+                "event": "cancel_order",
+                "order_id": order_id,
+                "canceled": canceled,
+                "still_open": still_open,
+            },
+        )
         return result
 
     def _normalize_order(self, order: Dict[str, Any]) -> Dict[str, Any]:
@@ -238,28 +252,28 @@ class OrderManager:
             or order.get("id")
             or ""
         )
-        return {
+        normalized = {
             "id": str(oid),
-            "client_id": order.get("clientOrderId") or order.get("clientId"),
             "symbol": order.get("symbol") or order.get("market"),
             "side": order.get("side") or order.get("positionSide") or order.get("direction"),
             "size": order.get("size") or order.get("qty") or order.get("quantity"),
             "status": order.get("status") or order.get("state") or order.get("orderStatus"),
             "price": order.get("price") or order.get("avgPrice") or order.get("orderPrice"),
         }
+        client_id = order.get("clientOrderId") or order.get("clientId")
+        if client_id is not None:
+            normalized["client_id"] = client_id
+        return normalized
 
     def _normalize_position(self, position: Dict[str, Any]) -> Dict[str, Any]:
         """Return a consistent shape for UI/API consumption."""
-        size = position.get("size") or position.get("positionSize")
+        raw_size = position.get("size") or position.get("positionSize")
+        size_for_check = None
         try:
-            size_val = float(size)
+            size_for_check = float(raw_size)
         except Exception:
-            size_val = size
-        try:
-            size_float = float(size_val)
-        except Exception:
-            size_float = None
-        if size_float is not None and size_float <= 0:
+            size_for_check = None
+        if size_for_check is not None and size_for_check <= 0:
             return None
 
         pnl = (
@@ -273,7 +287,7 @@ class OrderManager:
         return {
             "symbol": position.get("symbol") or position.get("market"),
             "side": position.get("side") or position.get("positionSide") or position.get("direction"),
-            "size": size_val,
+            "size": raw_size,
             "entry_price": position.get("entryPrice") or position.get("avgPrice") or position.get("entry_price"),
             "pnl": pnl,
         }

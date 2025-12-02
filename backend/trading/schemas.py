@@ -39,4 +39,6 @@ class TradeExecuteResponse(TradePreviewResponse):
 
 
 class ErrorResponse(BaseModel):
+    error: str
     detail: str
+    context: Optional[dict] = None
