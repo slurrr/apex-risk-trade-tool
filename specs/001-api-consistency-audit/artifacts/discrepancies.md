@@ -1,0 +1,13 @@
+# Discrepancies Log
+
+| Category (transport/payload/signing/auth/data-safety/redundancy) | Severity | Source File:Line | Endpoint/Topic | Issue Summary | Recommended Remediation | Status |
+|------------------------------------------------------------------|----------|------------------|----------------|---------------|-------------------------|--------|
+| transport/base-url | Medium | backend/exchange/exchange_gateway.py:218-234 | `/api/v3/ticker` (manual fallback) | QA host removed; bases now cheat-sheet testnet/main | No further action; monitor custom overrides | Resolved |
+| payload/coverage | Low | backend/exchange/exchange_gateway.py:195 | `get_worst_price` | Now uses documented worst-price endpoint; ticker fallback remains | Acceptable; leave note to monitor | Resolved |
+| transport/ws-topic | Medium | backend/exchange/exchange_gateway.py:127-159 | `all_ticker_stream`, `account_info_stream_v3` | Documented mapping to cheat-sheet topics (instrumentInfo, ws_zk_accounts_v3) via SDK helpers; needs runtime confirmation | Verify in integration logs; adjust if mismatch | Documented |
+| data-safety | High | backend/exchange/exchange_gateway.py:732 | `create_order_v3` payload logging | Logs now redacted (client ids masked; secrets removed) | No further action unless payload fields expand | Resolved |
+| transport/coverage | Low | backend/exchange/exchange_gateway.py:195-236 | price discovery via REST `get_worst_price`/`ticker` | WS enabled via APEX_ENABLE_WS=true; REST remains as fallback | Acceptable with WS default on; monitor staleness | Documented |
+| payload/shape | Medium | backend/exchange/exchange_gateway.py:723-738 & 815-841 | `create_order_v3` | SDK signature lacks `clientOrderId`/`limitFee`/`expiration`; only `clientId`/timeInForce are sent. Cheat sheet expects additional fields. | Document divergence; if required, adapt upstream signing pathway to include equivalents | Open |
+| coverage/margin | Medium | repo scan | `/v3/set-initial-margin-rate` | Endpoint not used; marked out of scope for current audit | Revisit when margin-rate customization needed | Documented |
+| signing/auth | Low | SDK usage across REST calls | all private REST calls | Signing handled by apexomni SDK; headers not visible for verification | Note reliance on SDK for headers; capture in summary | Documented |
+| redundancy | Medium | backend/exchange/exchange_gateway.py (all ApeX calls) | all listed endpoints/topics | Clients/WS creation centralized into `backend/exchange/apex_client.py`; operational logic still in gateway | Further consolidation optional; keep documented if deferred | Documented |

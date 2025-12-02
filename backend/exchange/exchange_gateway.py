@@ -9,6 +9,8 @@ import requests
 
 from backend.core.config import Settings
 from backend.core.logging import get_logger
+from backend.exchange.apex_client import ApexClient
+from apexomni.websocket_api import PRIVATE_WSS
 
 logger = get_logger(__name__)
 
@@ -26,15 +28,23 @@ class ExchangeGateway:
         self._ws_prices: Dict[str, float] = {}
         self._ws_orders: Dict[str, Dict[str, Any]] = {}
         self._ws_positions: Dict[str, Dict[str, Any]] = {}
+        self._empty_order_snapshots: int = 0
         self._configs_loaded_at: Optional[float] = None
         self._ws_running: bool = False
         self._ws_public: Optional[Any] = None
         self._ws_private: Optional[Any] = None
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._subscribers: set[asyncio.Queue] = set()
+        self._reconcile_task: Optional[asyncio.Task] = None
+        self._ping_task: Optional[asyncio.Task] = None
+        self._resubscribe_task: Optional[asyncio.Task] = None
+        self._order_refresh_task: Optional[asyncio.Task] = None
+        self._positions_refresh_task: Optional[asyncio.Task] = None
+        self._last_order_event_ts: float = time.time()
         self._lock = threading.Lock()
-        self._client: Any = client if client is not None else self._init_client(settings)
-        self._public_client: Any = self._init_public_client(settings)
+        self.apex_client = ApexClient(settings, private_client=client)
+        self._client: Any = self.apex_client.private_client
+        self._public_client: Any = self.apex_client.public_client
         self._prime_client()
         logger.info(
             "gateway_initialized",
@@ -50,46 +60,6 @@ class ExchangeGateway:
                 "non_testnet_network_detected",
                 extra={"event": "network_warning", "network": self._network},
             )
-
-    def _init_client(self, settings: Settings) -> Any:
-        from apexomni.constants import (
-            APEX_OMNI_HTTP_MAIN,
-            APEX_OMNI_HTTP_TEST,
-            NETWORKID_MAIN,
-            NETWORKID_OMNI_TEST_BNB,
-            NETWORKID_OMNI_TEST_BASE,
-        )
-        from apexomni.http_private_sign import HttpPrivateSign
-
-        network = getattr(settings, "apex_network", "testnet").lower()
-        self._network = network
-        self._testnet = network in {"base", "base-sepolia", "testnet-base", "testnet"}
-        if network in {"base", "base-sepolia", "testnet-base"}:
-            endpoint = settings.apex_http_endpoint or APEX_OMNI_HTTP_TEST
-            network_id = NETWORKID_OMNI_TEST_BASE
-        elif network == "testnet":
-            endpoint = settings.apex_http_endpoint or APEX_OMNI_HTTP_TEST
-            network_id = NETWORKID_OMNI_TEST_BNB
-        else:
-            endpoint = settings.apex_http_endpoint or APEX_OMNI_HTTP_MAIN
-            network_id = NETWORKID_MAIN
-
-        client = HttpPrivateSign(
-            endpoint,
-            network_id=network_id,
-            zk_seeds=settings.apex_zk_seed,
-            zk_l2Key=settings.apex_zk_l2key,
-            api_key_credentials={
-                "key": settings.apex_api_key,
-                "secret": settings.apex_api_secret,
-                "passphrase": settings.apex_passphrase,
-            },
-        )
-        # Avoid inheriting system proxy settings that can block testnet calls.
-        session = client.client
-        session.trust_env = False
-        session.proxies = {"http": None, "https": None}
-        return client
 
     def _prime_client(self) -> None:
         """
@@ -110,26 +80,12 @@ class ExchangeGateway:
         except Exception as exc:
             logger.warning("prime_client get_account_v3 failed", extra={"error": str(exc)})
 
-    def _init_public_client(self, settings: Settings) -> Any:
-        from apexomni.http_public import HttpPublic
-
-        endpoint = getattr(settings, "apex_http_endpoint", None) or "https://omni.apex.exchange"
-        client = HttpPublic(endpoint)
-        session = client.client
-        session.trust_env = False
-        session.proxies = {"http": None, "https": None}
-        return client
-
     # --- WebSocket helpers ---
     def attach_loop(self, loop: asyncio.AbstractEventLoop) -> None:
         self._loop = loop
 
     def _ws_base_endpoint(self) -> str:
-        from apexomni.constants import APEX_OMNI_WS_MAIN, APEX_OMNI_WS_TEST
-        network = self.settings.apex_network.lower()
-        if network in {"base", "base-sepolia", "testnet-base", "testnet"}:
-            return APEX_OMNI_WS_TEST
-        return APEX_OMNI_WS_MAIN
+        return self.apex_client.ws_base_endpoint()
 
     async def start_streams(self) -> None:
         if not self.apex_enable_ws or self._ws_running:
@@ -137,11 +93,16 @@ class ExchangeGateway:
         self._ws_running = True
         await asyncio.to_thread(self._start_public_stream)
         await asyncio.to_thread(self._start_private_stream)
+        if self._loop and (self._reconcile_task is None or self._reconcile_task.done()):
+            self._reconcile_task = self._loop.create_task(self._reconcile_orders_loop())
+        if self._loop and (self._ping_task is None or self._ping_task.done()):
+            self._ping_task = self._loop.create_task(self._ping_loop())
+        if self._loop and (self._resubscribe_task is None or self._resubscribe_task.done()):
+            self._resubscribe_task = self._loop.create_task(self._resubscribe_loop())
 
     def _start_public_stream(self) -> None:
         try:
-            from apexomni.websocket_api import WebSocket
-            self._ws_public = WebSocket(endpoint=self._ws_base_endpoint())
+            self._ws_public = self.apex_client.create_public_ws()
             self._ws_public.all_ticker_stream(self._handle_ticker)
             logger.info("public WS stream started")
         except Exception as exc:
@@ -149,15 +110,10 @@ class ExchangeGateway:
 
     def _start_private_stream(self) -> None:
         try:
-            from apexomni.websocket_api import WebSocket
-            creds = {
-                "key": self.settings.apex_api_key,
-                "secret": self.settings.apex_api_secret,
-                "passphrase": self.settings.apex_passphrase,
-            }
-            self._ws_private = WebSocket(endpoint=self._ws_base_endpoint(), api_key_credentials=creds)
+            self._ws_private = self.apex_client.create_private_ws()
+            # Use SDK helper to subscribe to account info stream (handles auth/ping)
             self._ws_private.account_info_stream_v3(self._handle_account_stream)
-            logger.info("private WS stream started")
+            logger.info("private WS stream started and subscribed", extra={"topic": "ws_zk_accounts_v3"})
         except Exception as exc:
             logger.warning("private WS stream failed", extra={"error": str(exc)})
 
@@ -177,6 +133,14 @@ class ExchangeGateway:
                 self._loop.call_soon_threadsafe(q.put_nowait, event)
             except Exception:
                 continue
+        if event.get("type") == "orders":
+            # Keep cached orders published for any new subscribers.
+            self._cached_orders_last = list(self._ws_orders.values())
+
+    def _publish_cached_orders(self) -> None:
+        if not self._loop:
+            return
+        self._publish_event({"type": "orders", "payload": list(self._ws_orders.values())})
 
     def _format_with_step(self, value: float, step: Optional[float]) -> str:
         """Format numeric to a string respecting step precision."""
@@ -186,21 +150,45 @@ class ExchangeGateway:
         quantized = Decimal(str(value)).quantize(step_decimal, rounding=ROUND_DOWN)
         return format(quantized, "f").rstrip("0").rstrip(".") if "." in format(quantized, "f") else str(quantized)
 
+    def _get_worst_price(self, symbol: str) -> Optional[float]:
+        """Fetch worst price for symbol from documented endpoint."""
+        endpoints = []
+        if self.settings.apex_http_endpoint:
+            endpoints.append(self.settings.apex_http_endpoint)
+        endpoints.extend(
+            [
+                "https://testnet.omni.apex.exchange",
+                "https://omni.apex.exchange",
+            ]
+        )
+        session = requests.Session()
+        session.trust_env = False
+        session.proxies = {"http": None, "https": None}
+        for ep in endpoints:
+            try:
+                url = ep.rstrip("/") + "/api/v3/get-worst-price"
+                resp = session.get(url, params={"symbol": symbol}, timeout=5)
+                data = resp.json()
+                result = data.get("result") or data.get("data") or data
+                if isinstance(result, dict):
+                    price = result.get("worstPrice") or result.get("bidOnePrice") or result.get("askOnePrice")
+                    if price:
+                        return float(price)
+            except Exception:
+                continue
+        return None
+
     async def _get_usdt_price(self, token: str) -> float:
-        """Fetch mid price for TOKEN-USDT via depth, fallback to ticker, then hardcoded 1.0 for ETH."""
+        """Fetch price for TOKEN-USDT via worst-price, fallback to ticker, then hardcoded 1.0 for ETH."""
         if token.upper() == "USDT":
             return 1.0
         symbol = f"{token.upper()}-USDT"
         try:
-            book = await asyncio.to_thread(self._public_client.depth_v3, symbol=symbol, limit=1)
-            bids: List[List[str]] = book.get("result", {}).get("bids") or []
-            asks: List[List[str]] = book.get("result", {}).get("asks") or []
-            if bids and asks:
-                best_bid = float(bids[0][0])
-                best_ask = float(asks[0][0])
-                return (best_bid + best_ask) / 2.0
+            worst = await asyncio.to_thread(self._get_worst_price, symbol)
+            if worst is not None:
+                return worst
         except Exception as exc:
-            logger.warning("depth_v3 failed, trying ticker", extra={"symbol": symbol, "error": str(exc)})
+            logger.warning("get_worst_price failed, trying ticker", extra={"symbol": symbol, "error": str(exc)})
         try:
             ticker = await asyncio.to_thread(self._public_client.ticker_v3, symbol=symbol)
             result = ticker.get("result") or {}
@@ -221,7 +209,6 @@ class ExchangeGateway:
             endpoints.append(self.settings.apex_http_endpoint)
         endpoints.extend(
             [
-                "https://qa.omni.apex.exchange",
                 "https://testnet.omni.apex.exchange",
                 "https://omni.apex.exchange",
             ]
@@ -321,44 +308,15 @@ class ExchangeGateway:
                 self._account_cache["totalEquityValue"] = total_equity_stream
             if available_balance_stream is not None:
                 self._account_cache["availableBalance"] = available_balance_stream
-            if has_positions_key and positions:
-                normalized_pos = {self._normalize_symbol(p): p for p in positions if isinstance(p, dict)}
-                new_positions = {k: v for k, v in normalized_pos.items() if k}
-                if new_positions:
-                    for sym, pos in new_positions.items():
-                        prior = self._ws_positions.get(sym, {})
-                        if pos.get("entryPrice") is None and prior.get("entryPrice") is not None:
-                            pos["entryPrice"] = prior.get("entryPrice")
-                        if pos.get("avgPrice") is None and prior.get("avgPrice") is not None:
-                            pos["avgPrice"] = prior.get("avgPrice")
-                        if pos.get("size") in (None, 0, "0", "0.0") and prior.get("size") not in (None, 0, "0", "0.0"):
-                            pos["size"] = prior.get("size")
-                        if not pos.get("side") and prior.get("side"):
-                            pos["side"] = prior.get("side")
-                    self._ws_positions = new_positions
-                    publish_positions = True
-            if has_orders_key and orders_raw:
-                incoming = self._filter_and_map_orders(orders_raw)
-                # Merge incoming orders with existing cache; drop any cached entries that share the same clientOrderId.
-                if incoming:
-                    client_ids = {
-                        o.get("clientOrderId") or o.get("clientId") or o.get("client_id")
-                        for o in incoming.values()
-                        if isinstance(o, dict)
-                    }
-                    if client_ids:
-                        self._ws_orders = {
-                            k: v
-                            for k, v in self._ws_orders.items()
-                            if (v.get("clientOrderId") or v.get("clientId") or v.get("client_id")) not in client_ids
-                        }
-                    self._ws_orders.update(incoming)
-                publish_orders = True
+            # Positions: trigger REST refresh to avoid dropping on partial WS snapshots
+            if has_positions_key and self._loop and (self._positions_refresh_task is None or self._positions_refresh_task.done()):
+                self._positions_refresh_task = self._loop.create_task(self._refresh_positions_now())
+            # Orders: trigger REST refresh for authoritative list instead of applying partial WS payloads
+            if has_orders_key and self._loop and (self._order_refresh_task is None or self._order_refresh_task.done()):
+                self._order_refresh_task = self._loop.create_task(self._refresh_orders_now())
 
         if publish_positions:
             self._publish_event({"type": "positions", "payload": list(self._ws_positions.values())})
-        if publish_orders:
-            self._publish_event({"type": "orders", "payload": list(self._ws_orders.values())})
 
     def _parse_symbol_from_topic(self, topic: Optional[str]) -> Optional[str]:
         if not topic or not isinstance(topic, str):
@@ -417,7 +375,15 @@ class ExchangeGateway:
             status = str(o.get("status") or o.get("orderStatus") or "").lower()
             if status in {"canceled", "cancelled", "filled"} or "cancel" in status:
                 continue
-            key = str(o.get("orderId") or o.get("order_id") or o.get("clientOrderId") or o.get("_cache_id") or uuid.uuid4().hex)
+            key = (
+                o.get("orderId")
+                or o.get("order_id")
+                or o.get("clientOrderId")
+                or o.get("clientId")
+                or o.get("_cache_id")
+                or uuid.uuid4().hex
+            )
+            key = str(key)
             o["_cache_id"] = key
             mapped[key] = o
         return mapped
@@ -678,49 +644,125 @@ class ExchangeGateway:
             logger.exception("failed to fetch account equity", extra={"error": str(exc)})
             raise
 
-    async def get_open_positions(self) -> list[Dict[str, Any]]:
+    async def get_open_positions(self, *, force_rest: bool = False, publish: bool = False) -> list[Dict[str, Any]]:
         with self._lock:
-            if self._ws_positions:
+            if self._ws_positions and not force_rest:
                 return list(self._ws_positions.values())
         try:
             resp = await asyncio.to_thread(self._client.get_account_v3)
             payload = resp.get("result") or resp
             positions, has_key = self._extract_positions(payload)
-            if positions:
-                with self._lock:
-                    self._ws_positions = {self._normalize_symbol(p): p for p in positions if isinstance(p, dict)}
-                return positions
+            mapped = {self._normalize_symbol(p): p for p in positions if isinstance(p, dict)} if positions else {}
             with self._lock:
-                if self._ws_positions:
+                if mapped:
+                    self._ws_positions = mapped
+                elif not force_rest and self._ws_positions:
                     return list(self._ws_positions.values())
-            return positions
+                else:
+                    self._ws_positions = {}
+            if publish:
+                self._recompute_positions_pnl()
+            if publish:
+                self._publish_event({"type": "positions", "payload": list(self._ws_positions.values())})
+            return list(self._ws_positions.values())
         except Exception as exc:
             logger.exception("failed to fetch positions", extra={"error": str(exc)})
-            return []
+            with self._lock:
+                return list(self._ws_positions.values())
 
-    async def get_open_orders(self) -> list[Dict[str, Any]]:
+    async def get_open_orders(self, *, force_rest: bool = False, publish: bool = False) -> list[Dict[str, Any]]:
         with self._lock:
-            if self._ws_orders:
+            if self._ws_orders and not force_rest:
                 return list(self._ws_orders.values())
         try:
             resp = await asyncio.to_thread(self._client.open_orders_v3)
             payload = resp.get("result") or resp
             orders = payload.get("list") or payload.get("orders") or payload.get("data") or []
-            if orders:
-                with self._lock:
-                    self._ws_orders = self._filter_and_map_orders(orders)
-                return orders
+            mapped = self._filter_and_map_orders(orders)
             with self._lock:
-                if self._ws_orders:
+                if mapped:
+                    self._ws_orders = mapped
+                elif not force_rest and self._ws_orders:
                     return list(self._ws_orders.values())
-            return orders
+                else:
+                    self._ws_orders = {}
+            if publish:
+                self._publish_cached_orders()
+                self._last_order_event_ts = time.time()
+            return list(self._ws_orders.values())
         except Exception as exc:
             logger.exception("failed to fetch open orders", extra={"error": str(exc)})
-            return []
+            with self._lock:
+                return list(self._ws_orders.values())
+
+    async def _reconcile_orders_loop(self) -> None:
+        """Periodic reconciliation to keep open orders in sync when WS deltas are missed."""
+        while self._ws_running and self.apex_enable_ws:
+            try:
+                await asyncio.sleep(3)
+                await self.get_open_orders(force_rest=True, publish=True)
+                await self.get_open_positions(force_rest=True, publish=True)
+            except Exception:
+                continue
+
+    async def _delayed_refresh(self) -> None:
+        """Short delay then refresh open orders to reconcile after partial WS updates."""
+        try:
+            await asyncio.sleep(1)
+            await self.get_open_orders(force_rest=True, publish=True)
+            await self.get_open_positions(force_rest=True, publish=True)
+        except Exception:
+            pass
+
+    async def _refresh_orders_now(self) -> None:
+        await self.get_open_orders(force_rest=True, publish=True)
+
+    async def _refresh_positions_now(self) -> None:
+        await self.get_open_positions(force_rest=True, publish=True)
+
+    def _recompute_positions_pnl(self) -> None:
+        """Recompute PnL for cached positions using latest known prices to reduce flicker."""
+        if not self._ws_prices or not self._ws_positions:
+            return
+        for sym, pos in self._ws_positions.items():
+            price = self._ws_prices.get(sym)
+            if price is not None:
+                self._update_positions_pnl(sym, price)
+
+    async def _ping_loop(self) -> None:
+        """Send periodic pings to keep WS connections alive."""
+        while self._ws_running and self.apex_enable_ws:
+            try:
+                await asyncio.sleep(20)
+                if self._ws_public:
+                    await asyncio.to_thread(self._ws_public.runTimer)
+                if self._ws_private:
+                    await asyncio.to_thread(self._ws_private.runTimer)
+            except Exception:
+                continue
+
+    async def _resubscribe_loop(self) -> None:
+        """Resubscribe to private topics if no order events received for a while."""
+        while self._ws_running and self.apex_enable_ws:
+            try:
+                await asyncio.sleep(30)
+                idle = time.time() - self._last_order_event_ts
+                if idle > 60 and self._ws_private:
+                    try:
+                        self._ws_private.account_info_stream_v3(self._handle_account_stream)
+                        logger.info("ws_resubscribe", extra={"event": "ws_resubscribe", "topic": "ws_zk_accounts_v3"})
+                    except Exception as exc:  # pragma: no cover
+                        logger.warning("ws_resubscribe_failed", extra={"error": str(exc)})
+            except Exception:
+                continue
 
     async def place_order(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         try:
-            resp = await asyncio.to_thread(self._client.create_order_v3, **payload)
+            # SDK signature expects clientId; pop clientOrderId to avoid unexpected kwargs.
+            api_payload = dict(payload)
+            for key in ("clientOrderId", "limitFee", "expiration"):
+                api_payload.pop(key, None)
+            resp = await asyncio.to_thread(self._client.create_order_v3, **api_payload)
             order_id = (
                 resp.get("result", {}).get("orderId")
                 or resp.get("data", {}).get("orderId")
@@ -729,7 +771,8 @@ class ExchangeGateway:
             )
             return {"exchange_order_id": order_id, "raw": resp}
         except Exception as exc:
-            logger.exception("failed to place order", extra={"error": str(exc), "payload": payload})
+            redacted = self._redact_order_payload(payload)
+            logger.exception("failed to place order", extra={"error": str(exc), "payload_redacted": redacted})
             raise
 
     async def cancel_order(self, order_id: str, client_id: Optional[str] = None) -> Dict[str, Any]:
@@ -811,7 +854,10 @@ class ExchangeGateway:
     ) -> Tuple[Dict[str, Any], Optional[str]]:
         """
         Build an ApeX create_order_v3 payload; returns (payload, warning).
+        Note: SDK signature accepts clientId/timeInForce, not limitFee/expiration/clientOrderId.
         """
+        client_order_id = f"{symbol}-{int(time.time())}-{uuid.uuid4().hex[:8]}"
+
         payload: Dict[str, Any] = {
             "symbol": symbol,
             "side": side,
@@ -819,7 +865,8 @@ class ExchangeGateway:
             "price": entry_price,
             "size": size,
             "reduceOnly": reduce_only,
-            "clientId": f"{symbol}-{int(time.time())}-{uuid.uuid4().hex[:8]}",
+            "clientId": client_order_id,
+            "timeInForce": "GOOD_TIL_CANCEL",
         }
         # Format price/size according to symbol precision when available
         info = self.get_symbol_info(symbol) or {}
@@ -848,3 +895,17 @@ class ExchangeGateway:
             payload["slSide"] = "SELL" if side.upper() == "BUY" else "BUY"
             payload["slSize"] = self._format_with_step(size, step)
         return payload, None
+
+    def _redact_order_payload(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """Remove sensitive fields before logging."""
+        if not isinstance(payload, dict):
+            return {}
+        redacted = {}
+        for key, val in payload.items():
+            if key.lower() in {"signature", "passphrase", "secret"}:
+                redacted[key] = "***"
+            elif key.lower() in {"clientorderid", "clientid"}:
+                redacted[key] = "***client***"
+            else:
+                redacted[key] = val
+        return redacted

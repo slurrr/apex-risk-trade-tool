@@ -1,0 +1,30 @@
+backend\exchange\exchange_gateway.py:234:                url = ep.rstrip("/") + "/api/v3/ticker"
+96:        Best practice from ApeX docs: invoke configs_v3 and get_account_v3 immediately
+100:            cfg = self._client.configs_v3()
+104:            logger.warning("prime_client configs_v3 failed", extra={"error": str(exc)})
+106:            acct = self._client.get_account_v3()
+111:            logger.warning("prime_client get_account_v3 failed", extra={"error": str(exc)})
+159:            self._ws_private.account_info_stream_v3(self._handle_account_stream)
+195:            book = await asyncio.to_thread(self._public_client.depth_v3, symbol=symbol, limit=1)
+203:            logger.warning("get_worst_price failed, trying ticker", extra={"symbol": symbol, "error": str(exc)})
+205:            ticker = await asyncio.to_thread(self._public_client.ticker_v3, symbol=symbol)
+217:            logger.warning("ticker_v3 failed", extra={"symbol": symbol, "error": str(exc)})
+488:            result = await asyncio.to_thread(self._client.configs_v3)
+546:        ticker = await asyncio.to_thread(self._public_client.ticker_v3, symbol=symbol)
+579:            acct = await asyncio.to_thread(self._client.get_account_v3)
+609:            account_balance_fn = getattr(self._client, "get_account_balance_v3", None)
+654:                    logger.warning("get_account_balance_v3 failed, falling back", extra={"error": str(exc)})
+656:            legacy = await asyncio.to_thread(self._client.get_account_v3)
+686:            resp = await asyncio.to_thread(self._client.get_account_v3)
+706:            resp = await asyncio.to_thread(self._client.open_orders_v3)
+723:            resp = await asyncio.to_thread(self._client.create_order_v3, **payload)
+739:            await asyncio.to_thread(self._client.get_account_v3)
+747:                    self._retry_delete_on_conflict, self._client.delete_order_by_client_order_id_v3, id=normalized_client_id
+765:                errors.append(f"delete_order_by_client_order_id_v3 code={code} status={status} resp={resp}")
+767:                msg = f"delete_order_by_client_order_id_v3 error={exc}"
+776:                resp = await asyncio.to_thread(self._retry_delete_on_conflict, self._client.delete_order_v3, id=oid)
+786:                errors.append(f"delete_order_v3 code={code} status={status} resp={resp}")
+788:                errors.append(f"delete_order_v3 error={exc}")
+789:                logger.warning("delete_order_v3 failed", extra={"error": str(exc), "order_id": order_id})
+795:            resp = await asyncio.to_thread(self._client.delete_open_orders_v3, **params)
+813:        Build an ApeX create_order_v3 payload; returns (payload, warning).
