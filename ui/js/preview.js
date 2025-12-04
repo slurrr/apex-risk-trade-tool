@@ -1,5 +1,6 @@
 (function () {
-  const API_BASE = window.API_BASE || "http://localhost:8000";
+  const API_BASE = (window.TradeApp && window.TradeApp.API_BASE) || window.API_BASE || "http://localhost:8000";
+  const validateSymbol = (window.TradeApp && window.TradeApp.validateSymbol) || ((val) => val?.toUpperCase());
 
   async function postPreview(payload) {
     const response = await fetch(`${API_BASE}/api/trade`, {
@@ -37,12 +38,17 @@
 
     form.addEventListener("submit", async (event) => {
       event.preventDefault();
+      const symbol = validateSymbol(document.getElementById("symbol-input").value);
+      if (!symbol) {
+        renderError(resultContainer, "Select a valid symbol (e.g., BTC-USDT).");
+        return;
+      }
       const payload = {
-        symbol: document.getElementById("symbol").value.trim(),
+        symbol,
         entry_price: parseFloat(document.getElementById("entry_price").value),
         stop_price: parseFloat(document.getElementById("stop_price").value),
         risk_pct: parseFloat(document.getElementById("risk_pct").value),
-        side: document.getElementById("side").value.trim() || null,
+        side: document.getElementById("side").value || null,
         tp: document.getElementById("tp").value ? parseFloat(document.getElementById("tp").value) : null,
         preview: true,
         execute: false,

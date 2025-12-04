@@ -28,6 +28,8 @@ class ExchangeGateway:
         self._ws_prices: Dict[str, float] = {}
         self._ws_orders: Dict[str, Dict[str, Any]] = {}
         self._ws_positions: Dict[str, Dict[str, Any]] = {}
+        self._ws_orders_raw: list[Dict[str, Any]] = []
+        self._ws_orders_tpsl: list[Dict[str, Any]] = []
         self._empty_order_snapshots: int = 0
         self._configs_loaded_at: Optional[float] = None
         self._ws_running: bool = False
@@ -41,6 +43,8 @@ class ExchangeGateway:
         self._order_refresh_task: Optional[asyncio.Task] = None
         self._positions_refresh_task: Optional[asyncio.Task] = None
         self._last_order_event_ts: float = time.time()
+        self._ws_snapshot_written: bool = False
+        self._tpsl_client_ids: Dict[str, set[str]] = {}
         self._lock = threading.Lock()
         self.apex_client = ApexClient(settings, private_client=client)
         self._client: Any = self.apex_client.private_client
@@ -314,9 +318,50 @@ class ExchangeGateway:
             # Orders: trigger REST refresh for authoritative list instead of applying partial WS payloads
             if has_orders_key and self._loop and (self._order_refresh_task is None or self._order_refresh_task.done()):
                 self._order_refresh_task = self._loop.create_task(self._refresh_orders_now())
+            # Cache WS orders immediately so downstream callers can see TP/SL orders before REST reconciliation.
+            if orders_raw:
+                try:
+                    mapped = self._filter_and_map_orders(orders_raw)
+                    if mapped:
+                        self._ws_orders = mapped
+                except Exception:
+                    pass
 
         if publish_positions:
             self._publish_event({"type": "positions", "payload": list(self._ws_positions.values())})
+        if orders_raw:
+            # cache raw account orders for TP/SL mapping and publish to subscribers
+            self._ws_orders_raw = orders_raw if isinstance(orders_raw, list) else []
+            position_tpsl_payload = [
+                o
+                for o in self._ws_orders_raw
+                if isinstance(o, dict)
+                and o.get("isPositionTpsl")
+                and str(o.get("type") or "").upper().startswith(("STOP", "TAKE_PROFIT"))
+                and str(o.get("status") or "").lower() not in {"canceled", "cancelled", "filled", "triggered"}
+            ]
+            position_tpsl_count = len(position_tpsl_payload)
+            # only replace cached TP/SL list when we have valid entries to avoid clearing on canceled-only snapshots
+            if position_tpsl_payload:
+                self._ws_orders_tpsl = position_tpsl_payload
+            logger.info(
+                "ws_orders_raw_received",
+                extra={
+                    "event": "ws_orders_raw_received",
+                    "count": len(self._ws_orders_raw),
+                    "position_tpsl": position_tpsl_count,
+                    "first_type": (self._ws_orders_raw[0].get("type") if self._ws_orders_raw else None),
+                    "first_status": (self._ws_orders_raw[0].get("status") if self._ws_orders_raw else None),
+                    "first_symbol": (self._ws_orders_raw[0].get("symbol") if self._ws_orders_raw else None),
+                    "first_is_position_tpsl": (self._ws_orders_raw[0].get("isPositionTpsl") if self._ws_orders_raw else None),
+                    "first_trigger": (
+                        self._ws_orders_raw[0].get("triggerPrice")
+                        if self._ws_orders_raw
+                        else None
+                    ),
+                },
+            )
+            self._publish_event({"type": "orders_raw", "payload": orders_raw})
 
     def _parse_symbol_from_topic(self, topic: Optional[str]) -> Optional[str]:
         if not topic or not isinstance(topic, str):
@@ -694,6 +739,51 @@ class ExchangeGateway:
             logger.exception("failed to fetch open orders", extra={"error": str(exc)})
             with self._lock:
                 return list(self._ws_orders.values())
+
+    def get_account_orders_snapshot(self) -> list[Dict[str, Any]]:
+        """Return the most recent account-level orders payload (raw ws_zk_accounts_v3 orders only)."""
+        with self._lock:
+            if self._ws_orders_tpsl:
+                return list(self._ws_orders_tpsl)
+            return list(self._ws_orders_raw)
+
+    async def refresh_account_orders_from_rest(self) -> list[Dict[str, Any]]:
+        """
+        Fetch account snapshot via REST (get_account_v3) to refresh TP/SL orders when WS hasn't delivered yet.
+        Returns the parsed orders list (or empty).
+        """
+        try:
+            resp = await asyncio.to_thread(self._client.get_account_v3)
+            payload = resp.get("result") or resp
+            orders = payload.get("orders") or payload.get("orderList") or []
+            if isinstance(orders, dict):
+                orders = orders.get("list") or orders.get("orders") or []
+            orders = orders if isinstance(orders, list) else []
+            with self._lock:
+                self._ws_orders_raw = orders
+                self._ws_orders_tpsl = [
+                    o
+                    for o in orders
+                    if isinstance(o, dict)
+                    and o.get("isPositionTpsl")
+                    and str(o.get("type") or "").upper().startswith(("STOP", "TAKE_PROFIT"))
+                    and str(o.get("status") or "").lower() not in {"canceled", "cancelled", "filled", "triggered"}
+                ]
+            logger.info(
+                "account_snapshot_refreshed",
+                extra={
+                    "event": "account_snapshot_refreshed",
+                    "orders_count": len(orders),
+                    "position_tpsl": len(self._ws_orders_tpsl),
+                },
+            )
+            return orders
+        except Exception as exc:
+            logger.warning(
+                "account_snapshot_refresh_failed",
+                extra={"event": "account_snapshot_refresh_failed", "error": str(exc)},
+            )
+            return []
 
     async def _reconcile_orders_loop(self) -> None:
         """Periodic reconciliation to keep open orders in sync when WS deltas are missed."""

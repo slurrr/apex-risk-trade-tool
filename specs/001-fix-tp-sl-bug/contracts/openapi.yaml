@@ -1,0 +1,116 @@
+openapi: 3.0.3
+info:
+  title: TP/SL Position Update Contracts
+  version: "0.1.0"
+paths:
+  /api/positions:
+    get:
+      summary: List open positions with TP/SL
+      tags: [positions]
+      responses:
+        "200":
+          description: Current positions including effective TP/SL targets
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Position"
+        "500":
+          description: Unable to fetch positions
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /api/positions/{position_id}/targets:
+    post:
+      summary: Modify or clear take-profit and/or stop-loss targets
+      tags: [positions]
+      parameters:
+        - in: path
+          name: position_id
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TargetsUpdateRequestV2"
+      responses:
+        "200":
+          description: Targets updated
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        "400":
+          description: Validation error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          description: Unexpected error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /ws/stream:
+    get:
+      summary: WebSocket stream for orders and positions (including TP/SL)
+      tags: [stream]
+      responses:
+        "101":
+          description: WebSocket upgrade for streaming events
+
+components:
+  schemas:
+    Position:
+      type: object
+      properties:
+        id: { type: string }
+        symbol: { type: string }
+        side: { type: string }
+        size: { type: number }
+        entry_price: { type: number }
+        take_profit:
+          type: number
+          nullable: true
+        stop_loss:
+          type: number
+          nullable: true
+        pnl:
+          type: number
+          nullable: true
+      required: [id, symbol, side, size, entry_price]
+    TargetsUpdateRequestV2:
+      type: object
+      description: >
+        Request to modify or clear TP/SL for a position. At least one of
+        take_profit, stop_loss, clear_tp, or clear_sl must be provided.
+        Omitted numeric fields leave existing values unchanged; clear flags
+        explicitly remove protections.
+      properties:
+        take_profit:
+          type: number
+          minimum: 0
+          exclusiveMinimum: true
+        stop_loss:
+          type: number
+          minimum: 0
+          exclusiveMinimum: true
+        clear_tp:
+          type: boolean
+        clear_sl:
+          type: boolean
+    ErrorResponse:
+      type: object
+      properties:
+        error: { type: string }
+        detail: { type: string }
+        context:
+          type: object
+          additionalProperties: true

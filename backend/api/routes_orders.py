@@ -4,14 +4,14 @@ from backend.api.errors import error_response
 from backend.api.routes_trade import get_order_manager
 from backend.core.logging import get_logger
 from backend.trading.order_manager import OrderManager
-from backend.trading.schemas import ErrorResponse
+from backend.trading.schemas import ErrorResponse, OrderResponse
 
 router = APIRouter(prefix="/api", tags=["orders"])
 logger = get_logger(__name__)
 
 
-@router.get("/orders", responses={500: {"model": ErrorResponse}})
-async def list_orders(manager: OrderManager = Depends(get_order_manager)) -> list:
+@router.get("/orders", response_model=list[OrderResponse], responses={500: {"model": ErrorResponse}})
+async def list_orders(manager: OrderManager = Depends(get_order_manager)) -> list[dict]:
     """Return open orders from the gateway."""
     try:
         return await manager.list_orders()

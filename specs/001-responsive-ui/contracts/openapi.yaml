@@ -1,0 +1,349 @@
+openapi: 3.0.3
+info:
+  title: TradeSizer UI Contracts
+  version: "0.1.0"
+paths:
+  /api/symbols:
+    get:
+      summary: List tradeable symbols
+      tags: [symbols]
+      responses:
+        "200":
+          description: Symbols available for selection
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Symbol"
+  /api/account/summary:
+    get:
+      summary: Get account summary
+      tags: [account]
+      responses:
+        "200":
+          description: Account metrics for header row
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AccountSummary"
+  /api/trade:
+    post:
+      summary: Preview or execute trade
+      tags: [trade]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TradeRequest"
+      responses:
+        "200":
+          description: Preview or execution result
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: "#/components/schemas/TradePreviewResponse"
+                  - $ref: "#/components/schemas/TradeExecuteResponse"
+        "400":
+          description: Validation error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          description: Unexpected error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /api/orders:
+    get:
+      summary: List open orders
+      tags: [orders]
+      responses:
+        "200":
+          description: Current open orders
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Order"
+        "500":
+          description: Unable to fetch orders
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /api/orders/{order_id}/cancel:
+    post:
+      summary: Cancel an order
+      tags: [orders]
+      parameters:
+        - in: path
+          name: order_id
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Cancel status
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        "400":
+          description: Validation error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          description: Unexpected error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /api/positions:
+    get:
+      summary: List open positions
+      tags: [positions]
+      responses:
+        "200":
+          description: Current positions
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Position"
+        "500":
+          description: Unable to fetch positions
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /api/positions/{position_id}/close:
+    post:
+      summary: Close part or all of a position
+      tags: [positions]
+      parameters:
+        - in: path
+          name: position_id
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ClosePositionRequest"
+      responses:
+        "200":
+          description: Close request accepted
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        "400":
+          description: Validation error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          description: Unexpected error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /api/positions/{position_id}/targets:
+    post:
+      summary: Modify take-profit and/or stop-loss targets
+      tags: [positions]
+      parameters:
+        - in: path
+          name: position_id
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TargetsUpdateRequest"
+      responses:
+        "200":
+          description: Targets updated
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        "400":
+          description: Validation error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          description: Unexpected error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /ws/stream:
+    get:
+      summary: WebSocket stream for orders and positions
+      tags: [stream]
+      responses:
+        "101":
+          description: WebSocket upgrade for streaming events
+
+components:
+  schemas:
+    Symbol:
+      type: object
+      properties:
+        code:
+          type: string
+          pattern: "^[A-Z0-9]+-[A-Z0-9]+$"
+        base_asset:
+          type: string
+        quote_asset:
+          type: string
+      required: [code]
+    AccountSummary:
+      type: object
+      properties:
+        total_equity:
+          type: number
+        total_upnl:
+          type: number
+        available_margin:
+          type: number
+        as_of:
+          type: string
+          format: date-time
+      required: [total_equity, total_upnl, available_margin]
+    TradeRequest:
+      type: object
+      properties:
+        symbol:
+          type: string
+        entry_price:
+          type: number
+          minimum: 0
+          exclusiveMinimum: true
+        stop_price:
+          type: number
+          minimum: 0
+          exclusiveMinimum: true
+        risk_pct:
+          type: number
+          minimum: 0
+          exclusiveMinimum: true
+        side:
+          type: string
+          enum: [BUY, SELL]
+        tp:
+          type: number
+          minimum: 0
+          exclusiveMinimum: true
+        preview:
+          type: boolean
+          default: true
+        execute:
+          type: boolean
+          default: false
+      required: [symbol, entry_price, stop_price, risk_pct]
+    TradePreviewResponse:
+      type: object
+      properties:
+        side: { type: string }
+        size: { type: number }
+        notional: { type: number }
+        estimated_loss: { type: number }
+        warnings:
+          type: array
+          items: { type: string }
+        entry_price: { type: number }
+        stop_price: { type: number }
+      required: [side, size, notional, estimated_loss, entry_price, stop_price]
+    TradeExecuteResponse:
+      allOf:
+        - $ref: "#/components/schemas/TradePreviewResponse"
+        - type: object
+          properties:
+            executed:
+              type: boolean
+              default: true
+            exchange_order_id:
+              type: string
+          required: [executed, exchange_order_id]
+    Order:
+      type: object
+      properties:
+        id: { type: string }
+        symbol: { type: string }
+        side: { type: string }
+        size: { type: number }
+        entry_price: { type: number }
+        status: { type: string }
+        created_at:
+          type: string
+          format: date-time
+      required: [symbol, entry_price]
+    Position:
+      type: object
+      properties:
+        id: { type: string }
+        symbol: { type: string }
+        side: { type: string }
+        size: { type: number }
+        entry_price: { type: number }
+        take_profit: { type: number, nullable: true }
+        stop_loss: { type: number, nullable: true }
+        unrealized_pnl: { type: number, nullable: true }
+      required: [id, symbol, side, size, entry_price]
+    ClosePositionRequest:
+      type: object
+      properties:
+        close_percent:
+          type: number
+          minimum: 0
+          maximum: 100
+        close_type:
+          type: string
+          enum: [market, limit]
+        limit_price:
+          type: number
+          minimum: 0
+          exclusiveMinimum: true
+      required: [close_percent, close_type]
+    TargetsUpdateRequest:
+      type: object
+      properties:
+        take_profit:
+          type: number
+          minimum: 0
+          exclusiveMinimum: true
+        stop_loss:
+          type: number
+          minimum: 0
+          exclusiveMinimum: true
+      description: At least one of take_profit or stop_loss must be provided.
+    ErrorResponse:
+      type: object
+      properties:
+        error: { type: string }
+        detail: { type: string }
+        context:
+          type: object
+          additionalProperties: true

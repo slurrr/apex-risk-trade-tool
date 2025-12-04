@@ -3,7 +3,8 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>ApeX Risk & Trade Sizing Tool</title>
+  <title>TradeSizer</title>
+  <link rel="icon" href="/assets/fire.png" />
   <link rel="stylesheet" href="/css/styles.css">
   <script>
     // Point UI fetches to the backend API.
@@ -11,35 +12,95 @@
   </script>
 </head>
 <body>
-  <main>
-    <h1>ApeX Risk & Trade Sizing Tool</h1>
-    <section id="trade-form">
-      <h2>Preview Trade</h2>
-      <form id="preview-form">
-        <label>Symbol <input type="text" id="symbol" required placeholder="BTC-USDT"></label>
-        <label>Entry Price <input type="number" step="0.0001" id="entry_price" required></label>
-        <label>Stop Price <input type="number" step="0.0001" id="stop_price" required></label>
-        <label>Risk % <input type="number" step="0.01" id="risk_pct" required value="1"></label>
-        <label>Side (optional) <input type="text" id="side" placeholder="BUY or SELL"></label>
-        <label>Take Profit (optional) <input type="number" step="0.0001" id="tp"></label>
-        <button type="submit">Calculate</button>
+  <main class="page">
+    <header class="hero">
+      <div class="title-row">
+        <h1 class="app-title">TradeSizer</h1>
+        <p class="app-subtitle">Responsive trading panel with risk management built in</p>
+      </div>
+      <div class="account-summary" id="account-summary">
+        <div class="summary-item">
+          <div class="label">Total Equity</div>
+          <div class="value" id="summary-equity">--</div>
+        </div>
+        <div class="summary-item">
+          <div class="label">Total uPNL</div>
+          <div class="value" id="summary-upnl">--</div>
+        </div>
+        <div class="summary-item">
+          <div class="label">Available Margin</div>
+          <div class="value" id="summary-margin">--</div>
+        </div>
+      </div>
+    </header>
+
+    <section id="trade-form" class="card">
+      <div class="section-header">
+        <div>
+          <h2>Trade Entry</h2>
+          <p class="muted">Fast layout: Enter required fields</p>
+        </div>
+      </div>
+      <form id="preview-form" class="trade-grid">
+        <label class="field symbol-field">
+          <span>Symbol</span>
+          <div class="dropdown">
+            <input type="text" id="symbol-input" autocomplete="off" placeholder="BTC-USDT" required />
+            <div class="dropdown-list" id="symbol-options"></div>
+          </div>
+        </label>
+        <label class="field">
+          <span>Risk %</span>
+          <input type="number" step="0.01" id="risk_pct" required value="8" />
+        </label>
+        <label class="field">
+          <span>Entry</span>
+          <input type="number" step="0.0001" id="entry_price" required />
+        </label>
+        <label class="field">
+          <span>Stop</span>
+          <input type="number" step="0.0001" id="stop_price" required />
+        </label>
+        <label class="field">
+          <span>Take Profit (Optional)</span>
+          <input type="number" step="0.0001" id="tp" />
+        </label>
+        <label class="field">
+          <span>Side (Optional)</span>
+          <select id="side">
+            <option value="">Select side</option>
+            <option value="BUY">Buy / Long</option>
+            <option value="SELL">Sell / Short</option>
+          </select>
+        </label>
+        <div class="grid-actions">
+          <button type="submit" class="btn primary">Calculate</button>
+          <button id="execute-button" type="button" class="btn ghost">Place Order</button>
+        </div>
       </form>
-      <div id="preview-result"></div>
-      <button id="execute-button" type="button">Place Order</button>
-      <div id="execute-result"></div>
+      <div class="results-row">
+        <div class="result">
+          <div class="result-title">Preview</div>
+          <div id="preview-result"></div>
+        </div>
+        <div class="result">
+          <div class="result-title">Execution</div>
+          <div id="execute-result"></div>
+        </div>
+      </div>
     </section>
 
-    <section id="orders-section">
+    <section id="orders-section" class="card">
       <div class="section-header">
         <h2>Open Orders</h2>
-        <button id="refresh-orders" type="button">Refresh Orders</button>
+        <button id="refresh-orders" type="button" class="btn ghost">Refresh Orders</button>
       </div>
       <div id="orders-error" class="error"></div>
       <table id="orders-table">
         <thead>
           <tr>
-            <th>Order ID</th>
             <th>Symbol</th>
+            <th>Price</th>
             <th>Side</th>
             <th>Size</th>
             <th>Status</th>
@@ -51,20 +112,22 @@
       <div id="orders-empty" class="muted">No open orders.</div>
     </section>
 
-    <section id="positions-section">
+    <section id="positions-section" class="card">
       <div class="section-header">
         <h2>Open Positions</h2>
-        <button id="refresh-positions" type="button">Refresh Positions</button>
+        <button id="refresh-positions" type="button" class="btn ghost">Refresh Positions</button>
       </div>
       <div id="positions-error" class="error"></div>
       <table id="positions-table">
         <thead>
           <tr>
             <th>Symbol</th>
+            <th>Entry</th>
             <th>Side</th>
             <th>Size</th>
-            <th>Entry</th>
             <th>PnL</th>
+            <th>TP/SL</th>
+            <th>Actions</th>
           </tr>
         </thead>
         <tbody></tbody>
@@ -72,6 +135,7 @@
       <div id="positions-empty" class="muted">No open positions.</div>
     </section>
   </main>
+  <script src="/js/app.js"></script>
   <script src="/js/preview.js"></script>
   <script src="/js/execute.js"></script>
   <script src="/js/orders.js"></script>

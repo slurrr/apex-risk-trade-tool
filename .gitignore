@@ -127,3 +127,6 @@ desktop.ini
 *.bak
 *.tmp
 *~
+
+# Random Folders
+sessions/

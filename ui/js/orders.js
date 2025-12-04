@@ -1,12 +1,6 @@
 (function () {
-  const API_BASE = window.API_BASE || "http://localhost:8000";
-
-  function formatNumber(value) {
-    if (value === null || value === undefined || value === "") return "";
-    const num = Number(value);
-    if (Number.isNaN(num)) return value;
-    return num.toFixed(2);
-  }
+  const API_BASE = (window.TradeApp && window.TradeApp.API_BASE) || window.API_BASE || "http://localhost:8000";
+  const formatNumber = (window.TradeApp && window.TradeApp.formatNumber) || ((v) => v);
 
   async function fetchOrders() {
     const resp = await fetch(`${API_BASE}/api/orders`);
@@ -18,23 +12,23 @@
     return data;
   }
 
-async function cancelOrder(orderId) {
-  const resp = await fetch(`${API_BASE}/api/orders/${orderId}/cancel`, { method: "POST" });
-  const data = await resp.json();
-  if (!resp.ok) {
-    const msg = data?.detail || "Cancel failed";
-    throw new Error(msg);
+  async function cancelOrder(orderId) {
+    const resp = await fetch(`${API_BASE}/api/orders/${orderId}/cancel`, { method: "POST" });
+    const data = await resp.json();
+    if (!resp.ok) {
+      const msg = data?.detail || "Cancel failed";
+      throw new Error(msg);
+    }
+    if (data?.canceled !== true) {
+      const msg =
+        data?.raw?.errors?.join("; ") ||
+        data?.raw?.msg ||
+        data?.raw?.status ||
+        "Cancel not confirmed by exchange";
+      throw new Error(msg);
+    }
+    return data;
   }
-  if (data?.canceled !== true) {
-    const msg =
-      data?.raw?.errors?.join("; ") ||
-      data?.raw?.msg ||
-      data?.raw?.status ||
-      "Cancel not confirmed by exchange";
-    throw new Error(msg);
-  }
-  return data;
-}
 
   function renderOrders(orders) {
     const tbody = document.querySelector("#orders-table tbody");
@@ -49,17 +43,21 @@ async function cancelOrder(orderId) {
     orders.forEach((order) => {
       const row = document.createElement("tr");
       const cancelCell = document.createElement("td");
+      cancelCell.classList.add("actions-cell");
       const cancelBtn = document.createElement("button");
+      cancelBtn.className = "btn ghost";
       cancelBtn.textContent = "Cancel";
       const oid = order.client_id || order.id || order._cache_id;
       cancelBtn.disabled = !oid;
       cancelBtn.dataset.orderId = oid || "";
       cancelCell.appendChild(cancelBtn);
 
+      const sideIsClose = !!order.reduce_only;
+      const sideIcon = sideIsClose ? "/assets/close.png" : "/assets/open.png";
       row.innerHTML = `
-        <td>${order.id || ""}</td>
         <td>${order.symbol || ""}</td>
-        <td>${order.side || ""}</td>
+        <td>${formatNumber(order.entry_price)}</td>
+        <td><span class="side-cell">${order.side || ""}<img src="${sideIcon}" alt="" /></span></td>
         <td>${order.size ?? ""}</td>
         <td>${order.status || ""}</td>
       `;
@@ -79,7 +77,7 @@ async function cancelOrder(orderId) {
     }
   }
 
-  function startStream() {
+  function startStream(attempt = 0) {
     const errorBox = document.getElementById("orders-error");
     try {
       const wsUrl = (API_BASE.replace(/^http/, "ws")) + "/ws/stream";
@@ -98,7 +96,8 @@ async function cancelOrder(orderId) {
         errorBox.textContent = "Stream disconnected; falling back to manual refresh.";
       };
       socket.onclose = () => {
-        errorBox.textContent = "Stream closed; refresh to reconnect.";
+        errorBox.textContent = "Stream closed; attempting to reconnect.";
+        setTimeout(() => startStream(Math.min(attempt + 1, 5)), 1000 * Math.min(attempt + 1, 5));
       };
     } catch (err) {
       errorBox.textContent = err.message;

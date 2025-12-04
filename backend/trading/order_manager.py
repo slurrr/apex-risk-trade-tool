@@ -26,6 +26,40 @@ class OrderManager:
         self.open_risk_estimates: Dict[str, float] = {}
         self.open_orders: list[Dict[str, Any]] = []
         self.positions: list[Dict[str, Any]] = []
+        self.pending_order_prices: Dict[str, float] = {}
+        self.pending_order_prices_client: Dict[str, float] = {}
+        self.position_targets: Dict[str, Dict[str, float]] = {}
+        self._tpsl_targets_by_symbol: Dict[str, Dict[str, float]] = {}
+
+    def _normalize_symbol_value(self, symbol: Optional[str]) -> str:
+        """Normalize symbols to a consistent KEY-QUOTE shape for map lookups."""
+        if not symbol:
+            return ""
+        sym = str(symbol).upper()
+        if "-" in sym:
+            return sym
+        for quote in ("USDT", "USDC", "USDC.E", "USD"):
+            if sym.endswith(quote):
+                return f"{sym[:-len(quote)]}-{quote}"
+        return sym
+
+    def _merge_tpsl_map(self, new_map: Dict[str, Dict[str, Optional[float]]], *, replace: bool = False) -> None:
+        """Merge TP/SL values into the existing map, optionally replacing missing symbols."""
+        if replace and new_map:
+            for sym in list(self._tpsl_targets_by_symbol.keys()):
+                if sym not in new_map:
+                    self._tpsl_targets_by_symbol.pop(sym, None)
+        for symbol, vals in (new_map or {}).items():
+            sym_key = self._normalize_symbol_value(symbol)
+            cur = self._tpsl_targets_by_symbol.setdefault(sym_key, {})
+            if replace:
+                cur.clear()
+            tp_val = vals.get("take_profit") if isinstance(vals, dict) else None
+            sl_val = vals.get("stop_loss") if isinstance(vals, dict) else None
+            if tp_val is not None:
+                cur["take_profit"] = tp_val
+            if sl_val is not None:
+                cur["stop_loss"] = sl_val
 
     async def preview_trade(
         self,
@@ -154,10 +188,20 @@ class OrderManager:
 
     async def refresh_state(self) -> None:
         """Refresh in-memory orders and positions from gateway."""
-        positions_raw = await self.gateway.get_open_positions()
-        self.positions = await self._enrich_positions(positions_raw)
+        # Seed TP/SL map from cached account raw orders (ws_zk_accounts_v3 only)
+        try:
+            cached_ws_orders = self.gateway.get_account_orders_snapshot()
+            ws_map = self._extract_tpsl_from_orders(cached_ws_orders)
+            self._merge_tpsl_map(ws_map, replace=True)
+        except Exception:
+            pass
 
-        raw_orders = await self.gateway.get_open_orders()
+        positions_raw = await self.gateway.get_open_positions()
+        raw_orders = self.gateway.get_account_orders_snapshot()
+        extracted_map = self._extract_tpsl_from_orders(raw_orders)
+        self._merge_tpsl_map(extracted_map, replace=True)
+        self.positions = await self._enrich_positions(positions_raw, tpsl_map=self._tpsl_targets_by_symbol)
+
         self.open_orders = [self._normalize_order(order) for order in raw_orders]
         # drop risk estimates for orders no longer present
         open_ids = {order["id"] for order in self.open_orders if order.get("id")}
@@ -176,21 +220,199 @@ class OrderManager:
     async def list_orders(self) -> list[Dict[str, Any]]:
         """Return open orders from gateway and update cache."""
         raw_orders = await self.gateway.get_open_orders()
-        self.open_orders = [self._normalize_order(order) for order in raw_orders]
+        normalized: list[Dict[str, Any]] = []
+        for order in raw_orders:
+            norm = self._normalize_order(order)
+            oid = norm.get("id")
+            cid = norm.get("client_id")
+            if not norm.get("entry_price"):
+                if oid and oid in self.pending_order_prices:
+                    norm["entry_price"] = self.pending_order_prices.get(oid)
+                elif cid and cid in self.pending_order_prices_client:
+                    norm["entry_price"] = self.pending_order_prices_client.get(cid)
+            normalized.append(norm)
+        self.open_orders = normalized
+        # drop pending price hints for orders no longer open
+        open_ids = {o.get("id") for o in self.open_orders if o.get("id")}
+        open_cids = {o.get("client_id") for o in self.open_orders if o.get("client_id")}
+        self.pending_order_prices = {k: v for k, v in self.pending_order_prices.items() if k in open_ids}
+        self.pending_order_prices_client = {
+            k: v for k, v in self.pending_order_prices_client.items() if k in open_cids
+        }
         return self.open_orders
 
+    async def list_symbols(self) -> list[Dict[str, Any]]:
+        """Return cached symbol catalog for dropdowns."""
+        return await self.gateway.list_symbols()
+
+    async def get_account_summary(self) -> Dict[str, Any]:
+        """Return account metrics for UI header."""
+        return await self.gateway.get_account_summary()
+
     async def list_positions(self) -> list[Dict[str, Any]]:
-        """Return open positions from gateway and update cache."""
-        positions_raw = await self.gateway.get_open_positions()
-        self.positions = await self._enrich_positions(positions_raw)
+        """Return open positions from gateway and update cache, merging TP/SL from open orders when available."""
+        # Seed TP/SL map from cached account raw orders (ws_zk_accounts_v3 only)
+        try:
+            cached_ws_orders = self.gateway.get_account_orders_snapshot()
+            ws_map = self._extract_tpsl_from_orders(cached_ws_orders)
+            self._merge_tpsl_map(ws_map, replace=True)
+        except Exception:
+            pass
+
+        positions_raw = await self.gateway.get_open_positions(force_rest=False, publish=True)
+        if not positions_raw:
+            positions_raw = await self.gateway.get_open_positions(force_rest=True, publish=True)
+        orders_raw = self.gateway.get_account_orders_snapshot()
+        extracted_map = self._extract_tpsl_from_orders(orders_raw)
+        self._merge_tpsl_map(extracted_map, replace=True)
+        self.positions = await self._enrich_positions(positions_raw, tpsl_map=self._tpsl_targets_by_symbol)
+        if self.positions:
+            logger.info(
+                "positions_normalized_sample",
+                extra={
+                    "event": "positions_normalized_sample",
+                    "count": len(self.positions),
+                    "first_symbol": self.positions[0].get("symbol"),
+                    "first_tp": self.positions[0].get("take_profit"),
+                    "first_sl": self.positions[0].get("stop_loss"),
+                },
+            )
         return self.positions
 
-    async def _enrich_positions(self, positions_raw: list[Dict[str, Any]]) -> list[Dict[str, Any]]:
+    async def close_position(
+        self, *, position_id: str, close_percent: float, close_type: str, limit_price: Optional[float] = None
+    ) -> Dict[str, Any]:
+        """Close a portion of a position via reduce-only order."""
+        positions = await self.list_positions()
+        target = next((p for p in positions if str(p.get("id")) == str(position_id)), None)
+        if not target:
+            raise ValueError(f"Position {position_id} not found")
+        size_raw = target.get("size")
+        try:
+            size_val = float(size_raw)
+        except Exception:
+            raise ValueError("Position size unavailable")
+        close_size = size_val * (close_percent / 100.0)
+        if close_size <= 0:
+            raise ValueError("close_percent must be greater than 0")
+        resp = await self.gateway.place_close_order(
+            symbol=target.get("symbol") or "",
+            side=target.get("side") or "",
+            size=close_size,
+            close_type=close_type,
+            limit_price=limit_price,
+        )
+        order_id = resp.get("exchange_order_id")
+        client_id = resp.get("client_id")
+        if order_id and limit_price is not None:
+            self.pending_order_prices[str(order_id)] = limit_price
+        if client_id and limit_price is not None:
+            self.pending_order_prices_client[str(client_id)] = limit_price
+        return {
+            "position_id": position_id,
+            "requested_percent": close_percent,
+            "close_size": close_size,
+            "exchange": resp,
+        }
+
+    async def modify_targets(
+        self,
+        *,
+        position_id: str,
+        take_profit: Optional[float] = None,
+        stop_loss: Optional[float] = None,
+        clear_tp: bool = False,
+        clear_sl: bool = False,
+    ) -> Dict[str, Any]:
+        """Update TP/SL targets for a position via exchange create_order_v3 TP/SL flags."""
+        if take_profit is None and stop_loss is None and not clear_tp and not clear_sl:
+            raise ValueError("At least one of take_profit, stop_loss, clear_tp, or clear_sl must be provided")
+
+        positions = await self.list_positions()
+        target = next((p for p in positions if str(p.get("id")) == str(position_id)), None)
+        if not target:
+            raise ValueError(f"Position {position_id} not found")
+        symbol = target.get("symbol") or ""
+        side = target.get("side") or ""
+        size_raw = target.get("size")
+        existing_tp = target.get("take_profit")
+        existing_sl = target.get("stop_loss")
+        try:
+            size_val = float(size_raw)
+        except Exception:
+            raise ValueError("Position size unavailable for TP/SL update")
+
+        symbol_key = self._normalize_symbol_value(symbol or target.get("id"))
+        response: Dict[str, Any] = {"position_id": position_id}
+
+        if clear_tp or clear_sl:
+            cancel_resp = await self.gateway.cancel_tpsl_orders(
+                symbol=symbol or None, cancel_tp=clear_tp, cancel_sl=clear_sl
+            )
+            response["canceled"] = cancel_resp
+            cache_entry = self._tpsl_targets_by_symbol.get(symbol_key, {})
+            if clear_tp:
+                cache_entry.pop("take_profit", None)
+            if clear_sl:
+                cache_entry.pop("stop_loss", None)
+            if not cache_entry:
+                self._tpsl_targets_by_symbol.pop(symbol_key, None)
+            else:
+                self._tpsl_targets_by_symbol[symbol_key] = cache_entry
+            if clear_tp and clear_sl:
+                self.position_targets.pop(symbol_key, None)
+            else:
+                hints = self.position_targets.get(symbol_key, {})
+                if clear_tp:
+                    hints.pop("take_profit", None)
+                if clear_sl:
+                    hints.pop("stop_loss", None)
+                if hints:
+                    self.position_targets[symbol_key] = hints
+                else:
+                    self.position_targets.pop(symbol_key, None)
+
+        if take_profit is not None or stop_loss is not None:
+            resp = await self.gateway.update_targets(
+                symbol=symbol,
+                side=side,
+                size=size_val,
+                take_profit=take_profit,
+                stop_loss=stop_loss,
+                cancel_existing=True,
+                cancel_tp=take_profit is not None or clear_tp,
+                cancel_sl=stop_loss is not None or clear_sl,
+            )
+            response["exchange"] = resp
+
+            current = self.position_targets.get(symbol_key, {})
+            if existing_tp is not None and "take_profit" not in current:
+                current["take_profit"] = existing_tp
+            if existing_sl is not None and "stop_loss" not in current:
+                current["stop_loss"] = existing_sl
+            if take_profit is not None:
+                current["take_profit"] = take_profit
+            if stop_loss is not None:
+                current["stop_loss"] = stop_loss
+            if current:
+                self.position_targets[symbol_key] = current
+                # seed TP/SL map immediately so list_positions reflects latest request even if REST snapshots lag
+                map_entry = self._tpsl_targets_by_symbol.setdefault(symbol_key, {})
+                if take_profit is not None:
+                    map_entry["take_profit"] = take_profit
+                if stop_loss is not None:
+                    map_entry["stop_loss"] = stop_loss
+
+        return response
+
+    async def _enrich_positions(
+        self, positions_raw: list[Dict[str, Any]], tpsl_map: Optional[Dict[str, Dict[str, float]]] = None
+    ) -> list[Dict[str, Any]]:
         """Normalize positions and populate pnl using mark price when available."""
         normalized: list[Dict[str, Any]] = []
         symbols = set()
         for pos in positions_raw:
-            norm = self._normalize_position(pos)
+            norm = self._normalize_position(pos, tpsl_map=tpsl_map)
             if norm:
                 normalized.append(norm)
                 if norm.get("symbol"):
@@ -244,6 +466,15 @@ class OrderManager:
 
     def _normalize_order(self, order: Dict[str, Any]) -> Dict[str, Any]:
         """Return a consistent shape for UI/API consumption."""
+
+        def _coerce_float(value: Any) -> Optional[float]:
+            try:
+                if value is None:
+                    return None
+                return float(value)
+            except Exception:
+                return None
+
         oid = (
             order.get("orderId")
             or order.get("order_id")
@@ -252,42 +483,217 @@ class OrderManager:
             or order.get("id")
             or ""
         )
+        size_val = _coerce_float(order.get("size") or order.get("qty") or order.get("quantity"))
+        price_val = _coerce_float(
+            order.get("price")
+            or order.get("avgPrice")
+            or order.get("orderPrice")
+            or order.get("order_price")
+            or order.get("limitPrice")
+            or order.get("origPrice")
+            or order.get("triggerPrice")
+        )
         normalized = {
             "id": str(oid),
             "symbol": order.get("symbol") or order.get("market"),
-            "side": order.get("side") or order.get("positionSide") or order.get("direction"),
-            "size": order.get("size") or order.get("qty") or order.get("quantity"),
+            "side": (order.get("side") or order.get("positionSide") or order.get("direction") or "").upper(),
+            "size": size_val if size_val is not None else order.get("size") or order.get("qty") or order.get("quantity"),
             "status": order.get("status") or order.get("state") or order.get("orderStatus"),
-            "price": order.get("price") or order.get("avgPrice") or order.get("orderPrice"),
+            "entry_price": price_val,
         }
         client_id = order.get("clientOrderId") or order.get("clientId")
         if client_id is not None:
             normalized["client_id"] = client_id
+        # reduce_only indicates a closing order in many exchanges; if not present, infer from payload if possible
+        normalized["reduce_only"] = order.get("reduceOnly") or order.get("reduce_only") or False
+        if not normalized.get("entry_price"):
+            if normalized.get("id") and normalized["id"] in self.pending_order_prices:
+                normalized["entry_price"] = self.pending_order_prices.get(normalized["id"])
+            elif client_id and client_id in self.pending_order_prices_client:
+                normalized["entry_price"] = self.pending_order_prices_client.get(client_id)
         return normalized
 
-    def _normalize_position(self, position: Dict[str, Any]) -> Dict[str, Any]:
-        """Return a consistent shape for UI/API consumption."""
-        raw_size = position.get("size") or position.get("positionSize")
-        size_for_check = None
-        try:
-            size_for_check = float(raw_size)
-        except Exception:
-            size_for_check = None
-        if size_for_check is not None and size_for_check <= 0:
+    def _extract_tpsl_from_orders(self, orders: list[Dict[str, Any]]) -> Dict[str, Dict[str, float]]:
+        """Build a symbol->tp/sl map from TP/SL orders (reduce-only or position TP/SL)."""
+
+        def _first_number(values: list[Any]) -> Optional[float]:
+            for val in values:
+                if val is None:
+                    continue
+                if isinstance(val, (int, float)):
+                    return float(val)
+                if isinstance(val, str):
+                    try:
+                        return float(val)
+                    except Exception:
+                        continue
             return None
 
-        pnl = (
+        tpsl: Dict[str, Dict[str, Any]] = {}
+        debug_counts = {"total": 0, "position_tpsl": 0, "tp": 0, "sl": 0, "skipped_status": 0, "skipped_trigger": 0}
+        for order in orders or []:
+            debug_counts["total"] += 1
+            if not isinstance(order, dict):
+                continue
+            status_raw = str(order.get("status") or order.get("orderStatus") or "").lower()
+            if status_raw in {"canceled", "cancelled", "filled", "triggered"} or "cancel" in status_raw:
+                debug_counts["skipped_status"] += 1
+                continue
+            symbol = self._normalize_symbol_value(order.get("symbol") or order.get("market"))
+            if not symbol:
+                continue
+            order_type = (order.get("type") or order.get("orderType") or order.get("order_type") or "").upper()
+            is_position_tpsl = bool(order.get("isPositionTpsl"))
+            if not is_position_tpsl:
+                continue
+            if not (order_type.startswith("STOP") or order_type.startswith("TAKE_PROFIT")):
+                continue
+            debug_counts["position_tpsl"] += 1
+
+            tp_candidates = [
+                order.get("tpTriggerPrice"),
+                order.get("tpPrice"),
+                order.get("openTpParam"),
+                order.get("takeProfitPrice"),
+                order.get("takeProfit"),
+                order.get("tp"),
+                order.get("triggerPrice") if order_type.startswith("TAKE_PROFIT") else None,
+                (order.get("openTpParams") or {}).get("triggerPrice"),
+            ]
+            sl_candidates = [
+                order.get("slTriggerPrice"),
+                order.get("slPrice"),
+                order.get("openSlParam"),
+                order.get("stopLossPrice"),
+                order.get("stopLoss"),
+                order.get("sl"),
+                order.get("triggerPrice") if order_type.startswith("STOP") else None,
+                (order.get("openSlParams") or {}).get("triggerPrice"),
+            ]
+
+            tp_val = _first_number(tp_candidates)
+            sl_val = _first_number(sl_candidates)
+            if tp_val is None and sl_val is None:
+                debug_counts["skipped_trigger"] += 1
+            entry = tpsl.setdefault(symbol, {})
+
+            def _update_target(field: str, value: Optional[float]) -> None:
+                if value is None:
+                    return
+                entry[field] = value
+
+            if "TAKE_PROFIT" in order_type or tp_val is not None:
+                _update_target("take_profit", tp_val)
+                if tp_val is not None:
+                    debug_counts["tp"] += 1
+            if "STOP" in order_type or sl_val is not None:
+                _update_target("stop_loss", sl_val)
+                if sl_val is not None:
+                    debug_counts["sl"] += 1
+
+        cleaned: Dict[str, Dict[str, float]] = {}
+        for sym, data in tpsl.items():
+            tp_val = data.get("take_profit")
+            sl_val = data.get("stop_loss")
+            clean_entry: Dict[str, float] = {}
+            if tp_val is not None:
+                clean_entry["take_profit"] = tp_val
+            if sl_val is not None:
+                clean_entry["stop_loss"] = sl_val
+            if clean_entry:
+                cleaned[sym] = clean_entry
+        try:
+            logger.info(
+                "tpsl_extract_summary",
+                extra={
+                    "event": "tpsl_extract_summary",
+                    "total": debug_counts["total"],
+                    "position_tpsl": debug_counts["position_tpsl"],
+                    "tp_found": debug_counts["tp"],
+                    "sl_found": debug_counts["sl"],
+                    "skipped_status": debug_counts["skipped_status"],
+                    "skipped_trigger": debug_counts["skipped_trigger"],
+                    "symbols": list(cleaned.keys()),
+                },
+            )
+        except Exception:
+            pass
+        return cleaned
+
+    def _normalize_position(
+        self, position: Dict[str, Any], tpsl_map: Optional[Dict[str, Dict[str, float]]] = None
+    ) -> Dict[str, Any]:
+        """Return a consistent shape for UI/API consumption."""
+        raw_size = position.get("size") or position.get("positionSize")
+
+        def _coerce_float(value: Any) -> Optional[float]:
+            try:
+                if value is None:
+                    return None
+                return float(value)
+            except Exception:
+                return None
+
+        size_val = _coerce_float(raw_size)
+        if size_val is not None and size_val <= 0:
+            return None
+
+        symbol = self._normalize_symbol_value(position.get("symbol") or position.get("market"))
+        side = (position.get("side") or position.get("positionSide") or position.get("direction") or "").upper()
+        entry_price = _coerce_float(position.get("entryPrice") or position.get("avgPrice") or position.get("entry_price"))
+        tp_raw = _coerce_float(
+            position.get("takeProfit")
+            or position.get("tp")
+            or position.get("tpPrice")
+            or position.get("takeProfitPrice")
+            or position.get("tp_trigger_price")
+            or position.get("tpTriggerPrice")
+        )
+        sl_raw = _coerce_float(
+            position.get("stopLoss")
+            or position.get("sl")
+            or position.get("slPrice")
+            or position.get("stopLossPrice")
+            or position.get("sl_trigger_price")
+            or position.get("slTriggerPrice")
+            or position.get("triggerPrice")
+        )
+        pnl_val = _coerce_float(
             position.get("unrealizedPnl")
             or position.get("unrealizedPnlUsd")
             or position.get("pnl")
             or position.get("unrealizedPnlValue")
-            or 0
         )
 
-        return {
-            "symbol": position.get("symbol") or position.get("market"),
-            "side": position.get("side") or position.get("positionSide") or position.get("direction"),
-            "size": raw_size,
-            "entry_price": position.get("entryPrice") or position.get("avgPrice") or position.get("entry_price"),
-            "pnl": pnl,
+        norm = {
+            "id": position.get("positionId") or position.get("id") or symbol,
+            "symbol": symbol,
+            "side": side,
+            "size": size_val if size_val is not None else raw_size,
+            "entry_price": entry_price,
+            "take_profit": tp_raw,
+            "stop_loss": sl_raw,
+            "pnl": pnl_val,
         }
+
+        map_src = tpsl_map or self._tpsl_targets_by_symbol
+        sym_key = symbol or norm.get("symbol") or ""
+        tpsl_entry = map_src.get(sym_key) if map_src else None
+        if tpsl_entry:
+            if tpsl_entry.get("take_profit") is not None:
+                norm["take_profit"] = tpsl_entry["take_profit"]
+            if tpsl_entry.get("stop_loss") is not None:
+                norm["stop_loss"] = tpsl_entry["stop_loss"]
+
+        hint = None
+        for key in (sym_key, norm.get("id"), position.get("positionId"), position.get("id")):
+            if key and key in self.position_targets:
+                hint = self.position_targets[key]
+                break
+        if hint:
+            if norm.get("take_profit") is None and "take_profit" in hint:
+                norm["take_profit"] = hint.get("take_profit")
+            if norm.get("stop_loss") is None and "stop_loss" in hint:
+                norm["stop_loss"] = hint.get("stop_loss")
+
+        return norm
