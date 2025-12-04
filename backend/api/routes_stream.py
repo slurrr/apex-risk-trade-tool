@@ -52,10 +52,11 @@ async def stream_updates(
     try:
         # prefer WS caches for initial payloads to avoid REST overrides
         initial_orders = list(getattr(gateway, "_ws_orders_raw", []) or [])
-        # rebuild TP/SL map from current account raw orders, but don't clear existing map if none found
-        new_map = _extract_tpsl_from_orders(initial_orders)
-        if new_map:
-            manager._tpsl_targets_by_symbol = new_map
+        # reconcile TP/SL map from current account raw orders, but don't clear existing map if none found
+        try:
+            manager._reconcile_tpsl(initial_orders)
+        except Exception:
+            pass
 
         initial_positions_raw = list(getattr(gateway, "_ws_positions", {}).values())
         initial_positions: list[dict] = []
@@ -82,7 +83,7 @@ async def stream_updates(
                         normalized.append(norm)
                 msg = {"type": "positions", "payload": normalized}
             elif event.get("type") == "orders_raw":
-                # Build TP/SL map from raw account orders payload (contains TP/SL orders)
+                # Reconcile TP/SL map from raw account orders payload (contains TP/SL orders)
                 raw_orders = event.get("payload") or []
                 position_tpsl_count = sum(
                     1
@@ -104,18 +105,30 @@ async def stream_updates(
                         "first_trigger": (raw_orders[0].get("triggerPrice") if raw_orders else None),
                     },
                 )
-                new_map = _extract_tpsl_from_orders(raw_orders)
-                if new_map:
-                    manager._tpsl_targets_by_symbol = new_map
+                try:
+                    manager._reconcile_tpsl(raw_orders)
+                except Exception:
+                    pass
                 logger.info(
                     "ws_orders_raw_tpsl_map_built",
                     extra={
                         "event": "ws_orders_raw_tpsl_map_built",
-                        "symbols": list(new_map.keys()),
+                        "symbols": list(manager._tpsl_targets_by_symbol.keys()),
                         "orders_count": len(raw_orders),
                         "position_tpsl": position_tpsl_count,
                     },
                 )
+                # push normalized positions using updated TP/SL map
+                try:
+                    cached_positions = list(getattr(gateway, "_ws_positions", {}).values())
+                    normalized_positions = []
+                    for pos in cached_positions:
+                        norm = manager._normalize_position(pos, tpsl_map=manager._tpsl_targets_by_symbol)
+                        if norm:
+                            normalized_positions.append(norm)
+                    await websocket.send_json({"type": "positions", "payload": normalized_positions})
+                except Exception:
+                    pass
                 try:
                     cached_positions = list(getattr(gateway, "_ws_positions", {}).values())
                     normalized_positions = []

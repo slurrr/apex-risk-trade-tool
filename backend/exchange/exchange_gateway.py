@@ -743,9 +743,11 @@ class ExchangeGateway:
     def get_account_orders_snapshot(self) -> list[Dict[str, Any]]:
         """Return the most recent account-level orders payload (raw ws_zk_accounts_v3 orders only)."""
         with self._lock:
+            if self._ws_orders_raw:
+                return list(self._ws_orders_raw)
             if self._ws_orders_tpsl:
                 return list(self._ws_orders_tpsl)
-            return list(self._ws_orders_raw)
+            return []
 
     async def refresh_account_orders_from_rest(self) -> list[Dict[str, Any]]:
         """

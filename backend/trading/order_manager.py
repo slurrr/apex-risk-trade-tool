@@ -61,6 +61,17 @@ class OrderManager:
             if sl_val is not None:
                 cur["stop_loss"] = sl_val
 
+    def _reconcile_tpsl(self, raw_orders: list[Dict[str, Any]]) -> None:
+        """
+        Reconcile TP/SL map using the full orders_raw snapshot:
+        - merge active TP/SL entries
+        - drop symbols only when snapshot shows canceled/filled/triggered and no active TP/SL remain for that symbol
+        """
+        active_map = self._extract_tpsl_from_orders(raw_orders)
+        # Only merge when we have active TP/SL data; never clear on canceled-only snapshots to avoid wiping the map.
+        if active_map:
+            self._merge_tpsl_map(active_map, replace=False)
+
     async def preview_trade(
         self,
         *,
@@ -191,15 +202,21 @@ class OrderManager:
         # Seed TP/SL map from cached account raw orders (ws_zk_accounts_v3 only)
         try:
             cached_ws_orders = self.gateway.get_account_orders_snapshot()
-            ws_map = self._extract_tpsl_from_orders(cached_ws_orders)
-            self._merge_tpsl_map(ws_map, replace=True)
+            self._reconcile_tpsl(cached_ws_orders)
+            logger.info(
+                "tpsl_reconcile_seed",
+                extra={
+                    "event": "tpsl_reconcile_seed",
+                    "orders_count": len(cached_ws_orders or []),
+                    "map_symbols": list(self._tpsl_targets_by_symbol.keys()),
+                },
+            )
         except Exception:
             pass
 
         positions_raw = await self.gateway.get_open_positions()
         raw_orders = self.gateway.get_account_orders_snapshot()
-        extracted_map = self._extract_tpsl_from_orders(raw_orders)
-        self._merge_tpsl_map(extracted_map, replace=True)
+        self._reconcile_tpsl(raw_orders)
         self.positions = await self._enrich_positions(positions_raw, tpsl_map=self._tpsl_targets_by_symbol)
 
         self.open_orders = [self._normalize_order(order) for order in raw_orders]
@@ -254,8 +271,7 @@ class OrderManager:
         # Seed TP/SL map from cached account raw orders (ws_zk_accounts_v3 only)
         try:
             cached_ws_orders = self.gateway.get_account_orders_snapshot()
-            ws_map = self._extract_tpsl_from_orders(cached_ws_orders)
-            self._merge_tpsl_map(ws_map, replace=True)
+            self._reconcile_tpsl(cached_ws_orders)
         except Exception:
             pass
 
@@ -263,8 +279,7 @@ class OrderManager:
         if not positions_raw:
             positions_raw = await self.gateway.get_open_positions(force_rest=True, publish=True)
         orders_raw = self.gateway.get_account_orders_snapshot()
-        extracted_map = self._extract_tpsl_from_orders(orders_raw)
-        self._merge_tpsl_map(extracted_map, replace=True)
+        self._reconcile_tpsl(orders_raw)
         self.positions = await self._enrich_positions(positions_raw, tpsl_map=self._tpsl_targets_by_symbol)
         if self.positions:
             logger.info(
