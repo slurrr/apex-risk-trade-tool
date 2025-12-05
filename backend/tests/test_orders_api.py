@@ -132,3 +132,35 @@ def test_update_targets_round_trip_positions_api():
     body = positions.json()
     assert body[0]["take_profit"] == 120.5
     assert body[0]["stop_loss"] == 90.1
+
+
+def test_clear_tp_only_keeps_sl():
+    manager = FakeManager()
+    manager.positions[0]["take_profit"] = 125.0
+    manager.positions[0]["stop_loss"] = 95.0
+    client = build_client(manager)
+    resp = client.post("/api/positions/pos-1/targets", json={"clear_tp": True})
+    assert resp.status_code == 200
+    positions = client.get("/api/positions")
+    assert positions.status_code == 200
+    body = positions.json()
+    assert body[0]["take_profit"] is None
+    assert body[0]["stop_loss"] == 95.0
+    assert manager.updated[-1]["clear_tp"] is True
+    assert manager.updated[-1]["clear_sl"] is False
+
+
+def test_clear_sl_only_keeps_tp():
+    manager = FakeManager()
+    manager.positions[0]["take_profit"] = 125.0
+    manager.positions[0]["stop_loss"] = 95.0
+    client = build_client(manager)
+    resp = client.post("/api/positions/pos-1/targets", json={"clear_sl": True})
+    assert resp.status_code == 200
+    positions = client.get("/api/positions")
+    assert positions.status_code == 200
+    body = positions.json()
+    assert body[0]["take_profit"] == 125.0
+    assert body[0]["stop_loss"] is None
+    assert manager.updated[-1]["clear_tp"] is False
+    assert manager.updated[-1]["clear_sl"] is True

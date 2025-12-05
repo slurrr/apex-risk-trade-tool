@@ -344,15 +344,23 @@ class ExchangeGateway:
             self._publish_event({"type": "positions", "payload": list(self._ws_positions.values())})
         if orders_raw:
             # cache raw account orders for TP/SL mapping and publish to subscribers
-            self._ws_orders_raw = orders_raw if isinstance(orders_raw, list) else []
-            position_tpsl_payload = [
-                o
-                for o in self._ws_orders_raw
-                if isinstance(o, dict)
-                and o.get("isPositionTpsl")
-                and str(o.get("type") or "").upper().startswith(("STOP", "TAKE_PROFIT"))
-                and str(o.get("status") or "").lower() not in {"canceled", "cancelled", "filled", "triggered"}
-            ]
+            position_tpsl_payload = []
+            # Only replace cached raw orders when the payload actually carries position TP/SL entries;
+            # canceled-only snapshots should not blow away the last known TP/SL order ids.
+            if isinstance(orders_raw, list):
+                position_tpsl_payload = [
+                    o
+                    for o in orders_raw
+                    if isinstance(o, dict)
+                    and o.get("isPositionTpsl")
+                    and str(o.get("type") or "").upper().startswith(("STOP", "TAKE_PROFIT"))
+                    and str(o.get("status") or "").lower() not in {"canceled", "cancelled", "filled", "triggered"}
+                ]
+            if position_tpsl_payload:
+                self._ws_orders_raw = orders_raw if isinstance(orders_raw, list) else []
+            elif not self._ws_orders_raw and isinstance(orders_raw, list):
+                # if no cache yet, initialize it once even if no active entries
+                self._ws_orders_raw = orders_raw
             position_tpsl_count = len(position_tpsl_payload)
             # only replace cached TP/SL list when we have valid entries to avoid clearing on canceled-only snapshots
             if position_tpsl_payload:
@@ -827,24 +835,25 @@ class ExchangeGateway:
             if isinstance(orders, dict):
                 orders = orders.get("list") or orders.get("orders") or []
             orders = orders if isinstance(orders, list) else []
-            with self._lock:
-                self._ws_orders_raw = orders
-                self._ws_orders_tpsl = [
-                    o
-                    for o in orders
-                    if isinstance(o, dict)
-                    and o.get("isPositionTpsl")
-                    and str(o.get("type") or "").upper().startswith(("STOP", "TAKE_PROFIT"))
-                    and str(o.get("status") or "").lower() not in {"canceled", "cancelled", "filled", "triggered"}
-                ]
-            logger.info(
-                "account_snapshot_refreshed",
-                extra={
-                    "event": "account_snapshot_refreshed",
-                    "orders_count": len(orders),
-                    "position_tpsl": len(self._ws_orders_tpsl),
-                },
-            )
+            if orders:
+                with self._lock:
+                    self._ws_orders_raw = orders
+                    self._ws_orders_tpsl = [
+                        o
+                        for o in orders
+                        if isinstance(o, dict)
+                        and o.get("isPositionTpsl")
+                        and str(o.get("type") or "").upper().startswith(("STOP", "TAKE_PROFIT"))
+                        and str(o.get("status") or "").lower() not in {"canceled", "cancelled", "filled", "triggered"}
+                    ]
+                logger.info(
+                    "account_snapshot_refreshed",
+                    extra={
+                        "event": "account_snapshot_refreshed",
+                        "orders_count": len(orders),
+                        "position_tpsl": len(self._ws_orders_tpsl),
+                    },
+                )
             return orders
         except Exception as exc:
             logger.warning(
@@ -999,6 +1008,216 @@ class ExchangeGateway:
             logger.exception("failed to cancel all", extra={"error": str(exc), "symbol": symbol})
             raise
 
+    async def cancel_tpsl_orders(self, *, symbol: Optional[str], cancel_tp: bool = False, cancel_sl: bool = False) -> Dict[str, Any]:
+        """
+        Cancel existing TP/SL position orders for a symbol using cached ws_orders_raw snapshots.
+        Only TP/SL orders (isPositionTpsl and STOP_*/TAKE_PROFIT_ types) are targeted.
+        """
+        if not cancel_tp and not cancel_sl:
+            return {"canceled": []}
+        symbol_key = self._normalize_symbol_value(symbol or "")
+        targets: list[Dict[str, Any]] = []
+
+        def _collect_targets(order_list: list[Dict[str, Any]]) -> list[Dict[str, Any]]:
+            collected: list[Dict[str, Any]] = []
+            for o in order_list or []:
+                if not isinstance(o, dict):
+                    continue
+                sym = self._normalize_symbol_value(o.get("symbol") or o.get("market"))
+                if symbol_key and sym != symbol_key:
+                    continue
+                status_raw = str(o.get("status") or o.get("orderStatus") or "").lower()
+                if status_raw in {"canceled", "cancelled", "filled", "triggered"} or "cancel" in status_raw:
+                    continue
+                if not o.get("isPositionTpsl"):
+                    continue
+                otype = (o.get("type") or o.get("orderType") or o.get("order_type") or "").upper()
+                if otype.startswith("TAKE_PROFIT") and cancel_tp:
+                    collected.append(o)
+                if otype.startswith("STOP") and cancel_sl:
+                    collected.append(o)
+            return collected
+
+        with self._lock:
+            orders = list(self._ws_orders_raw or [])
+            if not orders and self._ws_orders_tpsl:
+                orders = list(self._ws_orders_tpsl)
+        targets = _collect_targets(orders)
+
+        refreshed_used = False
+        if not targets and symbol_key:
+            await self.refresh_account_orders_from_rest()
+            with self._lock:
+                orders = list(self._ws_orders_raw or [])
+            if not orders and self._ws_orders_tpsl:
+                orders = list(self._ws_orders_tpsl)
+        targets = _collect_targets(orders)
+        refreshed_used = True
+        # Only cancel one TP and one SL per symbol (latest by updatedAt/createdAt)
+        def _pick_latest(order_list: list[Dict[str, Any]], prefix: str) -> list[Dict[str, Any]]:
+            filtered = []
+            for o in order_list:
+                otype = (o.get("type") or o.get("orderType") or o.get("order_type") or "").upper()
+                if prefix == "TP" and otype.startswith("TAKE_PROFIT"):
+                    filtered.append(o)
+                if prefix == "SL" and otype.startswith("STOP"):
+                    filtered.append(o)
+            if not filtered:
+                return []
+            filtered.sort(
+                key=lambda o: o.get("updatedAt")
+                or o.get("createdAt")
+                or o.get("updateTime")
+                or o.get("createTime")
+                or 0,
+                reverse=True,
+            )
+            return [filtered[0]]
+
+        limited_targets: list[Dict[str, Any]] = []
+        limited_targets.extend(_pick_latest(targets, "TP") if cancel_tp else [])
+        limited_targets.extend(_pick_latest(targets, "SL") if cancel_sl else [])
+        targets = limited_targets
+
+        canceled_ids: list[str] = []
+        errors: list[str] = []
+
+        def _cancel_success(resp: Dict[str, Any]) -> bool:
+            code, status = self._extract_code_status(resp)
+            success_flags = {
+                str(flag).lower()
+                for flag in (status, resp.get("success"), resp.get("retMsg"))
+                if flag is not None
+            }
+            if code in (0, "0", None) and (
+                "" in success_flags or "success" in success_flags or "canceled" in success_flags or "cancelled" in success_flags or "ok" in success_flags
+            ):
+                return True
+            data = resp.get("data")
+            if data is True:
+                return True
+            return False
+
+        async def _attempt_cancel(batch: list[Dict[str, Any]]) -> None:
+            for target in batch:
+                oid = target.get("orderId") or target.get("order_id") or target.get("id")
+                cid = target.get("clientOrderId") or target.get("clientId")
+                try:
+                    resp = None
+                    if cid is not None:
+                        resp = await asyncio.to_thread(self._client.delete_order_by_client_order_id_v3, id=str(cid))
+                    if oid is not None and (resp is None or not _cancel_success(resp)):
+                        try:
+                            oid_val = int(oid) if str(oid).isdigit() else oid
+                        except Exception:
+                            oid_val = oid
+                        resp = await asyncio.to_thread(self._client.delete_order_v3, id=oid_val)
+                    if resp is not None and _cancel_success(resp):
+                        canceled_ids.append(str(oid or cid))
+                    else:
+                        code, status = self._extract_code_status(resp or {})
+                        errors.append(f"cancel failed id={oid or cid} code={code} status={status}")
+                except Exception as exc:  # pragma: no cover
+                    errors.append(f"cancel error id={oid or cid} err={exc}")
+
+        logger.info(
+            "cancel_tpsl_attempt",
+            extra={
+                "event": "cancel_tpsl_attempt",
+                "symbol": symbol_key,
+                "cancel_tp": cancel_tp,
+                "cancel_sl": cancel_sl,
+                "target_count": len(targets),
+                "first_target_type": targets[0].get("type") if targets else None,
+                "first_target_status": targets[0].get("status") if targets else None,
+                "first_target_id": (targets[0].get("orderId") or targets[0].get("order_id") or targets[0].get("id")) if targets else None,
+                "first_target_client": targets[0].get("clientOrderId") or targets[0].get("clientId") if targets else None,
+            },
+        )
+
+        await _attempt_cancel(targets)
+        # If nothing canceled, refresh orders snapshot and try once more in case cache was stale.
+        if not canceled_ids and symbol_key:
+            await self.refresh_account_orders_from_rest()
+            with self._lock:
+                refreshed = [
+                    o
+                    for o in (self._ws_orders_raw or [])
+                    if isinstance(o, dict)
+                    and self._normalize_symbol_value(o.get("symbol") or o.get("market")) == symbol_key
+                    and o.get("isPositionTpsl")
+                    and str(o.get("status") or "").lower() not in {"canceled", "cancelled", "filled", "triggered"}
+                ]
+            logger.info(
+                "cancel_tpsl_retry",
+                extra={
+                    "event": "cancel_tpsl_retry",
+                    "symbol": symbol_key,
+                    "cancel_tp": cancel_tp,
+                    "cancel_sl": cancel_sl,
+                    "target_count": len(refreshed),
+                    "first_target_type": refreshed[0].get("type") if refreshed else None,
+                    "first_target_status": refreshed[0].get("status") if refreshed else None,
+                    "first_target_id": (refreshed[0].get("orderId") or refreshed[0].get("order_id") or refreshed[0].get("id")) if refreshed else None,
+                    "first_target_client": refreshed[0].get("clientOrderId") or refreshed[0].get("clientId") if refreshed else None,
+                },
+            )
+            await _attempt_cancel(refreshed)
+        return {"canceled": canceled_ids, "errors": errors}
+
+    async def update_targets(
+        self,
+        *,
+        symbol: str,
+        side: str,
+        size: float,
+        take_profit: Optional[float] = None,
+        stop_loss: Optional[float] = None,
+        cancel_existing: bool = False,
+        cancel_tp: bool = False,
+        cancel_sl: bool = False,
+    ) -> Dict[str, Any]:
+        """
+        Submit TP/SL orders for an open position. Uses TAKE_PROFIT_MARKET and STOP_MARKET reduce-only orders.
+        """
+        results: Dict[str, Any] = {"submitted": []}
+        if cancel_existing or cancel_tp or cancel_sl:
+            results["canceled"] = await self.cancel_tpsl_orders(
+                symbol=symbol, cancel_tp=(cancel_existing or cancel_tp), cancel_sl=(cancel_existing or cancel_sl)
+            )
+        order_side = "SELL" if str(side).upper() in {"LONG", "BUY"} else "BUY"
+        info = self.get_symbol_info(symbol) or {}
+        tick = float(info.get("tickSize") or 0)
+        step = float(info.get("stepSize") or 0)
+        size_fmt = self._format_with_step(size, step) if size is not None else size
+        async def _submit(order_type: str, trigger_price: float) -> Optional[Dict[str, Any]]:
+            payload = {
+                "symbol": symbol,
+                "side": order_side,
+                "type": order_type,
+                "size": size_fmt,
+                "triggerPrice": self._format_with_step(trigger_price, tick) if trigger_price is not None else None,
+                "price": self._format_with_step(trigger_price, tick) if trigger_price is not None else None,
+                "reduceOnly": True,
+                "isPositionTpsl": True,
+                "timeInForce": "GOOD_TIL_CANCEL",
+            }
+            try:
+                resp = await asyncio.to_thread(self._client.create_order_v3, **payload)
+                return {"payload": payload, "raw": resp}
+            except Exception as exc:  # pragma: no cover
+                logger.warning("update_targets_submit_failed", extra={"event": "update_targets_submit_failed", "error": str(exc)})
+                return {"payload": payload, "error": str(exc)}
+
+        if take_profit is not None:
+            tp_res = await _submit("TAKE_PROFIT_MARKET", take_profit)
+            if tp_res:
+                results["submitted"].append(tp_res)
+        if stop_loss is not None:
+            sl_res = await _submit("STOP_MARKET", stop_loss)
+            if sl_res:
+                results["submitted"].append(sl_res)
+        return results
     async def build_order_payload(
         self,
         *,

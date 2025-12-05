@@ -77,15 +77,15 @@ description: "Task list for Fix TP/SL position updates feature"
 
 ### Tests for User Story 2
 
-- [ ] T016 [P] [US2] Add backend tests for clear-only requests (clear_tp, clear_sl) to `/api/positions/{position_id}/targets` and resulting `/api/positions` output in backend/tests (D:\Automation\Python scripts\apex-risk-trade-tool\backend\tests)
+  - [X] T016 [P] [US2] Add backend tests for clear-only requests (clear_tp, clear_sl) to `/api/positions/{position_id}/targets` and resulting `/api/positions` output in backend/tests (D:\Automation\Python scripts\apex-risk-trade-tool\backend\tests)
 
 ### Implementation for User Story 2
 
-- [ ] T017 [US2] Extend TargetsUpdateRequest validation to allow explicit clear_tp and clear_sl semantics, rejecting no-op updates in backend/trading/schemas.py (D:\Automation\Python scripts\apex-risk-trade-tool\backend\trading\schemas.py)
-- [ ] T018 [US2] Implement backend handling of clear_tp and clear_sl (cancelling existing TP/SL orders and clearing local hints/map entries) in OrderManager.modify_targets and ExchangeGateway.update_targets in backend/trading/order_manager.py and backend/exchange/exchange_gateway.py (D:\Automation\Python scripts\apex-risk-trade-tool\backend\trading\order_manager.py)
-- [ ] T019 [P] [US2] Update positions targets API contract usage (request/response shape) to match clear semantics while remaining backward-compatible for existing clients in backend/api/routes_positions.py (D:\Automation\Python scripts\apex-risk-trade-tool\backend\api\routes_positions.py)
-- [ ] T020 [P] [US2] Add explicit Clear TP and Clear SL UI controls or flows wired to send clear-only requests without accidentally dropping the other target in ui/index.html and related JS (D:\Automation\Python scripts\apex-risk-trade-tool\ui\index.html)
-- [ ] T021 [US2] Ensure UI labels and confirmations clearly indicate when protections are being removed and prevent accidental clears (e.g., confirmation or distinct styling) in ui/index.html (D:\Automation\Python scripts\apex-risk-trade-tool\ui\index.html)
+  - [X] T017 [US2] Extend TargetsUpdateRequest validation to allow explicit clear_tp and clear_sl semantics, rejecting no-op updates in backend/trading/schemas.py (D:\Automation\Python scripts\apex-risk-trade-tool\backend\trading\schemas.py)
+  - [X] T018 [US2] Implement backend handling of clear_tp and clear_sl (cancelling existing TP/SL orders and clearing local hints/map entries) in OrderManager.modify_targets and ExchangeGateway.update_targets in backend/trading/order_manager.py and backend/exchange/exchange_gateway.py (D:\Automation\Python scripts\apex-risk-trade-tool\backend\trading\order_manager.py)
+  - [X] T019 [P] [US2] Update positions targets API contract usage (request/response shape) to match clear semantics while remaining backward-compatible for existing clients in backend/api/routes_positions.py (D:\Automation\Python scripts\apex-risk-trade-tool\backend\api\routes_positions.py)
+  - [X] T020 [P] [US2] Add explicit Clear TP and Clear SL UI controls or flows wired to send clear-only requests without accidentally dropping the other target in ui/index.html and related JS (D:\Automation\Python scripts\apex-risk-trade-tool\ui\index.html)
+  - [X] T021 [US2] Ensure UI labels and confirmations clearly indicate when protections are being removed and prevent accidental clears (e.g., confirmation or distinct styling) in ui/index.html (D:\Automation\Python scripts\apex-risk-trade-tool\ui\index.html)
 
 **Checkpoint**: User Stories 1 and 2 are independently functional; traders can both modify and intentionally clear TP/SL with consistent backend and UI behaviour.
 

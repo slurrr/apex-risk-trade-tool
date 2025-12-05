@@ -39,10 +39,12 @@
     return data;
   }
 
-  async function updateTargets(positionId, tp, sl) {
+  async function updateTargets(positionId, tp, sl, opts = {}) {
     const body = {};
     if (tp !== null && tp !== undefined) body.take_profit = tp;
     if (sl !== null && sl !== undefined) body.stop_loss = sl;
+    if (opts.clearTp) body.clear_tp = true;
+    if (opts.clearSl) body.clear_sl = true;
     const resp = await fetch(`${API_BASE}/api/positions/${positionId}/targets`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -128,6 +130,10 @@
                 <input type="number" step="0.0001" class="sl-input" placeholder="Stop loss price" value="${slVal}" />
               </label>
               <button class="btn primary submit-modify" type="button">Submit</button>
+            </div>
+            <div class="manage-row">
+              <button class="btn ghost clear-tp" type="button">Clear TP</button>
+              <button class="btn ghost clear-sl" type="button">Clear SL</button>
             </div>
           </div>
         </td>
@@ -262,6 +268,8 @@
       const marketCloseBtn = event.target.closest(".market-close");
       const limitCloseBtn = event.target.closest(".limit-close");
       const submitModify = event.target.closest(".submit-modify");
+      const clearTpBtn = event.target.closest(".clear-tp");
+      const clearSlBtn = event.target.closest(".clear-sl");
       const row = event.target.closest("tr");
       if (!row) return;
       const positionId = row.dataset.positionId;
@@ -348,6 +356,34 @@
           errorBox.textContent = err.message;
         } finally {
           limitCloseBtn.disabled = false;
+        }
+        return;
+      }
+      if (clearTpBtn) {
+        if (!window.confirm("Clear take profit for this position?")) return;
+        clearTpBtn.disabled = true;
+        try {
+          await updateTargets(positionId, null, null, { clearTp: true });
+          await loadPositions();
+          tpValues.delete(positionId);
+        } catch (err) {
+          errorBox.textContent = err.message;
+        } finally {
+          clearTpBtn.disabled = false;
+        }
+        return;
+      }
+      if (clearSlBtn) {
+        if (!window.confirm("Clear stop loss for this position?")) return;
+        clearSlBtn.disabled = true;
+        try {
+          await updateTargets(positionId, null, null, { clearSl: true });
+          await loadPositions();
+          slValues.delete(positionId);
+        } catch (err) {
+          errorBox.textContent = err.message;
+        } finally {
+          clearSlBtn.disabled = false;
         }
         return;
       }

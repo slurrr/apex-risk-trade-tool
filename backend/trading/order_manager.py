@@ -93,6 +93,7 @@ class OrderManager:
                     return
 
         active_map = self._extract_tpsl_from_orders(raw_orders)
+
         if active_map:
             incoming_symbols = len(active_map)
             existing_symbols = len(self._tpsl_targets_by_symbol)
@@ -367,7 +368,9 @@ class OrderManager:
 
         if clear_tp or clear_sl:
             cancel_resp = await self.gateway.cancel_tpsl_orders(
-                symbol=symbol or None, cancel_tp=clear_tp, cancel_sl=clear_sl
+                symbol=symbol or None,
+                cancel_tp=clear_tp,
+                cancel_sl=clear_sl,
             )
             response["canceled"] = cancel_resp
             cache_entry = self._tpsl_targets_by_symbol.get(symbol_key, {})
