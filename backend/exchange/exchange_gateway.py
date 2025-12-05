@@ -185,6 +185,25 @@ class ExchangeGateway:
         quantized = Decimal(str(value)).quantize(step_decimal, rounding=ROUND_DOWN)
         return format(quantized, "f").rstrip("0").rstrip(".") if "." in format(quantized, "f") else str(quantized)
 
+    def _current_account_summary(self) -> Optional[Dict[str, float]]:
+        with self._lock:
+            total_equity = self._account_cache.get("totalEquityValue")
+            available = self._account_cache.get("availableBalance")
+            total_upnl = self._account_cache.get("totalUnrealizedPnl")
+        if total_equity is None and available is None and total_upnl is None:
+            return None
+        summary: Dict[str, float] = {
+            "total_equity": float(total_equity) if total_equity is not None else 0.0,
+            "available_margin": float(available) if available is not None else 0.0,
+            "total_upnl": float(total_upnl) if total_upnl is not None else 0.0,
+        }
+        return summary
+
+    def _publish_account_summary_event(self) -> None:
+        summary = self._current_account_summary()
+        if summary:
+            self._publish_event({"type": "account", "payload": summary})
+
     def _get_worst_price(self, symbol: str) -> Optional[float]:
         """Fetch worst price for symbol from documented endpoint."""
         endpoints = []
@@ -366,6 +385,7 @@ class ExchangeGateway:
             self._account_cache["availableBalance"] = available_balance_stream
         if total_upnl_stream is not None:
             self._account_cache["totalUnrealizedPnl"] = total_upnl_stream
+        self._publish_account_summary_event()
         # Positions: trigger REST refresh to avoid dropping on partial WS snapshots
         if has_positions_key and self._loop and (self._positions_refresh_task is None or self._positions_refresh_task.done()):
             self._positions_refresh_task = self._loop.create_task(self._refresh_positions_now())
@@ -706,11 +726,10 @@ class ExchangeGateway:
                 "total_upnl": total_upnl,
             },
         )
-        return {
-            "total_equity": float(total_equity) if total_equity is not None else 0.0,
-            "total_upnl": float(total_upnl) if total_upnl is not None else 0.0,
-            "available_margin": float(available) if available is not None else 0.0,
-        }
+        summary = self._current_account_summary()
+        if summary:
+            return summary
+        return {"total_equity": 0.0, "total_upnl": 0.0, "available_margin": 0.0}
 
     async def load_configs(self) -> None:
         """Fetch and cache symbol configs."""
@@ -852,10 +871,12 @@ class ExchangeGateway:
                         account = payload.get("account") if isinstance(payload, dict) else None
                         account_equity = None
                         available_balance = None
+                        realized_pnl = None
                         total_upnl = None
                         if isinstance(payload, dict):
                             account_equity = payload.get("totalEquityValue")
                             available_balance = payload.get("availableBalance")
+                            realized_pnl = payload.get("realizedPnl")
                             total_upnl = (
                                 payload.get("totalUnrealizedPnl")
                                 or payload.get("totalUpnl")
@@ -875,6 +896,7 @@ class ExchangeGateway:
                         if isinstance(account, dict):
                             account_equity = account_equity or account.get("totalEquityValue")
                             available_balance = available_balance or account.get("availableBalance")
+                            realized_pnl = realized_pnl or account.get("realizedPnl")
                             total_upnl = (
                                 total_upnl
                                 or account.get("totalUnrealizedPnl")
@@ -889,14 +911,21 @@ class ExchangeGateway:
                             account_equity = account.get("totalEquity") or account.get("total_equity")
                         if available_balance is not None and account_equity is None:
                             account_equity = available_balance
+                        combined_available = None
+                        if available_balance is not None or realized_pnl is not None:
+                            try:
+                                combined_available = float(available_balance or 0) + float(realized_pnl or 0)
+                            except Exception:
+                                combined_available = available_balance
                         if account_equity is not None:
                             self._account_cache.update(
                                 {
                                     "totalEquityValue": account_equity,
-                                    "availableBalance": available_balance,
+                                    "availableBalance": combined_available if combined_available is not None else available_balance,
                                     "totalUnrealizedPnl": total_upnl,
                                 }
                             )
+                            self._publish_account_summary_event()
                             return float(account_equity)
                         wallets = (account or {}).get("contractWallets") or payload.get("contractWallets") or []
                         if isinstance(wallets, list) and wallets:
@@ -908,13 +937,19 @@ class ExchangeGateway:
                                 token = wallet.get("token") or "USDT"
                                 price = await self._get_usdt_price(token)
                                 equity_usdt += bal * price
+                            combined_available = (
+                                float(available_balance or 0) + float(realized_pnl or 0)
+                                if available_balance is not None or realized_pnl is not None
+                                else available_balance
+                            )
                             self._account_cache.update(
                                 {
                                     "totalEquityValue": equity_usdt,
-                                    "availableBalance": available_balance,
+                                    "availableBalance": combined_available,
                                     "totalUnrealizedPnl": total_upnl,
                                 }
                             )
+                            self._publish_account_summary_event()
                             return equity_usdt
                         raise ValueError("totalEquityValue not present in account balance response")
                 except Exception as exc:
@@ -930,6 +965,7 @@ class ExchangeGateway:
             if legacy_account.get("totalEquity") is not None:
                 if legacy_account.get("totalUnrealizedPnl") is not None:
                     self._account_cache["totalUnrealizedPnl"] = legacy_account.get("totalUnrealizedPnl")
+                self._publish_account_summary_event()
                 return float(legacy_account["totalEquity"])
             wallets = legacy_payload.get("contractWallets") or []
             if isinstance(wallets, list) and wallets:
