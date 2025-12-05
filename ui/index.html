@@ -17,6 +17,7 @@
       <div class="title-row">
         <h1 class="app-title">TradeSizer</h1>
         <p class="app-subtitle">Responsive trading panel with risk management built in</p>
+        <button type="button" class="theme-toggle" id="theme-toggle" aria-label="Toggle theme"></button>
       </div>
       <div class="account-summary" id="account-summary">
         <div class="summary-item">
@@ -46,6 +47,7 @@
           <span>Symbol</span>
           <div class="dropdown">
             <input type="text" id="symbol-input" autocomplete="off" placeholder="BTC-USDT" required />
+            <button type="button" class="clear-input hidden" id="symbol-clear" aria-label="Clear symbol input">&times;</button>
             <div class="dropdown-list" id="symbol-options"></div>
           </div>
         </label>

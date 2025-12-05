@@ -1,22 +1,75 @@
 (function () {
   const API_BASE = window.API_BASE || "http://localhost:8000";
   const SYMBOL_PATTERN = /^[A-Z0-9]+-[A-Z0-9]+$/;
+  const THEME_STORAGE_KEY = "trade_app_theme";
+  let manualTheme = null;
+  let mediaQuery;
   const state = {
     symbols: [],
   };
 
-  function applyTheme(theme) {
+  function getStoredTheme() {
+    try {
+      return window.localStorage ? window.localStorage.getItem(THEME_STORAGE_KEY) : null;
+    } catch (err) {
+      return null;
+    }
+  }
+
+  function persistTheme(theme) {
+    try {
+      if (window.localStorage) {
+        if (theme) {
+          window.localStorage.setItem(THEME_STORAGE_KEY, theme);
+        } else {
+          window.localStorage.removeItem(THEME_STORAGE_KEY);
+        }
+      }
+    } catch (err) {
+      // ignore storage errors
+    }
+  }
+
+  function applyTheme(theme, options = {}) {
     document.documentElement.setAttribute("data-theme", theme);
+    const toggleBtn = document.getElementById("theme-toggle");
+    if (toggleBtn) {
+      const isDark = theme === "dark";
+      toggleBtn.dataset.icon = isDark ? "☾" : "☼";
+      toggleBtn.dataset.theme = theme;
+    }
+    if (options.persist) {
+      persistTheme(theme);
+    }
   }
 
   function initThemeListener() {
-    const media = window.matchMedia("(prefers-color-scheme: dark)");
-    const setTheme = () => applyTheme(media.matches ? "dark" : "light");
-    setTheme();
-    if (typeof media.addEventListener === "function") {
-      media.addEventListener("change", setTheme);
-    } else if (typeof media.addListener === "function") {
-      media.addListener(setTheme);
+    mediaQuery = window.matchMedia("(prefers-color-scheme: dark)");
+    const stored = getStoredTheme();
+    if (stored) {
+      manualTheme = stored;
+      applyTheme(stored);
+    } else {
+      applyTheme(mediaQuery.matches ? "dark" : "light");
+    }
+    const handleMediaChange = () => {
+      if (!manualTheme) {
+        applyTheme(mediaQuery.matches ? "dark" : "light");
+      }
+    };
+    if (typeof mediaQuery.addEventListener === "function") {
+      mediaQuery.addEventListener("change", handleMediaChange);
+    } else if (typeof mediaQuery.addListener === "function") {
+      mediaQuery.addListener(handleMediaChange);
+    }
+    const toggleBtn = document.getElementById("theme-toggle");
+    if (toggleBtn) {
+      toggleBtn.addEventListener("click", () => {
+        const current = document.documentElement.getAttribute("data-theme") || (mediaQuery.matches ? "dark" : "light");
+        const next = current === "dark" ? "light" : "dark";
+        manualTheme = next;
+        applyTheme(next, { persist: true });
+      });
     }
   }
 
@@ -135,14 +188,33 @@
   function attachSymbolDropdown() {
     const input = document.getElementById("symbol-input");
     const list = document.getElementById("symbol-options");
+    const clearBtn = document.getElementById("symbol-clear");
     if (!input || !list) return;
-    input.addEventListener("input", () => renderSymbolOptions(input.value));
+    const toggleClear = () => {
+      if (!clearBtn) return;
+      const hasValue = Boolean((input.value || "").trim());
+      clearBtn.classList.toggle("hidden", !hasValue);
+    };
+    input.addEventListener("input", () => {
+      renderSymbolOptions(input.value);
+      toggleClear();
+    });
     input.addEventListener("focus", () => renderSymbolOptions(input.value));
     document.addEventListener("click", (evt) => {
-      if (!list.contains(evt.target) && evt.target !== input) {
+      if (!list.contains(evt.target) && evt.target !== input && evt.target !== clearBtn) {
         list.classList.remove("open");
       }
     });
+    if (clearBtn) {
+      clearBtn.addEventListener("click", (evt) => {
+        evt.preventDefault();
+        input.value = "";
+        input.focus();
+        renderSymbolOptions("");
+        toggleClear();
+      });
+    }
+    toggleClear();
   }
 
   function validateSymbol(value) {
@@ -164,6 +236,7 @@
     SYMBOL_PATTERN,
     formatNumber,
     validateSymbol,
+    applyTheme,
     renderAccountSummary,
     applyAccountPayload,
     loadAccountSummary,
