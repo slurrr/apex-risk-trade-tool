@@ -246,3 +246,111 @@ def test_modify_targets_seeds_map_and_hints_for_immediate_display(monkeypatch):
     enriched = asyncio.run(manager.list_positions())
     assert enriched[0]["take_profit"] == 120.0
     assert enriched[0]["stop_loss"] == 90.0
+
+
+def test_reconcile_tpsl_preserves_map_on_empty_snapshot():
+    gateway = FakeGateway(
+        positions=[
+            {"positionId": "pos-1", "symbol": "BTC-USDT", "positionSide": "LONG", "size": "1", "entryPrice": "100"},
+        ]
+    )
+    manager = OrderManager(gateway)
+    # Seed map from a TP+SL snapshot
+    manager._reconcile_tpsl(
+        [
+            {
+                "symbol": "BTC-USDT",
+                "type": "TAKE_PROFIT_MARKET",
+                "isPositionTpsl": True,
+                "triggerPrice": "120",
+                "status": "UNTRIGGERED",
+            },
+            {
+                "symbol": "BTC-USDT",
+                "type": "STOP_MARKET",
+                "isPositionTpsl": True,
+                "triggerPrice": "90",
+                "status": "UNTRIGGERED",
+            },
+        ]
+    )
+    # Empty snapshot should leave map intact
+    manager._reconcile_tpsl([])
+    enriched = asyncio.run(manager.list_positions())
+    assert enriched[0]["take_profit"] == 120.0
+    assert enriched[0]["stop_loss"] == 90.0
+
+
+def test_reconcile_tpsl_merges_without_dropping_existing_symbols():
+    gateway = FakeGateway(
+        positions=[
+            {"positionId": "pos-btc", "symbol": "BTC-USDT", "positionSide": "LONG", "size": "1", "entryPrice": "100"},
+            {"positionId": "pos-doge", "symbol": "DOGE-USDT", "positionSide": "LONG", "size": "10", "entryPrice": "0.1"},
+        ]
+    )
+    manager = OrderManager(gateway)
+    manager._reconcile_tpsl(
+        [
+            {
+                "symbol": "BTC-USDT",
+                "type": "TAKE_PROFIT_MARKET",
+                "isPositionTpsl": True,
+                "triggerPrice": "150",
+                "status": "UNTRIGGERED",
+            },
+            {
+                "symbol": "BTC-USDT",
+                "type": "STOP_MARKET",
+                "isPositionTpsl": True,
+                "triggerPrice": "90",
+                "status": "UNTRIGGERED",
+            },
+        ]
+    )
+    # Second snapshot only has DOGE TP; BTC protections should remain.
+    manager._reconcile_tpsl(
+        [
+            {
+                "symbol": "DOGE-USDT",
+                "type": "TAKE_PROFIT_MARKET",
+                "isPositionTpsl": True,
+                "triggerPrice": "0.25",
+                "status": "UNTRIGGERED",
+            }
+        ]
+    )
+    enriched = asyncio.run(manager.list_positions())
+    btc = next(p for p in enriched if p["symbol"] == "BTC-USDT")
+    doge = next(p for p in enriched if p["symbol"] == "DOGE-USDT")
+    assert btc["take_profit"] == 150.0
+    assert btc["stop_loss"] == 90.0
+    assert doge["take_profit"] == 0.25
+    assert doge["stop_loss"] is None
+
+
+def test_reconcile_tpsl_single_cancel_clears_only_that_target():
+    gateway = FakeGateway(
+        positions=[
+            {"positionId": "pos-1", "symbol": "BTC-USDT", "positionSide": "LONG", "size": "1", "entryPrice": "100"},
+        ]
+    )
+    manager = OrderManager(gateway)
+    manager._tpsl_targets_by_symbol["BTC-USDT"] = {"take_profit": 120.0, "stop_loss": 90.0}
+    manager.position_targets["BTC-USDT"] = {"take_profit": 120.0, "stop_loss": 90.0}
+    # Single canceled TP should drop TP but keep SL intact.
+    manager._reconcile_tpsl(
+        [
+            {
+                "symbol": "BTC-USDT",
+                "type": "TAKE_PROFIT_MARKET",
+                "isPositionTpsl": True,
+                "triggerPrice": "120",
+                "status": "CANCELED",
+            }
+        ]
+    )
+    enriched = asyncio.run(manager.list_positions())
+    assert enriched[0]["take_profit"] is None
+    assert enriched[0]["stop_loss"] == 90.0
+    assert manager.position_targets["BTC-USDT"]["stop_loss"] == 90.0
+    assert "take_profit" not in manager.position_targets["BTC-USDT"]
