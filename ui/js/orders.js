@@ -85,6 +85,9 @@
       socket.onmessage = (event) => {
         try {
           const msg = JSON.parse(event.data);
+          if (msg.type === "account" && window.TradeApp && typeof window.TradeApp.applyAccountPayload === "function") {
+            window.TradeApp.applyAccountPayload(msg.payload);
+          }
           if (msg.type === "orders" && Array.isArray(msg.payload)) {
             renderOrders(msg.payload);
           }

@@ -78,9 +78,31 @@ class ExchangeGateway:
             logger.warning("prime_client configs_v3 failed", extra={"error": str(exc)})
         try:
             acct = self._client.get_account_v3()
-            if isinstance(acct, dict):
-                payload = acct.get("result") or acct
+            payload = self._unwrap_payload(acct)
+            if isinstance(payload, dict):
                 self._account_cache.update(payload)
+                account_candidates: list[dict[str, Any]] = []
+                account_section = payload.get("account")
+                if isinstance(account_section, dict):
+                    contract_account = account_section.get("contractAccount")
+                    if isinstance(contract_account, dict):
+                        account_candidates.append(contract_account)
+                    account_candidates.append(account_section)
+                contract_account = payload.get("contractAccount")
+                if isinstance(contract_account, dict):
+                    account_candidates.append(contract_account)
+                contract_accounts = payload.get("contractAccounts") or payload.get("accounts")
+                if isinstance(contract_accounts, list) and contract_accounts:
+                    first = contract_accounts[0]
+                    if isinstance(first, dict):
+                        account_candidates.append(first)
+                account = next((cand for cand in account_candidates if isinstance(cand, dict)), {})
+                if account.get("totalEquityValue") is not None:
+                    self._account_cache.setdefault("totalEquityValue", account.get("totalEquityValue"))
+                if account.get("availableBalance") is not None:
+                    self._account_cache.setdefault("availableBalance", account.get("availableBalance"))
+                if account.get("totalUnrealizedPnl") is not None:
+                    self._account_cache.setdefault("totalUnrealizedPnl", account.get("totalUnrealizedPnl"))
         except Exception as exc:
             logger.warning("prime_client get_account_v3 failed", extra={"error": str(exc)})
 
@@ -145,6 +167,15 @@ class ExchangeGateway:
         if not self._loop:
             return
         self._publish_event({"type": "orders", "payload": list(self._ws_orders.values())})
+
+    def _unwrap_payload(self, resp: Any) -> Any:
+        """Handle Apex responses that wrap data under result/data or return bare lists."""
+        if not isinstance(resp, dict):
+            return resp
+        for key in ("result", "data"):
+            if key in resp:
+                return resp.get(key)
+        return resp
 
     def _format_with_step(self, value: float, step: Optional[float]) -> str:
         """Format numeric to a string respecting step precision."""
@@ -319,26 +350,36 @@ class ExchangeGateway:
                             or acct.get("totalUpnl")
                         )
                     self._publish_event({"type": "account", "payload": acct})
-            if total_equity_stream is not None:
-                self._account_cache["totalEquityValue"] = total_equity_stream
-            if available_balance_stream is not None:
-                self._account_cache["availableBalance"] = available_balance_stream
-            if total_upnl_stream is not None:
-                self._account_cache["totalUnrealizedPnl"] = total_upnl_stream
-            # Positions: trigger REST refresh to avoid dropping on partial WS snapshots
-            if has_positions_key and self._loop and (self._positions_refresh_task is None or self._positions_refresh_task.done()):
-                self._positions_refresh_task = self._loop.create_task(self._refresh_positions_now())
-            # Orders: trigger REST refresh for authoritative list instead of applying partial WS payloads
-            if has_orders_key and self._loop and (self._order_refresh_task is None or self._order_refresh_task.done()):
-                self._order_refresh_task = self._loop.create_task(self._refresh_orders_now())
-            # Cache WS orders immediately so downstream callers can see TP/SL orders before REST reconciliation.
-            if orders_raw:
-                try:
-                    mapped = self._filter_and_map_orders(orders_raw)
-                    if mapped:
-                        self._ws_orders = mapped
-                except Exception:
-                    pass
+                    logger.info(
+                        "account_stream_update",
+                        extra={
+                            "event": "account_stream_update",
+                            "payload_keys": list(acct.keys()),
+                            "total_equity_stream": total_equity_stream,
+                            "available_stream": available_balance_stream,
+                            "total_upnl_stream": total_upnl_stream,
+                        },
+                    )
+        if total_equity_stream is not None:
+            self._account_cache["totalEquityValue"] = total_equity_stream
+        if available_balance_stream is not None:
+            self._account_cache["availableBalance"] = available_balance_stream
+        if total_upnl_stream is not None:
+            self._account_cache["totalUnrealizedPnl"] = total_upnl_stream
+        # Positions: trigger REST refresh to avoid dropping on partial WS snapshots
+        if has_positions_key and self._loop and (self._positions_refresh_task is None or self._positions_refresh_task.done()):
+            self._positions_refresh_task = self._loop.create_task(self._refresh_positions_now())
+        # Orders: trigger REST refresh for authoritative list instead of applying partial WS payloads
+        if has_orders_key and self._loop and (self._order_refresh_task is None or self._order_refresh_task.done()):
+            self._order_refresh_task = self._loop.create_task(self._refresh_orders_now())
+        # Cache WS orders immediately so downstream callers can see TP/SL orders before REST reconciliation.
+        if orders_raw:
+            try:
+                mapped = self._filter_and_map_orders(orders_raw)
+                if mapped:
+                    self._ws_orders = mapped
+            except Exception:
+                pass
 
         if publish_positions:
             self._publish_event({"type": "positions", "payload": list(self._ws_positions.values())})
@@ -573,29 +614,67 @@ class ExchangeGateway:
             total_equity = self._account_cache.get("totalEquityValue")
             available = self._account_cache.get("availableBalance")
             total_upnl = self._account_cache.get("totalUnrealizedPnl")
+        if total_equity is None or available is None:
+            try:
+                await self.get_account_equity()
+            except Exception:
+                pass
+            with self._lock:
+                if total_equity is None:
+                    total_equity = self._account_cache.get("totalEquityValue")
+                if available is None:
+                    available = self._account_cache.get("availableBalance")
+                if total_upnl is None:
+                    total_upnl = self._account_cache.get("totalUnrealizedPnl")
         if total_equity is None or available is None or total_upnl is None:
+            logger.info(
+                "account_summary_cache_miss",
+                extra={
+                    "event": "account_summary_cache_miss",
+                    "cached_keys": list(self._account_cache.keys()),
+                    "has_equity": total_equity is not None,
+                    "has_available": available is not None,
+                    "has_upnl": total_upnl is not None,
+                },
+            )
             try:
                 resp = await asyncio.to_thread(self._client.get_account_v3)
-                payload = resp.get("result") or resp
-                account = payload.get("account") or {}
+                payload = self._unwrap_payload(resp)
+                payload_dict = payload if isinstance(payload, dict) else {}
+                account_candidates: list[dict[str, Any]] = []
+                account_section = payload_dict.get("account")
+                if isinstance(account_section, dict):
+                    contract_account = account_section.get("contractAccount")
+                    if isinstance(contract_account, dict):
+                        account_candidates.append(contract_account)
+                    account_candidates.append(account_section)
+                contract_account = payload_dict.get("contractAccount")
+                if isinstance(contract_account, dict):
+                    account_candidates.append(contract_account)
+                contract_accounts = payload_dict.get("contractAccounts") or payload_dict.get("accounts")
+                if isinstance(contract_accounts, list) and contract_accounts:
+                    first = contract_accounts[0]
+                    if isinstance(first, dict):
+                        account_candidates.append(first)
+                account = next((cand for cand in account_candidates if isinstance(cand, dict)), {})
                 total_equity = (
                     account.get("totalEquity")
-                    or payload.get("totalEquityValue")
-                    or payload.get("totalEquity")
+                    or payload_dict.get("totalEquityValue")
+                    or payload_dict.get("totalEquity")
                     or total_equity
                 )
                 available = (
                     account.get("availableBalance")
-                    or payload.get("availableBalance")
-                    or payload.get("available_margin")
+                    or payload_dict.get("availableBalance")
+                    or payload_dict.get("available_margin")
                     or available
                 )
                 total_upnl = (
                     account.get("totalUnrealizedPnl")
                     or account.get("totalUnrealizedPnlUsd")
-                    or payload.get("totalUnrealizedPnl")
-                    or payload.get("totalUnrealizedPnlUsd")
-                    or payload.get("totalUpnl")
+                    or payload_dict.get("totalUnrealizedPnl")
+                    or payload_dict.get("totalUnrealizedPnlUsd")
+                    or payload_dict.get("totalUpnl")
                     or total_upnl
                 )
                 with self._lock:
@@ -605,8 +684,28 @@ class ExchangeGateway:
                         self._account_cache["availableBalance"] = available
                     if total_upnl is not None:
                         self._account_cache["totalUnrealizedPnl"] = total_upnl
+                logger.info(
+                    "account_summary_refetched",
+                    extra={
+                        "event": "account_summary_refetched",
+                        "payload_keys": list(payload_dict.keys()),
+                        "account_keys": list(account.keys()),
+                        "total_equity": total_equity,
+                        "available": available,
+                        "total_upnl": total_upnl,
+                    },
+                )
             except Exception:
                 pass
+        logger.info(
+            "account_summary_snapshot",
+            extra={
+                "event": "account_summary_snapshot",
+                "total_equity": total_equity,
+                "available": available,
+                "total_upnl": total_upnl,
+            },
+        )
         return {
             "total_equity": float(total_equity) if total_equity is not None else 0.0,
             "total_upnl": float(total_upnl) if total_upnl is not None else 0.0,
@@ -753,12 +852,35 @@ class ExchangeGateway:
                         account = payload.get("account") if isinstance(payload, dict) else None
                         account_equity = None
                         available_balance = None
+                        total_upnl = None
                         if isinstance(payload, dict):
                             account_equity = payload.get("totalEquityValue")
                             available_balance = payload.get("availableBalance")
+                            total_upnl = (
+                                payload.get("totalUnrealizedPnl")
+                                or payload.get("totalUpnl")
+                                or payload.get("unrealizedPnl")
+                            )
+                            logger.info(
+                                "account_balance_payload",
+                                extra={
+                                    "event": "account_balance_payload",
+                                    "payload_keys": list(payload.keys()),
+                                    "account_keys": list(account.keys()) if isinstance(account, dict) else [],
+                                    "raw_total_upnl": payload.get("totalUnrealizedPnl")
+                                    or payload.get("totalUpnl")
+                                    or payload.get("unrealizedPnl"),
+                                },
+                            )
                         if isinstance(account, dict):
                             account_equity = account_equity or account.get("totalEquityValue")
                             available_balance = available_balance or account.get("availableBalance")
+                            total_upnl = (
+                                total_upnl
+                                or account.get("totalUnrealizedPnl")
+                                or account.get("totalUpnl")
+                                or account.get("unrealizedPnl")
+                            )
                             # preserve account fields for downstream logging
                             self._account_cache.update({"account": account})
                         if account_equity is None and isinstance(payload, dict):
@@ -772,6 +894,7 @@ class ExchangeGateway:
                                 {
                                     "totalEquityValue": account_equity,
                                     "availableBalance": available_balance,
+                                    "totalUnrealizedPnl": total_upnl,
                                 }
                             )
                             return float(account_equity)
@@ -785,7 +908,13 @@ class ExchangeGateway:
                                 token = wallet.get("token") or "USDT"
                                 price = await self._get_usdt_price(token)
                                 equity_usdt += bal * price
-                            self._account_cache.update({"totalEquityValue": equity_usdt, "availableBalance": available_balance})
+                            self._account_cache.update(
+                                {
+                                    "totalEquityValue": equity_usdt,
+                                    "availableBalance": available_balance,
+                                    "totalUnrealizedPnl": total_upnl,
+                                }
+                            )
                             return equity_usdt
                         raise ValueError("totalEquityValue not present in account balance response")
                 except Exception as exc:
@@ -799,6 +928,8 @@ class ExchangeGateway:
                 self._account_cache.update(legacy_payload)
             legacy_account = legacy_payload.get("account", {}) if isinstance(legacy_payload, dict) else {}
             if legacy_account.get("totalEquity") is not None:
+                if legacy_account.get("totalUnrealizedPnl") is not None:
+                    self._account_cache["totalUnrealizedPnl"] = legacy_account.get("totalUnrealizedPnl")
                 return float(legacy_account["totalEquity"])
             wallets = legacy_payload.get("contractWallets") or []
             if isinstance(wallets, list) and wallets:
@@ -822,8 +953,10 @@ class ExchangeGateway:
                 return list(self._ws_positions.values())
         try:
             resp = await asyncio.to_thread(self._client.get_account_v3)
-            payload = resp.get("result") or resp
-            positions, has_key = self._extract_positions(payload)
+            payload = self._unwrap_payload(resp)
+            if isinstance(payload, list):
+                payload = {"positions": payload}
+            positions, has_key = self._extract_positions(payload if isinstance(payload, dict) else {})
             mapped = {self._normalize_symbol(p): p for p in positions if isinstance(p, dict)} if positions else {}
             with self._lock:
                 if mapped:
@@ -849,8 +982,14 @@ class ExchangeGateway:
                 return list(self._ws_orders.values())
         try:
             resp = await asyncio.to_thread(self._client.open_orders_v3)
-            payload = resp.get("result") or resp
-            orders = payload.get("list") or payload.get("orders") or payload.get("data") or []
+            payload = self._unwrap_payload(resp)
+            orders: Any = []
+            if isinstance(payload, dict):
+                orders = payload.get("list") or payload.get("orders") or payload.get("data") or []
+            elif isinstance(payload, list):
+                orders = payload
+            if isinstance(orders, dict):
+                orders = orders.get("list") or orders.get("orders") or orders.get("data") or []
             mapped = self._filter_and_map_orders(orders)
             with self._lock:
                 if mapped:
@@ -884,10 +1023,14 @@ class ExchangeGateway:
         """
         try:
             resp = await asyncio.to_thread(self._client.get_account_v3)
-            payload = resp.get("result") or resp
-            orders = payload.get("orders") or payload.get("orderList") or []
+            payload = self._unwrap_payload(resp)
+            orders: Any = []
+            if isinstance(payload, dict):
+                orders = payload.get("orders") or payload.get("orderList") or payload.get("list") or payload.get("data")
+            elif isinstance(payload, list):
+                orders = payload
             if isinstance(orders, dict):
-                orders = orders.get("list") or orders.get("orders") or []
+                orders = orders.get("list") or orders.get("orders") or orders.get("data")
             orders = orders if isinstance(orders, list) else []
             if orders:
                 with self._lock:

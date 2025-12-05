@@ -160,6 +160,8 @@ async def stream_updates(
                     if norm:
                         normalized.append(norm)
                 msg = {"type": "orders", "payload": normalized}
+            elif event.get("type") == "account":
+                msg = {"type": "account", "payload": event.get("payload")}
             try:
                 await websocket.send_json(msg)
             except WebSocketDisconnect:

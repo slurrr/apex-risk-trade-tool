@@ -46,6 +46,47 @@
     }
   }
 
+  function coerceNumber(value) {
+    if (value === null || value === undefined) return null;
+    const num = Number(value);
+    return Number.isFinite(num) ? num : null;
+  }
+
+  function normalizeAccountPayload(payload) {
+    if (!payload || typeof payload !== "object") return null;
+    const totalEquity =
+      coerceNumber(payload.total_equity) ||
+      coerceNumber(payload.totalEquity) ||
+      coerceNumber(payload.totalEquityValue) ||
+      coerceNumber(payload.totalEquityUsd) ||
+      coerceNumber(payload.totalEquityUSDT);
+    const available =
+      coerceNumber(payload.available_margin) ||
+      coerceNumber(payload.availableBalance) ||
+      coerceNumber(payload.available) ||
+      coerceNumber(payload.availableEquity);
+    const totalUpnl =
+      coerceNumber(payload.total_upnl) ||
+      coerceNumber(payload.totalUnrealizedPnl) ||
+      coerceNumber(payload.totalUnrealizedPnlUsd) ||
+      coerceNumber(payload.totalUpnl);
+    if (totalEquity === null && available === null && totalUpnl === null) {
+      return null;
+    }
+    return {
+      total_equity: totalEquity ?? 0,
+      available_margin: available ?? 0,
+      total_upnl: totalUpnl ?? 0,
+    };
+  }
+
+  function applyAccountPayload(payload) {
+    const summary = normalizeAccountPayload(payload);
+    if (summary) {
+      renderAccountSummary(summary);
+    }
+  }
+
   async function loadAccountSummary() {
     try {
       const data = await fetchJson(`${API_BASE}/api/account/summary`);
@@ -53,7 +94,7 @@
     } catch (err) {
       // silent fail for header; avoid blocking UI
       const upnlEl = document.getElementById("summary-upnl");
-      if (upnlEl) upnlEl.textContent = "—";
+      if (upnlEl) upnlEl.textContent = "--";
     }
   }
 
@@ -123,6 +164,8 @@
     SYMBOL_PATTERN,
     formatNumber,
     validateSymbol,
+    renderAccountSummary,
+    applyAccountPayload,
     loadAccountSummary,
     renderSymbolOptions,
     loadSymbols,
