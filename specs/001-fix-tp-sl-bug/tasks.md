@@ -116,10 +116,10 @@ description: "Task list for Fix TP/SL position updates feature"
 
 **Purpose**: Improvements and hardening that affect multiple TP/SL stories.
 
-- [ ] T027 [P] Add or update inline and structured logging for TP/SL operations (set, modify, clear, stream reconciliation) in backend/exchange/exchange_gateway.py and backend/trading/order_manager.py (D:\Automation\Python scripts\apex-risk-trade-tool\backend\exchange\exchange_gateway.py)
-- [ ] T028 [P] Update documentation references for TP/SL (cheatsheets, design docs) to reflect new behaviour in apex_api_cheatsheet.md and spec/ docs (D:\Automation\Python scripts\apex-risk-trade-tool\apex_api_cheatsheet.md)
-- [ ] T029 Review and refactor any duplicated TP/SL mapping logic to keep a single clear code path in backend/trading/order_manager.py and backend/exchange/exchange_gateway.py (D:\Automation\Python scripts\apex-risk-trade-tool\backend\trading\order_manager.py)
-- [ ] T030 Run full backend tests and the quickstart TP/SL checks from specs/001-fix-tp-sl-bug/quickstart.md, addressing any regressions (D:\Automation\Python scripts\apex-risk-trade-tool\specs\001-fix-tp-sl-bug\quickstart.md)
+- [X] T027 [P] Add or update inline and structured logging for TP/SL operations (set, modify, clear, stream reconciliation) in backend/exchange/exchange_gateway.py and backend/trading/order_manager.py (D:\Automation\Python scripts\apex-risk-trade-tool\backend\exchange\exchange_gateway.py)
+- [X] T028 [P] Update documentation references for TP/SL (cheatsheets, design docs) to reflect new behaviour in apex_api_cheatsheet.md and spec/ docs (D:\Automation\Python scripts\apex-risk-trade-tool\apex_api_cheatsheet.md)
+- [X] T029 Review and refactor any duplicated TP/SL mapping logic to keep a single clear code path in backend/trading/order_manager.py and backend/exchange/exchange_gateway.py (D:\Automation\Python scripts\apex-risk-trade-tool\backend\trading\order_manager.py)
+- [X] T030 Run full backend tests and the quickstart TP/SL checks from specs/001-fix-tp-sl-bug/quickstart.md, addressing any regressions (D:\Automation\Python scripts\apex-risk-trade-tool\specs\001-fix-tp-sl-bug\quickstart.md)
 
 ---
 

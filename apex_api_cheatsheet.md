@@ -95,6 +95,14 @@ Returns: `{ "data": "<id>" }`
 
 Body: - `id`: clientOrderId
 
+#### TP/SL specifics (position protections)
+
+- **Source of truth**: private WS `ws_zk_accounts_v3` `orders` payload; only entries with `isPositionTpsl=true` and type starting `STOP_` or `TAKE_PROFIT_` are used. REST snapshots are not used for TP/SL data.
+- **Create**: reduce-only TP = `TAKE_PROFIT_MARKET`, SL = `STOP_MARKET`; keep one active TP and one active SL per symbol.
+- **Cancel**: `POST /api/v3/delete-order` (body `id`) or `POST /api/v3/delete-client-order-id` (body `id`). Apex code `20016` (“already canceled”) is treated as success.
+- **Partial payloads**: merge active TP/SL entries across snapshots; canceled TP/SL entries remove only that side of the cache.
+- **Backend UI flow**: `/api/positions/{position_id}/targets` accepts `take_profit`, `stop_loss`, `clear_tp`, `clear_sl`; clears cancel cached TP/SL ids from `orders_raw` and only clear locally when the exchange cancel succeeds.
+
 ### GET `/v3/open-orders`
 
 Returns array of order objects.
