@@ -297,6 +297,11 @@ class ExchangeGateway:
         publish_positions = False
         total_equity_stream = payload.get("totalEquityValue") or payload.get("totalEquity") or None
         available_balance_stream = payload.get("availableBalance") or payload.get("available_margin")
+        total_upnl_stream = (
+            payload.get("totalUnrealizedPnl")
+            or payload.get("totalUnrealizedPnlUsd")
+            or payload.get("totalUpnl")
+        )
 
         with self._lock:
             if accounts:
@@ -306,12 +311,20 @@ class ExchangeGateway:
                     if total_equity_stream is None:
                         total_equity_stream = acct.get("totalEquityValue") or acct.get("totalEquity")
                     if available_balance_stream is None:
-                        available_balance_stream = acct.get("availableBalance")
+                        available_balance_stream = acct.get("availableBalance") or acct.get("available_margin")
+                    if total_upnl_stream is None:
+                        total_upnl_stream = (
+                            acct.get("totalUnrealizedPnl")
+                            or acct.get("totalUnrealizedPnlUsd")
+                            or acct.get("totalUpnl")
+                        )
                     self._publish_event({"type": "account", "payload": acct})
             if total_equity_stream is not None:
                 self._account_cache["totalEquityValue"] = total_equity_stream
             if available_balance_stream is not None:
                 self._account_cache["availableBalance"] = available_balance_stream
+            if total_upnl_stream is not None:
+                self._account_cache["totalUnrealizedPnl"] = total_upnl_stream
             # Positions: trigger REST refresh to avoid dropping on partial WS snapshots
             if has_positions_key and self._loop and (self._positions_refresh_task is None or self._positions_refresh_task.done()):
                 self._positions_refresh_task = self._loop.create_task(self._refresh_positions_now())
@@ -491,6 +504,58 @@ class ExchangeGateway:
                 raise
             time.sleep(0.3)
             return func(*args, **kwargs)
+
+    async def list_symbols(self) -> list[Dict[str, Any]]:
+        """Return cached symbol configs; load if missing."""
+        if not self._configs_cache:
+            await self.load_configs()
+        return list(self._configs_cache.values())
+
+    async def get_account_summary(self) -> Dict[str, Any]:
+        """Return simple account summary for UI; tolerate missing fields."""
+        with self._lock:
+            total_equity = self._account_cache.get("totalEquityValue")
+            available = self._account_cache.get("availableBalance")
+            total_upnl = self._account_cache.get("totalUnrealizedPnl")
+        if total_equity is None or available is None or total_upnl is None:
+            try:
+                resp = await asyncio.to_thread(self._client.get_account_v3)
+                payload = resp.get("result") or resp
+                account = payload.get("account") or {}
+                total_equity = (
+                    account.get("totalEquity")
+                    or payload.get("totalEquityValue")
+                    or payload.get("totalEquity")
+                    or total_equity
+                )
+                available = (
+                    account.get("availableBalance")
+                    or payload.get("availableBalance")
+                    or payload.get("available_margin")
+                    or available
+                )
+                total_upnl = (
+                    account.get("totalUnrealizedPnl")
+                    or account.get("totalUnrealizedPnlUsd")
+                    or payload.get("totalUnrealizedPnl")
+                    or payload.get("totalUnrealizedPnlUsd")
+                    or payload.get("totalUpnl")
+                    or total_upnl
+                )
+                with self._lock:
+                    if total_equity is not None:
+                        self._account_cache["totalEquityValue"] = total_equity
+                    if available is not None:
+                        self._account_cache["availableBalance"] = available
+                    if total_upnl is not None:
+                        self._account_cache["totalUnrealizedPnl"] = total_upnl
+            except Exception:
+                pass
+        return {
+            "total_equity": float(total_equity) if total_equity is not None else 0.0,
+            "total_upnl": float(total_upnl) if total_upnl is not None else 0.0,
+            "available_margin": float(available) if available is not None else 0.0,
+        }
 
     async def load_configs(self) -> None:
         """Fetch and cache symbol configs."""
@@ -711,7 +776,8 @@ class ExchangeGateway:
                 self._publish_event({"type": "positions", "payload": list(self._ws_positions.values())})
             return list(self._ws_positions.values())
         except Exception as exc:
-            logger.exception("failed to fetch positions", extra={"error": str(exc)})
+            # Connection hiccups happen; keep cache and avoid noisy stack traces.
+            logger.warning("failed to fetch positions", extra={"error": str(exc)})
             with self._lock:
                 return list(self._ws_positions.values())
 

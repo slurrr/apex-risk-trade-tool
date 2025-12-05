@@ -45,10 +45,8 @@ class OrderManager:
 
     def _merge_tpsl_map(self, new_map: Dict[str, Dict[str, Optional[float]]], *, replace: bool = False) -> None:
         """Merge TP/SL values into the existing map, optionally replacing missing symbols."""
-        if replace and new_map:
-            for sym in list(self._tpsl_targets_by_symbol.keys()):
-                if sym not in new_map:
-                    self._tpsl_targets_by_symbol.pop(sym, None)
+        if replace:
+            self._tpsl_targets_by_symbol.clear()
         for symbol, vals in (new_map or {}).items():
             sym_key = self._normalize_symbol_value(symbol)
             cur = self._tpsl_targets_by_symbol.setdefault(sym_key, {})
@@ -63,14 +61,46 @@ class OrderManager:
 
     def _reconcile_tpsl(self, raw_orders: list[Dict[str, Any]]) -> None:
         """
-        Reconcile TP/SL map using the full orders_raw snapshot:
-        - merge active TP/SL entries
-        - drop symbols only when snapshot shows canceled/filled/triggered and no active TP/SL remain for that symbol
+        Reconcile TP/SL map from a single orders_raw payload:
+        - If the payload contains active TP/SL orders:
+            * When the payload looks like a full snapshot, replace the map with the active entries.
+            * Otherwise, merge updates for symbols present without clearing others.
+        - If the payload has no active TP/SL orders, leave the existing map untouched.
+        - Special case: a single canceled TP/SL order payload indicates removal for that symbol; clear its entry.
         """
+        # Handle one-off canceled TP/SL pushes to drop only that target for the symbol.
+        if len(raw_orders or []) == 1:
+            o = raw_orders[0]
+            if isinstance(o, dict):
+                status_raw = str(o.get("status") or o.get("orderStatus") or "").lower()
+                order_type = (o.get("type") or o.get("orderType") or o.get("order_type") or "").upper()
+                if (
+                    status_raw in {"canceled", "cancelled"}
+                    and bool(o.get("isPositionTpsl"))
+                    and (order_type.startswith("STOP") or order_type.startswith("TAKE_PROFIT"))
+                ):
+                    sym_key = self._normalize_symbol_value(o.get("symbol") or o.get("market"))
+                    if sym_key:
+                        entry = self._tpsl_targets_by_symbol.get(sym_key, {}).copy()
+                        if order_type.startswith("TAKE_PROFIT"):
+                            entry.pop("take_profit", None)
+                        if order_type.startswith("STOP"):
+                            entry.pop("stop_loss", None)
+                        if entry:
+                            self._tpsl_targets_by_symbol[sym_key] = entry
+                        else:
+                            self._tpsl_targets_by_symbol.pop(sym_key, None)
+                    return
+
         active_map = self._extract_tpsl_from_orders(raw_orders)
-        # Only merge when we have active TP/SL data; never clear on canceled-only snapshots to avoid wiping the map.
         if active_map:
-            self._merge_tpsl_map(active_map, replace=False)
+            incoming_symbols = len(active_map)
+            existing_symbols = len(self._tpsl_targets_by_symbol)
+            total_orders = len(raw_orders or [])
+            # Heuristic: larger payloads or equal/greater symbol coverage are treated as full snapshots.
+            is_full_snapshot = incoming_symbols >= existing_symbols or total_orders > 5
+            self._merge_tpsl_map(active_map, replace=is_full_snapshot)
+        # canceled-only snapshot: do nothing; keep existing map intact
 
     async def preview_trade(
         self,
@@ -199,26 +229,10 @@ class OrderManager:
 
     async def refresh_state(self) -> None:
         """Refresh in-memory orders and positions from gateway."""
-        # Seed TP/SL map from cached account raw orders (ws_zk_accounts_v3 only)
-        try:
-            cached_ws_orders = self.gateway.get_account_orders_snapshot()
-            self._reconcile_tpsl(cached_ws_orders)
-            logger.info(
-                "tpsl_reconcile_seed",
-                extra={
-                    "event": "tpsl_reconcile_seed",
-                    "orders_count": len(cached_ws_orders or []),
-                    "map_symbols": list(self._tpsl_targets_by_symbol.keys()),
-                },
-            )
-        except Exception:
-            pass
-
         positions_raw = await self.gateway.get_open_positions()
-        raw_orders = self.gateway.get_account_orders_snapshot()
-        self._reconcile_tpsl(raw_orders)
         self.positions = await self._enrich_positions(positions_raw, tpsl_map=self._tpsl_targets_by_symbol)
 
+        raw_orders = await self.gateway.get_open_orders()
         self.open_orders = [self._normalize_order(order) for order in raw_orders]
         # drop risk estimates for orders no longer present
         open_ids = {order["id"] for order in self.open_orders if order.get("id")}
@@ -268,18 +282,9 @@ class OrderManager:
 
     async def list_positions(self) -> list[Dict[str, Any]]:
         """Return open positions from gateway and update cache, merging TP/SL from open orders when available."""
-        # Seed TP/SL map from cached account raw orders (ws_zk_accounts_v3 only)
-        try:
-            cached_ws_orders = self.gateway.get_account_orders_snapshot()
-            self._reconcile_tpsl(cached_ws_orders)
-        except Exception:
-            pass
-
         positions_raw = await self.gateway.get_open_positions(force_rest=False, publish=True)
         if not positions_raw:
             positions_raw = await self.gateway.get_open_positions(force_rest=True, publish=True)
-        orders_raw = self.gateway.get_account_orders_snapshot()
-        self._reconcile_tpsl(orders_raw)
         self.positions = await self._enrich_positions(positions_raw, tpsl_map=self._tpsl_targets_by_symbol)
         if self.positions:
             logger.info(

@@ -52,9 +52,15 @@ async def stream_updates(
     try:
         # prefer WS caches for initial payloads to avoid REST overrides
         initial_orders = list(getattr(gateway, "_ws_orders_raw", []) or [])
-        # reconcile TP/SL map from current account raw orders, but don't clear existing map if none found
+        # reconcile TP/SL map from current account raw orders (authoritative on connect)
         try:
             manager._reconcile_tpsl(initial_orders)
+        except Exception:
+            pass
+        # push initial positions using whatever map we have
+        try:
+            initial_positions = await manager.list_positions()
+            await websocket.send_json({"type": "positions", "payload": initial_positions})
         except Exception:
             pass
 
@@ -107,6 +113,11 @@ async def stream_updates(
                 )
                 try:
                     manager._reconcile_tpsl(raw_orders)
+                except Exception:
+                    pass
+                try:
+                    positions = await manager.list_positions()
+                    await websocket.send_json({"type": "positions", "payload": positions})
                 except Exception:
                     pass
                 logger.info(
