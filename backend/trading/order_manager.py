@@ -68,6 +68,22 @@ class OrderManager:
         - If the payload has no active TP/SL orders, leave the existing map untouched.
         - Special case: a single canceled TP/SL order payload indicates removal for that symbol; clear its entry.
         """
+        # Work only on TP/SL position orders; ignore unrelated orders to avoid churn.
+        tpsl_orders: list[Dict[str, Any]] = []
+        for o in raw_orders or []:
+            if not isinstance(o, dict):
+                continue
+            status_raw = str(o.get("status") or o.get("orderStatus") or "").lower()
+            order_type = (o.get("type") or o.get("orderType") or o.get("order_type") or "").upper()
+            if not bool(o.get("isPositionTpsl")):
+                continue
+            if not (order_type.startswith("STOP") or order_type.startswith("TAKE_PROFIT")):
+                continue
+            tpsl_orders.append(o)
+        if not tpsl_orders:
+            return
+        raw_orders = tpsl_orders
+
         # Handle one-off canceled TP/SL pushes to drop only that target for the symbol.
         if len(raw_orders or []) == 1:
             o = raw_orders[0]
@@ -82,25 +98,62 @@ class OrderManager:
                     sym_key = self._normalize_symbol_value(o.get("symbol") or o.get("market"))
                     if sym_key:
                         entry = self._tpsl_targets_by_symbol.get(sym_key, {}).copy()
+                        hints = self.position_targets.get(sym_key, {}).copy()
                         if order_type.startswith("TAKE_PROFIT"):
                             entry.pop("take_profit", None)
+                            hints.pop("take_profit", None)
                         if order_type.startswith("STOP"):
                             entry.pop("stop_loss", None)
+                            hints.pop("stop_loss", None)
                         if entry:
                             self._tpsl_targets_by_symbol[sym_key] = entry
                         else:
                             self._tpsl_targets_by_symbol.pop(sym_key, None)
+                        if hints:
+                            self.position_targets[sym_key] = hints
+                        else:
+                            self.position_targets.pop(sym_key, None)
                     return
 
         active_map = self._extract_tpsl_from_orders(raw_orders)
+        has_active = bool(active_map)
+
+        # Handle batches that carry only canceled TP/SL orders (no active updates).
+        if not has_active:
+            for o in raw_orders or []:
+                if not isinstance(o, dict):
+                    continue
+                status_raw = str(o.get("status") or o.get("orderStatus") or "").lower()
+                order_type = (o.get("type") or o.get("orderType") or o.get("order_type") or "").upper()
+                if status_raw not in {"canceled", "cancelled", "triggered", "filled"}:
+                    continue
+                if not bool(o.get("isPositionTpsl")):
+                    continue
+                if not (order_type.startswith("STOP") or order_type.startswith("TAKE_PROFIT")):
+                    continue
+                sym_key = self._normalize_symbol_value(o.get("symbol") or o.get("market"))
+                if not sym_key:
+                    continue
+                entry = self._tpsl_targets_by_symbol.get(sym_key, {}).copy()
+                hints = self.position_targets.get(sym_key, {}).copy()
+                if order_type.startswith("TAKE_PROFIT"):
+                    entry.pop("take_profit", None)
+                    hints.pop("take_profit", None)
+                if order_type.startswith("STOP"):
+                    entry.pop("stop_loss", None)
+                    hints.pop("stop_loss", None)
+                if entry:
+                    self._tpsl_targets_by_symbol[sym_key] = entry
+                else:
+                    self._tpsl_targets_by_symbol.pop(sym_key, None)
+                if hints:
+                    self.position_targets[sym_key] = hints
+                else:
+                    self.position_targets.pop(sym_key, None)
 
         if active_map:
-            incoming_symbols = len(active_map)
-            existing_symbols = len(self._tpsl_targets_by_symbol)
-            total_orders = len(raw_orders or [])
-            # Heuristic: larger payloads or equal/greater symbol coverage are treated as full snapshots.
-            is_full_snapshot = incoming_symbols >= existing_symbols or total_orders > 5
-            self._merge_tpsl_map(active_map, replace=is_full_snapshot)
+            # Merge without clearing missing keys; cancels are handled above, so merging keeps surviving targets intact.
+            self._merge_tpsl_map(active_map, replace=False)
         # canceled-only snapshot: do nothing; keep existing map intact
 
     async def preview_trade(
@@ -373,15 +426,17 @@ class OrderManager:
                 cancel_sl=clear_sl,
             )
             response["canceled"] = cancel_resp
-            cache_entry = self._tpsl_targets_by_symbol.get(symbol_key, {})
-            if clear_tp:
-                cache_entry.pop("take_profit", None)
-            if clear_sl:
-                cache_entry.pop("stop_loss", None)
-            if not cache_entry:
-                self._tpsl_targets_by_symbol.pop(symbol_key, None)
-            else:
-                self._tpsl_targets_by_symbol[symbol_key] = cache_entry
+            canceled_ids = (cancel_resp or {}).get("canceled") if isinstance(cancel_resp, dict) else None
+            if canceled_ids:
+                cache_entry = self._tpsl_targets_by_symbol.get(symbol_key, {})
+                if clear_tp:
+                    cache_entry.pop("take_profit", None)
+                if clear_sl:
+                    cache_entry.pop("stop_loss", None)
+                if not cache_entry:
+                    self._tpsl_targets_by_symbol.pop(symbol_key, None)
+                else:
+                    self._tpsl_targets_by_symbol[symbol_key] = cache_entry
             if clear_tp and clear_sl:
                 self.position_targets.pop(symbol_key, None)
             else:
@@ -402,9 +457,9 @@ class OrderManager:
                 size=size_val,
                 take_profit=take_profit,
                 stop_loss=stop_loss,
-                cancel_existing=True,
-                cancel_tp=take_profit is not None or clear_tp,
-                cancel_sl=stop_loss is not None or clear_sl,
+                cancel_existing=False,
+                cancel_tp=False,
+                cancel_sl=False,
             )
             response["exchange"] = resp
 

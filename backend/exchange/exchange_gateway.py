@@ -1044,15 +1044,15 @@ class ExchangeGateway:
                 orders = list(self._ws_orders_tpsl)
         targets = _collect_targets(orders)
 
-        refreshed_used = False
-        if not targets and symbol_key:
-            await self.refresh_account_orders_from_rest()
-            with self._lock:
-                orders = list(self._ws_orders_raw or [])
-            if not orders and self._ws_orders_tpsl:
-                orders = list(self._ws_orders_tpsl)
-        targets = _collect_targets(orders)
-        refreshed_used = True
+        # Explicitly drop non-requested types to avoid accidental opposite-side cancels.
+        if cancel_tp and not cancel_sl:
+            targets = [t for t in targets if str(t.get("type") or "").upper().startswith("TAKE_PROFIT")]
+        if cancel_sl and not cancel_tp:
+            targets = [t for t in targets if str(t.get("type") or "").upper().startswith("STOP")]
+
+        # If no targets of requested type, avoid retrying and risking opposite-side cancels.
+        if not targets:
+            return {"canceled": [], "errors": []}
         # Only cancel one TP and one SL per symbol (latest by updatedAt/createdAt)
         def _pick_latest(order_list: list[Dict[str, Any]], prefix: str) -> list[Dict[str, Any]]:
             filtered = []
@@ -1100,6 +1100,12 @@ class ExchangeGateway:
 
         async def _attempt_cancel(batch: list[Dict[str, Any]]) -> None:
             for target in batch:
+                otype = (target.get("type") or target.get("orderType") or target.get("order_type") or "").upper()
+                # Defensive guard: even if a mismatched type slips in, skip it to avoid canceling the wrong side.
+                if cancel_tp and not cancel_sl and not otype.startswith("TAKE_PROFIT"):
+                    continue
+                if cancel_sl and not cancel_tp and not otype.startswith("STOP"):
+                    continue
                 oid = target.get("orderId") or target.get("order_id") or target.get("id")
                 cid = target.get("clientOrderId") or target.get("clientId")
                 try:
@@ -1121,24 +1127,31 @@ class ExchangeGateway:
                     errors.append(f"cancel error id={oid or cid} err={exc}")
 
         logger.info(
-            "cancel_tpsl_attempt",
+            "### CANCEL_TPSL_ATTEMPT ###",
             extra={
                 "event": "cancel_tpsl_attempt",
                 "symbol": symbol_key,
                 "cancel_tp": cancel_tp,
                 "cancel_sl": cancel_sl,
                 "target_count": len(targets),
-                "first_target_type": targets[0].get("type") if targets else None,
-                "first_target_status": targets[0].get("status") if targets else None,
-                "first_target_id": (targets[0].get("orderId") or targets[0].get("order_id") or targets[0].get("id")) if targets else None,
-                "first_target_client": targets[0].get("clientOrderId") or targets[0].get("clientId") if targets else None,
+                "targets_compact": [
+                    {
+                        "id": t.get("orderId") or t.get("order_id") or t.get("id"),
+                        "clientId": t.get("clientOrderId") or t.get("clientId"),
+                        "type": t.get("type"),
+                        "status": t.get("status"),
+                        "symbol": t.get("symbol") or t.get("market"),
+                        "trigger": t.get("triggerPrice") or t.get("price"),
+                    }
+                    for t in targets
+                ],
+                "summary": f"CANCEL_TPSL_ATTEMPT symbol={symbol_key} cancel_tp={cancel_tp} cancel_sl={cancel_sl} targets={len(targets)} first_id={targets[0].get('orderId') or targets[0].get('order_id') or targets[0].get('id') if targets else None} first_type={targets[0].get('type') if targets else None} first_status={targets[0].get('status') if targets else None}",
             },
         )
 
         await _attempt_cancel(targets)
-        # If nothing canceled, refresh orders snapshot and try once more in case cache was stale.
+        # If nothing canceled, retry once using the latest cached WS orders (no REST fallback) to avoid stale IDs.
         if not canceled_ids and symbol_key:
-            await self.refresh_account_orders_from_rest()
             with self._lock:
                 refreshed = [
                     o
@@ -1148,8 +1161,16 @@ class ExchangeGateway:
                     and o.get("isPositionTpsl")
                     and str(o.get("status") or "").lower() not in {"canceled", "cancelled", "filled", "triggered"}
                 ]
+            if cancel_tp and not cancel_sl:
+                refreshed = [t for t in refreshed if str(t.get("type") or "").upper().startswith("TAKE_PROFIT")]
+            if cancel_sl and not cancel_tp:
+                refreshed = [t for t in refreshed if str(t.get("type") or "").upper().startswith("STOP")]
+            limited_refreshed: list[Dict[str, Any]] = []
+            limited_refreshed.extend(_pick_latest(refreshed, "TP") if cancel_tp else [])
+            limited_refreshed.extend(_pick_latest(refreshed, "SL") if cancel_sl else [])
+            refreshed = limited_refreshed
             logger.info(
-                "cancel_tpsl_retry",
+                "### CANCEL_TPSL_RETRY ###",
                 extra={
                     "event": "cancel_tpsl_retry",
                     "symbol": symbol_key,
@@ -1160,6 +1181,18 @@ class ExchangeGateway:
                     "first_target_status": refreshed[0].get("status") if refreshed else None,
                     "first_target_id": (refreshed[0].get("orderId") or refreshed[0].get("order_id") or refreshed[0].get("id")) if refreshed else None,
                     "first_target_client": refreshed[0].get("clientOrderId") or refreshed[0].get("clientId") if refreshed else None,
+                    "targets_compact": [
+                        {
+                            "id": t.get("orderId") or t.get("order_id") or t.get("id"),
+                            "clientId": t.get("clientOrderId") or t.get("clientId"),
+                            "type": t.get("type"),
+                            "status": t.get("status"),
+                            "symbol": t.get("symbol") or t.get("market"),
+                            "trigger": t.get("triggerPrice") or t.get("price"),
+                        }
+                        for t in refreshed
+                    ],
+                    "summary": f"CANCEL_TPSL_RETRY symbol={symbol_key} cancel_tp={cancel_tp} cancel_sl={cancel_sl} targets={len(refreshed)} first_id={refreshed[0].get('orderId') or refreshed[0].get('order_id') or refreshed[0].get('id') if refreshed else None} first_type={refreshed[0].get('type') if refreshed else None} first_status={refreshed[0].get('status') if refreshed else None}",
                 },
             )
             await _attempt_cancel(refreshed)
