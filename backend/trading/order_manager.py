@@ -1,4 +1,5 @@
 from typing import Any, Dict, Optional, Tuple
+import re
 
 from backend.core.logging import get_logger
 from backend.exchange.exchange_gateway import ExchangeGateway
@@ -327,8 +328,32 @@ class OrderManager:
         return self.open_orders
 
     async def list_symbols(self) -> list[Dict[str, Any]]:
-        """Return cached symbol catalog for dropdowns."""
-        return await self.gateway.list_symbols()
+        """Return cached symbol catalog for dropdowns (normalized to SymbolResponse)."""
+        raw = await self.gateway.list_symbols()
+        symbols: list[Dict[str, Any]] = []
+        for cfg in raw or []:
+            if not isinstance(cfg, dict):
+                continue
+            code = cfg.get("symbol") or cfg.get("code")
+            if not code or not isinstance(code, str):
+                continue
+            code_clean = code.strip().upper()
+            if not re.fullmatch(r"[A-Z0-9]+-[A-Z0-9]+", code_clean):
+                continue
+            base = cfg.get("baseAsset") or cfg.get("baseTokenId") or cfg.get("base_token")
+            quote = cfg.get("quoteAsset") or cfg.get("settleAssetId") or cfg.get("quote_token")
+            status = cfg.get("status")
+            if status is None and cfg.get("enableTrade") is not None:
+                status = "ENABLED" if cfg.get("enableTrade") else "DISABLED"
+            symbols.append(
+                {
+                    "code": code_clean,
+                    "base_asset": base,
+                    "quote_asset": quote,
+                    "status": status,
+                }
+            )
+        return symbols
 
     async def get_account_summary(self) -> Dict[str, Any]:
         """Return account metrics for UI header."""
@@ -402,6 +427,18 @@ class OrderManager:
         if take_profit is None and stop_loss is None and not clear_tp and not clear_sl:
             raise ValueError("At least one of take_profit, stop_loss, clear_tp, or clear_sl must be provided")
 
+        logger.info(
+            "modify_targets_request",
+            extra={
+                "event": "modify_targets_request",
+                "position_id": position_id,
+                "take_profit": take_profit,
+                "stop_loss": stop_loss,
+                "clear_tp": clear_tp,
+                "clear_sl": clear_sl,
+            },
+        )
+
         positions = await self.list_positions()
         target = next((p for p in positions if str(p.get("id")) == str(position_id)), None)
         if not target:
@@ -427,7 +464,13 @@ class OrderManager:
             )
             response["canceled"] = cancel_resp
             canceled_ids = (cancel_resp or {}).get("canceled") if isinstance(cancel_resp, dict) else None
-            if canceled_ids:
+            errors = (cancel_resp or {}).get("errors") if isinstance(cancel_resp, dict) else None
+            cancel_ok = not errors or bool(canceled_ids)
+            response["cancel_ok"] = bool(cancel_ok)
+            response["cancel_errors"] = errors
+
+            # Only clear local cache/hints when the exchange cancel succeeded or nothing was present to cancel.
+            if cancel_ok:
                 cache_entry = self._tpsl_targets_by_symbol.get(symbol_key, {})
                 if clear_tp:
                     cache_entry.pop("take_profit", None)
@@ -437,18 +480,18 @@ class OrderManager:
                     self._tpsl_targets_by_symbol.pop(symbol_key, None)
                 else:
                     self._tpsl_targets_by_symbol[symbol_key] = cache_entry
-            if clear_tp and clear_sl:
-                self.position_targets.pop(symbol_key, None)
-            else:
-                hints = self.position_targets.get(symbol_key, {})
-                if clear_tp:
-                    hints.pop("take_profit", None)
-                if clear_sl:
-                    hints.pop("stop_loss", None)
-                if hints:
-                    self.position_targets[symbol_key] = hints
-                else:
+                if clear_tp and clear_sl:
                     self.position_targets.pop(symbol_key, None)
+                else:
+                    hints = self.position_targets.get(symbol_key, {})
+                    if clear_tp:
+                        hints.pop("take_profit", None)
+                    if clear_sl:
+                        hints.pop("stop_loss", None)
+                    if hints:
+                        self.position_targets[symbol_key] = hints
+                    else:
+                        self.position_targets.pop(symbol_key, None)
 
         if take_profit is not None or stop_loss is not None:
             resp = await self.gateway.update_targets(

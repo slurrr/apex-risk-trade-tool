@@ -106,7 +106,7 @@ description: "Task list for Fix TP/SL position updates feature"
 - [X] T023 [US3] Ensure account WS handler caches untriggered isPositionTpsl orders and persists a reasonable last-known state across brief gaps in backend/exchange/exchange_gateway.py (D:\Automation\Python scripts\apex-risk-trade-tool\backend\exchange\exchange_gateway.py)
 - [X] T024 [P] [US3] Adjust TP/SL map merge logic so temporary empty snapshots do not clear previously known protections until an authoritative state indicates removal in backend/trading/order_manager.py (D:\Automation\Python scripts\apex-risk-trade-tool\backend\trading\order_manager.py)
 - [X] T025 [US3] Ensure `/api/positions` and stream payloads remain consistent (no regressions where TP/SL appears in one but not the other) in backend/api/routes_stream.py and backend/api/routes_positions.py (D:\Automation\Python scripts\apex-risk-trade-tool\backend\api\routes_stream.py)
-- [ ] T026 [P] [US3] Verify UI behaviour on refresh/reconnect (including via localhost dev setup) and adjust any client-side caching needed to avoid flickering TP/SL values in ui/index.html and ui/js (D:\Automation\Python scripts\apex-risk-trade-tool\ui\index.html)
+- [X] T026 [P] [US3] Verify UI behaviour on refresh/reconnect (including via localhost dev setup) and adjust any client-side caching needed to avoid flickering TP/SL values in ui/index.html and ui/js (D:\Automation\Python scripts\apex-risk-trade-tool\ui\index.html)
 
 **Checkpoint**: All three user stories function independently; TP/SL display, modify, and clear flows remain trustworthy through reconnects.
 

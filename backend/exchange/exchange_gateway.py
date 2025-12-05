@@ -344,7 +344,8 @@ class ExchangeGateway:
             self._publish_event({"type": "positions", "payload": list(self._ws_positions.values())})
         if orders_raw:
             # cache raw account orders for TP/SL mapping and publish to subscribers
-            position_tpsl_payload = []
+            position_tpsl_payload: list[Dict[str, Any]] = []
+            canceled_tpsl_payload: list[Dict[str, Any]] = []
             # Only replace cached raw orders when the payload actually carries position TP/SL entries;
             # canceled-only snapshots should not blow away the last known TP/SL order ids.
             if isinstance(orders_raw, list):
@@ -356,32 +357,76 @@ class ExchangeGateway:
                     and str(o.get("type") or "").upper().startswith(("STOP", "TAKE_PROFIT"))
                     and str(o.get("status") or "").lower() not in {"canceled", "cancelled", "filled", "triggered"}
                 ]
+                canceled_tpsl_payload = [
+                    o
+                    for o in orders_raw
+                    if isinstance(o, dict)
+                    and o.get("isPositionTpsl")
+                    and str(o.get("type") or "").upper().startswith(("STOP", "TAKE_PROFIT"))
+                    and str(o.get("status") or "").lower() in {"canceled", "cancelled"}
+                ]
+
             if position_tpsl_payload:
-                self._ws_orders_raw = orders_raw if isinstance(orders_raw, list) else []
+                # Merge with existing active TP/SL entries to avoid losing the opposite side on partial payloads.
+                def _order_key(o: Dict[str, Any]) -> str:
+                    oid = o.get("orderId") or o.get("order_id") or o.get("id")
+                    cid = o.get("clientOrderId") or o.get("clientId")
+                    return str(oid or cid or uuid.uuid4())
+
+                existing_active = [
+                    o
+                    for o in (self._ws_orders_tpsl or [])
+                    if isinstance(o, dict)
+                    and str(o.get("status") or "").lower() not in {"canceled", "cancelled", "filled", "triggered"}
+                ]
+                combined = {_order_key(o): o for o in existing_active}
+                for o in position_tpsl_payload:
+                    combined[_order_key(o)] = o
+                merged_tpsl = list(combined.values())
+                self._ws_orders_tpsl = merged_tpsl
+                self._ws_orders_raw = merged_tpsl
             elif not self._ws_orders_raw and isinstance(orders_raw, list):
                 # if no cache yet, initialize it once even if no active entries
                 self._ws_orders_raw = orders_raw
-            position_tpsl_count = len(position_tpsl_payload)
-            # only replace cached TP/SL list when we have valid entries to avoid clearing on canceled-only snapshots
-            if position_tpsl_payload:
-                self._ws_orders_tpsl = position_tpsl_payload
+                self._ws_orders_tpsl = []
+
+            # Drop any canceled TP/SL entries from the active cache.
+            if canceled_tpsl_payload and self._ws_orders_tpsl:
+                def _matches(cancel_entry: Dict[str, Any], candidate: Dict[str, Any]) -> bool:
+                    cid = cancel_entry.get("clientOrderId") or cancel_entry.get("clientId")
+                    oid = cancel_entry.get("orderId") or cancel_entry.get("order_id") or cancel_entry.get("id")
+                    cand_cid = candidate.get("clientOrderId") or candidate.get("clientId")
+                    cand_oid = candidate.get("orderId") or candidate.get("order_id") or candidate.get("id")
+                    if cid and cand_cid and str(cid) == str(cand_cid):
+                        return True
+                    if oid and cand_oid and str(oid) == str(cand_oid):
+                        return True
+                    return False
+
+                self._ws_orders_tpsl = [
+                    o for o in self._ws_orders_tpsl if not any(_matches(c, o) for c in canceled_tpsl_payload)
+                ]
+                self._ws_orders_raw = list(self._ws_orders_tpsl)
+
+            position_tpsl_count = len(self._ws_orders_tpsl or [])
             logger.info(
                 "ws_orders_raw_received",
                 extra={
                     "event": "ws_orders_raw_received",
-                    "count": len(self._ws_orders_raw),
+                    "count": len(self._ws_orders_raw) if isinstance(self._ws_orders_raw, list) else 0,
                     "position_tpsl": position_tpsl_count,
-                    "first_type": (self._ws_orders_raw[0].get("type") if self._ws_orders_raw else None),
-                    "first_status": (self._ws_orders_raw[0].get("status") if self._ws_orders_raw else None),
-                    "first_symbol": (self._ws_orders_raw[0].get("symbol") if self._ws_orders_raw else None),
-                    "first_is_position_tpsl": (self._ws_orders_raw[0].get("isPositionTpsl") if self._ws_orders_raw else None),
+                    "first_type": (self._ws_orders_tpsl[0].get("type") if self._ws_orders_tpsl else None),
+                    "first_status": (self._ws_orders_tpsl[0].get("status") if self._ws_orders_tpsl else None),
+                    "first_symbol": (self._ws_orders_tpsl[0].get("symbol") if self._ws_orders_tpsl else None),
+                    "first_is_position_tpsl": (self._ws_orders_tpsl[0].get("isPositionTpsl") if self._ws_orders_tpsl else None),
                     "first_trigger": (
-                        self._ws_orders_raw[0].get("triggerPrice")
-                        if self._ws_orders_raw
+                        self._ws_orders_tpsl[0].get("triggerPrice")
+                        if self._ws_orders_tpsl
                         else None
                     ),
                 },
             )
+            # Publish the original payload so downstream reconcilers see canceled entries too.
             self._publish_event({"type": "orders_raw", "payload": orders_raw})
 
     def _parse_symbol_from_topic(self, topic: Optional[str]) -> Optional[str]:
@@ -515,8 +560,11 @@ class ExchangeGateway:
 
     async def list_symbols(self) -> list[Dict[str, Any]]:
         """Return cached symbol configs; load if missing."""
-        if not self._configs_cache:
-            await self.load_configs()
+        try:
+            if not self._configs_cache:
+                await self.load_configs()
+        except Exception as exc:
+            logger.warning("list_symbols_failed", extra={"event": "list_symbols_failed", "error": str(exc)})
         return list(self._configs_cache.values())
 
     async def get_account_summary(self) -> Dict[str, Any]:
@@ -583,6 +631,7 @@ class ExchangeGateway:
             for item in symbols:
                 try:
                     mapped[item["symbol"]] = {
+                        "symbol": item.get("symbol"),
                         "tickSize": float(item.get("tickSize", 0.0)),
                         "stepSize": float(item.get("stepSize", 0.0)),
                         "minOrderSize": float(item.get("minOrderSize", 0.0)),
@@ -592,12 +641,17 @@ class ExchangeGateway:
                         "maxLeverage": float(
                             item.get("displayMaxLeverage") or item.get("maxLeverage") or 0.0
                         ),
+                        "baseAsset": item.get("baseTokenId") or item.get("baseAsset"),
+                        "quoteAsset": item.get("settleAssetId") or item.get("quoteAsset"),
+                        "status": item.get("status") or ("ENABLED" if item.get("enableTrade") else "DISABLED"),
                         "raw": item,
                     }
                 except Exception:
                     continue
 
             self._configs_cache = mapped
+        except Exception as exc:  # pragma: no cover
+            logger.warning("load_configs_failed", extra={"event": "load_configs_failed", "error": str(exc)})
             # Preserve full config payload for SDK methods that expect configV3
             try:
                 setattr(self._client, "configV3", payload)
@@ -1038,6 +1092,9 @@ class ExchangeGateway:
                     collected.append(o)
             return collected
 
+        # Always refresh a fresh snapshot before selecting targets to avoid stale cache issues.
+        if symbol_key:
+            await self.refresh_account_orders_from_rest()
         with self._lock:
             orders = list(self._ws_orders_raw or [])
             if not orders and self._ws_orders_tpsl:
@@ -1052,7 +1109,20 @@ class ExchangeGateway:
 
         # If no targets of requested type, avoid retrying and risking opposite-side cancels.
         if not targets:
-            return {"canceled": [], "errors": []}
+            if symbol_key:
+                # One-shot refresh to capture newly submitted TP/SL orders that have not yet hit WS cache.
+                await self.refresh_account_orders_from_rest()
+                with self._lock:
+                    orders = list(self._ws_orders_raw or [])
+                    if not orders and self._ws_orders_tpsl:
+                        orders = list(self._ws_orders_tpsl)
+                targets = _collect_targets(orders)
+                if cancel_tp and not cancel_sl:
+                    targets = [t for t in targets if str(t.get("type") or "").upper().startswith("TAKE_PROFIT")]
+                if cancel_sl and not cancel_tp:
+                    targets = [t for t in targets if str(t.get("type") or "").upper().startswith("STOP")]
+            if not targets:
+                return {"canceled": [], "errors": []}
         # Only cancel one TP and one SL per symbol (latest by updatedAt/createdAt)
         def _pick_latest(order_list: list[Dict[str, Any]], prefix: str) -> list[Dict[str, Any]]:
             filtered = []
@@ -1078,9 +1148,23 @@ class ExchangeGateway:
         limited_targets.extend(_pick_latest(targets, "TP") if cancel_tp else [])
         limited_targets.extend(_pick_latest(targets, "SL") if cancel_sl else [])
         targets = limited_targets
+        attempted_count = len(targets)
 
         canceled_ids: list[str] = []
         errors: list[str] = []
+
+        if not targets:
+            logger.info(
+                "CANCEL_TPSL_EMPTY",
+                extra={
+                    "event": "cancel_tpsl_empty",
+                    "symbol": symbol_key,
+                    "cancel_tp": cancel_tp,
+                    "cancel_sl": cancel_sl,
+                    "cache_orders": len(orders),
+                },
+            )
+            return {"canceled": [], "errors": ["no targets"], "attempted": attempted_count}
 
         def _cancel_success(resp: Dict[str, Any]) -> bool:
             code, status = self._extract_code_status(resp)
@@ -1089,7 +1173,7 @@ class ExchangeGateway:
                 for flag in (status, resp.get("success"), resp.get("retMsg"))
                 if flag is not None
             }
-            if code in (0, "0", None) and (
+            if code in (0, "0", None, 20016, "20016") and (
                 "" in success_flags or "success" in success_flags or "canceled" in success_flags or "cancelled" in success_flags or "ok" in success_flags
             ):
                 return True
@@ -1108,23 +1192,33 @@ class ExchangeGateway:
                     continue
                 oid = target.get("orderId") or target.get("order_id") or target.get("id")
                 cid = target.get("clientOrderId") or target.get("clientId")
-                try:
-                    resp = None
-                    if cid is not None:
-                        resp = await asyncio.to_thread(self._client.delete_order_by_client_order_id_v3, id=str(cid))
-                    if oid is not None and (resp is None or not _cancel_success(resp)):
-                        try:
-                            oid_val = int(oid) if str(oid).isdigit() else oid
-                        except Exception:
-                            oid_val = oid
-                        resp = await asyncio.to_thread(self._client.delete_order_v3, id=oid_val)
+
+                payloads: list[Tuple[str, Any, Dict[str, Any]]] = []
+                if oid is not None:
+                    payloads.append(("orderId", self._client.delete_order_v3, {"orderId": str(oid)}))
+                    payloads.append(("id", self._client.delete_order_v3, {"id": str(oid)}))
+                if cid is not None:
+                    payloads.append(("clientOrderId", self._client.delete_order_by_client_order_id_v3, {"clientOrderId": str(cid)}))
+                    payloads.append(("id_by_client", self._client.delete_order_by_client_order_id_v3, {"id": str(cid)}))
+
+                attempted = False
+                success = False
+                for label, func, kwargs in payloads:
+                    attempted = True
+                    try:
+                        resp = await asyncio.to_thread(self._retry_delete_on_conflict, func, **kwargs)
+                    except Exception as exc:  # pragma: no cover
+                        errors.append(f"cancel error id={oid or cid} via={label} err={exc}")
+                        continue
                     if resp is not None and _cancel_success(resp):
                         canceled_ids.append(str(oid or cid))
-                    else:
-                        code, status = self._extract_code_status(resp or {})
-                        errors.append(f"cancel failed id={oid or cid} code={code} status={status}")
-                except Exception as exc:  # pragma: no cover
-                    errors.append(f"cancel error id={oid or cid} err={exc}")
+                        success = True
+                        break
+                    code, status = self._extract_code_status(resp or {})
+                    errors.append(f"cancel failed id={oid or cid} via={label} code={code} status={status}")
+
+                if not attempted:
+                    errors.append(f"cancel error id={oid or cid} err=no cancel payload attempted")
 
         logger.info(
             "### CANCEL_TPSL_ATTEMPT ###",
@@ -1196,7 +1290,18 @@ class ExchangeGateway:
                 },
             )
             await _attempt_cancel(refreshed)
-        return {"canceled": canceled_ids, "errors": errors}
+        if not canceled_ids and errors:
+            logger.warning(
+                "cancel_tpsl_failed",
+                extra={
+                    "event": "cancel_tpsl_failed",
+                    "symbol": symbol_key,
+                    "cancel_tp": cancel_tp,
+                    "cancel_sl": cancel_sl,
+                    "errors": errors,
+                },
+            )
+        return {"canceled": canceled_ids, "errors": errors, "attempted": attempted_count}
 
     async def update_targets(
         self,

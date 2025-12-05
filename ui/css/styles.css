@@ -444,6 +444,7 @@ thead {
 
 .tp-sl-cell {
   padding: 0.5rem;
+  position: relative;
 }
 
 .tp-sl-row {
@@ -457,6 +458,37 @@ thead {
 .tp-sl-row .sl {
   font-size: 0.85rem;
   line-height: 1.1;
+}
+
+.confirm-popover {
+  position: absolute;
+  top: -0.35rem;
+  left: 0;
+  right: 0;
+  transform: translateY(-100%);
+  background: var(--panel-strong);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0.75rem 1rem;
+  min-width: 240px;
+  box-shadow: var(--surface-shadow);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.6rem;
+  z-index: 5;
+}
+
+.confirm-popover .confirm-text {
+  font-size: 0.95rem;
+  color: var(--muted);
+}
+
+.confirm-popover .btn {
+  min-width: 0;
+  padding: 0.4rem 0.7rem;
+  font-size: 0.9rem;
 }
 
 .pnl.positive {

@@ -15,6 +15,74 @@
   const lockEditing = () => {};
   const unlockEditing = () => {};
 
+  function showConfirmPopover(targetBtn, positionId, message, onConfirm) {
+    if (!targetBtn) return;
+    const existing = targetBtn.closest(".tp-sl-cell")?.querySelector(".confirm-popover");
+    if (existing) existing.remove();
+    const cell = targetBtn.closest(".tp-sl-cell");
+    const closeModifyPanel = () => {
+      const row = targetBtn.closest("tr");
+      if (row) {
+        const panel = row.querySelector(".modify-panel");
+        if (panel) panel.classList.add("hidden");
+      }
+      if (positionId) {
+        openPanels.modify.delete(positionId);
+      }
+    };
+    if (!cell) {
+      if (window.confirm(message || "Are you sure?")) {
+        onConfirm && onConfirm();
+        closeModifyPanel();
+      }
+      return;
+    }
+    const pop = document.createElement("div");
+    pop.className = "confirm-popover";
+    pop.innerHTML = `
+      <span class="confirm-text">${message || "Confirm?"}</span>
+      <button type="button" class="btn ghost btn-cancel">No</button>
+      <button type="button" class="btn primary btn-yes">Yes</button>
+    `;
+    const cancelBtn = pop.querySelector(".btn-cancel");
+    const yesBtn = pop.querySelector(".btn-yes");
+    cancelBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      pop.remove();
+      closeModifyPanel();
+      if (!document.querySelector(".confirm-popover") && pendingRender && editLockCount === 0) {
+        const toRender = pendingRender;
+        pendingRender = null;
+        renderPositions(toRender);
+      }
+    });
+    yesBtn.addEventListener("click", async (e) => {
+      e.stopPropagation();
+      // Leave the popover visible until the action kicks off to reduce mis-click risk.
+      if (onConfirm) {
+        const run = onConfirm();
+        if (run && typeof run.then === "function") {
+          try {
+            await run;
+          } catch (err) {
+            const errorBox = document.getElementById("positions-error");
+            if (errorBox) {
+              errorBox.textContent = err?.message || "Unable to complete action";
+            }
+          }
+        }
+      }
+      pop.remove();
+      closeModifyPanel();
+      if (!document.querySelector(".confirm-popover") && pendingRender && editLockCount === 0) {
+        const toRender = pendingRender;
+        pendingRender = null;
+        renderPositions(toRender);
+      }
+    });
+    cell.appendChild(pop);
+  }
+
   async function fetchPositions() {
     const resp = await fetch(`${API_BASE}/api/positions`);
     const data = await resp.json();
@@ -60,6 +128,11 @@
 
   function renderPositions(positions) {
     lastPositions = positions;
+    // If a confirmation popover is open, defer rendering to avoid wiping it out mid-action.
+    if (document.querySelector(".confirm-popover")) {
+      pendingRender = positions;
+      return;
+    }
     if (editLockCount > 0) {
       pendingRender = positions;
       return;
@@ -360,31 +433,33 @@
         return;
       }
       if (clearTpBtn) {
-        if (!window.confirm("Clear take profit for this position?")) return;
-        clearTpBtn.disabled = true;
-        try {
-          await updateTargets(positionId, null, null, { clearTp: true });
-          await loadPositions();
-          tpValues.delete(positionId);
-        } catch (err) {
-          errorBox.textContent = err.message;
-        } finally {
-          clearTpBtn.disabled = false;
-        }
+        showConfirmPopover(clearTpBtn, positionId, "Clear TP?", async () => {
+          clearTpBtn.disabled = true;
+          try {
+            await updateTargets(positionId, null, null, { clearTp: true });
+            await loadPositions();
+            tpValues.delete(positionId);
+          } catch (err) {
+            errorBox.textContent = err.message;
+          } finally {
+            clearTpBtn.disabled = false;
+          }
+        });
         return;
       }
       if (clearSlBtn) {
-        if (!window.confirm("Clear stop loss for this position?")) return;
-        clearSlBtn.disabled = true;
-        try {
-          await updateTargets(positionId, null, null, { clearSl: true });
-          await loadPositions();
-          slValues.delete(positionId);
-        } catch (err) {
-          errorBox.textContent = err.message;
-        } finally {
-          clearSlBtn.disabled = false;
-        }
+        showConfirmPopover(clearSlBtn, positionId, "Clear SL?", async () => {
+          clearSlBtn.disabled = true;
+          try {
+            await updateTargets(positionId, null, null, { clearSl: true });
+            await loadPositions();
+            slValues.delete(positionId);
+          } catch (err) {
+            errorBox.textContent = err.message;
+          } finally {
+            clearSlBtn.disabled = false;
+          }
+        });
         return;
       }
       if (submitModify) {
@@ -442,8 +517,9 @@
   document.addEventListener("focusout", (event) => {
     if (event.target.closest(".manage-panel") || event.target.closest(".modify-panel")) {
       editLockCount = Math.max(0, editLockCount - 1);
-      if (editLockCount === 0 && pendingRender) {
+      if (editLockCount === 0 && pendingRender && !document.querySelector(".confirm-popover")) {
         renderPositions(pendingRender);
+        pendingRender = null;
       }
     }
   });
