@@ -42,6 +42,8 @@ class ExchangeGateway:
         self._resubscribe_task: Optional[asyncio.Task] = None
         self._order_refresh_task: Optional[asyncio.Task] = None
         self._positions_refresh_task: Optional[asyncio.Task] = None
+        self._account_refresh_task: Optional[asyncio.Task] = None
+        self._account_refresh_interval: float = 15.0
         self._last_order_event_ts: float = time.time()
         self._ws_snapshot_written: bool = False
         self._tpsl_client_ids: Dict[str, set[str]] = {}
@@ -203,6 +205,26 @@ class ExchangeGateway:
         summary = self._current_account_summary()
         if summary:
             self._publish_event({"type": "account", "payload": summary})
+
+    def start_account_refresh(self, interval: Optional[float] = None) -> None:
+        if interval is not None:
+            self._account_refresh_interval = interval
+        if not self._loop:
+            return
+        if self._account_refresh_task is None or self._account_refresh_task.done():
+            self._account_refresh_task = self._loop.create_task(self._account_refresh_loop())
+
+    async def _account_refresh_loop(self) -> None:
+        """Periodically refresh account summary so UI receives live updates."""
+        interval = max(5.0, float(self._account_refresh_interval or 15.0))
+        while True:
+            try:
+                await asyncio.sleep(interval)
+                await self.get_account_equity()
+            except asyncio.CancelledError:
+                break
+            except Exception:
+                continue
 
     def _get_worst_price(self, symbol: str) -> Optional[float]:
         """Fetch worst price for symbol from documented endpoint."""

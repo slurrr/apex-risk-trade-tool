@@ -43,6 +43,7 @@ def create_app() -> FastAPI:
             loop = asyncio.get_running_loop()
             gateway.attach_loop(loop)
             await gateway.load_configs()
+            gateway.start_account_refresh(5)
             await order_manager.refresh_state()
             if settings.apex_enable_ws:
                 await gateway.start_streams()
