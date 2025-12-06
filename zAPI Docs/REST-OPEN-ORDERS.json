@@ -1,0 +1,141 @@
+{
+    "timestamp": "2025-12-05 23:42:42,056",
+    "level": "INFO",
+    "logger": "backend.exchange.exchange_gateway",
+    "message": "open_orders_snapshot",
+    "event": "open_orders_snapshot",
+    "extra": {
+        "taskName": "Task-42",
+        "raw_count": 2,
+        "first_status": "OPEN",
+        "first_type": "LIMIT",
+        "contains_tpsl_flag": false,
+        "symbols_sample": [
+            "BTC-USDT"
+        ]
+    }
+}
+{
+    "timestamp": "2025-12-05 23:42:42,056",
+    "level": "INFO",
+    "logger": "backend.exchange.exchange_gateway",
+    "message": "open_orders_snapshot_payload",
+    "event": "open_orders_snapshot_payload",
+    "extra": {
+        "taskName": "Task-42",
+        "payload": [
+            {
+                "id": "785015866942030691",
+                "clientId": "BTC-USDT-1764999164-29f628dd",
+                "clientOrderId": "BTC-USDT-1764999164-29f628dd",
+                "accountId": "782698642907594851",
+                "symbol": "BTC-USDT",
+                "side": "SELL",
+                "price": "100000.0",
+                "averagePrice": "",
+                "limitFee": "0.150000000000000000",
+                "fee": "",
+                "liquidateFee": "",
+                "triggerPrice": "0",
+                "size": "0.003",
+                "type": "LIMIT",
+                "createdAt": 1764999167568,
+                "updatedTime": 1764999167578,
+                "expiresAt": 1767418364000,
+                "status": "OPEN",
+                "timeInForce": "GOOD_TIL_CANCEL",
+                "reduceOnly": true,
+                "isPositionTpsl": false,
+                "orderId": "785015866942030691",
+                "exitType": "",
+                "latestMatchFillPrice": "0",
+                "cumMatchFillSize": "0",
+                "cumMatchFillValue": "0",
+                "cumMatchFillFee": "0",
+                "cumSuccessFillSize": "0",
+                "cumSuccessFillValue": "0",
+                "cumSuccessFillFee": "0",
+                "triggerPriceType": "MARKET",
+                "isOpenTpslOrder": false,
+                "isSetOpenTp": false,
+                "isSetOpenSl": false,
+                "openTpParam": {},
+                "openSlParam": {}
+            },
+            {
+                "id": "784977941256733539",
+                "clientId": "BTC-USDT-1764990122-fb7b0d53",
+                "clientOrderId": "BTC-USDT-1764990122-fb7b0d53",
+                "accountId": "782698642907594851",
+                "symbol": "BTC-USDT",
+                "side": "BUY",
+                "price": "69000.0",
+                "averagePrice": "",
+                "limitFee": "0.586500000000000000",
+                "fee": "",
+                "liquidateFee": "",
+                "triggerPrice": "0",
+                "size": "0.017",
+                "type": "LIMIT",
+                "createdAt": 1764990125380,
+                "updatedTime": 1764990125392,
+                "expiresAt": 1767409322000,
+                "status": "OPEN",
+                "timeInForce": "GOOD_TIL_CANCEL",
+                "reduceOnly": false,
+                "isPositionTpsl": false,
+                "orderId": "784977941256733539",
+                "exitType": "",
+                "latestMatchFillPrice": "0",
+                "cumMatchFillSize": "0",
+                "cumMatchFillValue": "0",
+                "cumMatchFillFee": "0",
+                "cumSuccessFillSize": "0",
+                "cumSuccessFillValue": "0",
+                "cumSuccessFillFee": "0",
+                "triggerPriceType": "MARKET",
+                "isOpenTpslOrder": true,
+                "isSetOpenTp": true,
+                "isSetOpenSl": true,
+                "openTpParam": {
+                    "side": "SELL",
+                    "price": "169000",
+                    "size": "0.017",
+                    "limitFee": "1.436500",
+                    "clientOrderId": "4251969945902079",
+                    "triggerPrice": "169000",
+                    "triggerPriceType": "MARKET",
+                    "expiration": 1767409322000
+                },
+                "openSlParam": {
+                    "side": "SELL",
+                    "price": "68000",
+                    "size": "0.017",
+                    "limitFee": "0.578000",
+                    "clientOrderId": "25552990988852552",
+                    "triggerPrice": "68000",
+                    "triggerPriceType": "MARKET",
+                    "expiration": 1767409322000
+                }
+            }
+        ]
+    }
+}
+
+{
+        "documentation": "/**\n
+    * ╔════════════════════════════════════════════════════════════╗\n
+    * ║  ⚠️  KNOWN ISSUE: Dual TPSL Orders Not Detected            ║\n
+    * ║                                                            ║\n
+    * ║  Two open Take-Profit/Stop-Loss (TPSL) orders were         ║\n
+    * ║  created but are not being retrieved by the REST API       ║\n
+    * ║  calls. This may be due to:                                ║\n
+    * ║  - Order status filtering issues                           ║\n
+    * ║  - API response payload limitations                        ║\n
+    * ║  - Order visibility scope mismatch                         ║\n
+    * ║                                                            ║\n
+    * ║  Status: PENDING INVESTIGATION                             ║\n
+    * ╚════════════════════════════════════════════════════════════╝\n
+    */\n
+    "
+}

@@ -394,6 +394,19 @@ class OrderManager:
         close_size = size_val * (close_percent / 100.0)
         if close_size <= 0:
             raise ValueError("close_percent must be greater than 0")
+        logger.info(
+            "close_position_request",
+            extra={
+                "event": "close_position_request",
+                "position_id": position_id,
+                "symbol": target.get("symbol"),
+                "side": target.get("side"),
+                "close_percent": close_percent,
+                "close_size": close_size,
+                "close_type": (close_type or "").lower(),
+                "limit_price": limit_price,
+            },
+        )
         resp = await self.gateway.place_close_order(
             symbol=target.get("symbol") or "",
             side=target.get("side") or "",
@@ -401,12 +414,60 @@ class OrderManager:
             close_type=close_type,
             limit_price=limit_price,
         )
+        resp = resp or {}
         order_id = resp.get("exchange_order_id")
         client_id = resp.get("client_id")
+        if not order_id:
+            raw = resp.get("raw")
+            def _extract_error_message(payload: Any) -> Optional[str]:
+                if isinstance(payload, dict):
+                    for key in ("retMsg", "ret_msg", "message", "detail", "msg"):
+                        val = payload.get(key)
+                        if val:
+                            return str(val)
+                    nested = payload.get("result") or payload.get("data")
+                    if isinstance(nested, dict):
+                        for key in ("retMsg", "ret_msg", "message", "detail", "msg"):
+                            val = nested.get(key)
+                            if val:
+                                return str(val)
+                return None
+            error_detail = _extract_error_message(raw)
+            logger.error(
+                "close_position_submit_failed",
+                extra={
+                    "event": "close_position_submit_failed",
+                    "position_id": position_id,
+                    "symbol": target.get("symbol"),
+                    "close_percent": close_percent,
+                    "close_type": (close_type or "").lower(),
+                    "limit_price": limit_price,
+                    "response": raw,
+                },
+            )
+            raise ValueError(error_detail or "Exchange rejected close order")
         if order_id and limit_price is not None:
             self.pending_order_prices[str(order_id)] = limit_price
         if client_id and limit_price is not None:
             self.pending_order_prices_client[str(client_id)] = limit_price
+        logger.info(
+            "close_position_submitted",
+            extra={
+                "event": "close_position_submitted",
+                "position_id": position_id,
+                "symbol": target.get("symbol"),
+                "close_type": (close_type or "").lower(),
+                "close_percent": close_percent,
+                "order_id": order_id,
+                "client_id": client_id,
+            },
+        )
+        if isinstance(close_type, str) and close_type.lower() == "limit":
+            try:
+                await self.gateway.get_open_orders(force_rest=True, publish=True)
+            except Exception:
+                # Non-fatal; WS/next refresh will pick up the new order.
+                logger.debug("close_position_refresh_orders_failed", exc_info=True)
         return {
             "position_id": position_id,
             "requested_percent": close_percent,
@@ -818,3 +879,7 @@ class OrderManager:
                 norm["stop_loss"] = hint.get("stop_loss")
 
         return norm
+
+    async def get_symbol_price(self, symbol: str) -> Dict[str, Any]:
+        price = await self.gateway.get_symbol_last_price(symbol)
+        return {"symbol": symbol, "price": price}

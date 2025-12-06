@@ -1,0 +1,666 @@
+{
+    "timestamp": "2025-12-06 10:12:24,419",
+    "level": "INFO",
+    "logger": "backend.exchange.exchange_gateway",
+    "message": "gateway_initialized",
+    "event": "gateway_initialized",
+    "extra": {
+        "taskName": "Task-1",
+        "network": "base-sepolia",
+        "testnet": true,
+        "ws_enabled": true
+    }
+}
+INFO:     Started server process [
+    110552
+]
+INFO:     Waiting for application startup.
+{
+    "timestamp": "2025-12-06 10:12:26,022",
+    "level": "INFO",
+    "logger": "backend.exchange.exchange_gateway",
+    "message": "open_orders_snapshot",
+    "event": "open_orders_snapshot",
+    "extra": {
+        "taskName": "Task-2",
+        "raw_count": 3,
+        "first_status": "OPEN",
+        "first_type": "LIMIT",
+        "contains_tpsl_flag": false,
+        "symbols_sample": [
+            "BTC-USDT",
+            "SOL-USDT"
+        ]
+    }
+}
+{
+    "timestamp": "2025-12-06 10:12:26,022",
+    "level": "INFO",
+    "logger": "backend.trading.order_manager",
+    "message": "state_refreshed",
+    "event": "state_refreshed",
+    "extra": {
+        "taskName": "Task-2",
+        "positions_count": 1,
+        "open_orders_count": 3
+    }
+}
+{
+    "timestamp": "2025-12-06 10:12:26,644",
+    "level": "INFO",
+    "logger": "websocket",
+    "message": "Websocket connected",
+    "extra": {
+        "taskName": null
+    }
+}
+{
+    "timestamp": "2025-12-06 10:12:27,023",
+    "level": "INFO",
+    "logger": "backend.exchange.exchange_gateway",
+    "message": "public WS stream started",
+    "extra": {
+        "taskName": null
+    }
+}
+{
+    "timestamp": "2025-12-06 10:12:28,093",
+    "level": "INFO",
+    "logger": "websocket",
+    "message": "Websocket connected",
+    "extra": {
+        "taskName": null
+    }
+}
+{
+    "timestamp": "2025-12-06 10:12:29,025",
+    "level": "INFO",
+    "logger": "backend.exchange.exchange_gateway",
+    "message": "private WS stream started and subscribed",
+    "extra": {
+        "taskName": null,
+        "topic": "ws_zk_accounts_v3"
+    }
+}
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http: //0.0.0.0:8000 (Press CTRL+C to quit)
+INFO: 127.0.0.1: 56753 - "WebSocket /ws/stream"[accepted
+]
+{
+    "timestamp": "2025-12-06 10:12:29,069",
+    "level": "INFO",
+    "logger": "backend.trading.order_manager",
+    "message": "positions_normalized_sample",
+    "event": "positions_normalized_sample",
+    "extra": {
+        "taskName": "Task-11",
+        "count": 1,
+        "first_symbol": "BTC-USDT",
+        "first_tp": null,
+        "first_sl": null
+    }
+}
+INFO:     connection open
+{
+    "timestamp": "2025-12-06 10:12:29,499",
+    "level": "INFO",
+    "logger": "backend.exchange.exchange_gateway",
+    "message": "account_stream_update",
+    "event": "account_stream_update",
+    "extra": {
+        "taskName": null,
+        "payload_keys": [
+            "l2Key",
+            "vipMakerFeeRate",
+            "accountId",
+            "createdAt",
+            "vipTakerFeeRate",
+            "makerFeeRate",
+            "takerFeeRate",
+            "unrealizePnlPriceType",
+            "userId",
+            "updatedAt",
+            "status"
+        ],
+        "total_equity_stream": null,
+        "available_stream": null,
+        "total_upnl_stream": null
+    }
+}
+{
+    "timestamp": "2025-12-06 10:12:29,499",
+    "level": "INFO",
+    "logger": "backend.exchange.exchange_gateway",
+    "message": "ws_orders_raw_received",
+    "event": "ws_orders_raw_received",
+    "extra": {
+        "taskName": null,
+        "count": 2,
+        "position_tpsl": 2,
+        "first_type": "TAKE_PROFIT_MARKET",
+        "first_status": "UNTRIGGERED",
+        "first_symbol": "BTC-USDT",
+        "first_is_position_tpsl": true,
+        "first_trigger": "101010.0"
+    }
+}
+{
+    "timestamp": "2025-12-06 10:12:29,499",
+    "level": "INFO",
+    "logger": "backend.exchange.exchange_gateway",
+    "message": "orders_raw_initial_payload",
+    "event": "orders_raw_initial_payload",
+    "extra": {
+        "taskName": null,
+        "payload": [
+            {
+                "cumSuccessLiquidateFee": "0",
+                "symbol": "BTC-USDT",
+                "openSlParams": {
+                    "triggerSize": "",
+                    "triggerPrice": "",
+                    "triggerPriceType": "UNKNOWN_PRICE_TYPE"
+                },
+                "cumSuccessFillFee": "0",
+                "type": "LIMIT",
+                "isPositionTpsl": false,
+                "isDeleverage": false,
+                "createdAt": 1764999167568,
+                "isSetOpenTp": false,
+                "price": "100000.0",
+                "cumSuccessFillValue": "0",
+                "id": "785015866942030691",
+                "cancelReason": "UNKNOWN_ORDER_CANCEL_REASON",
+                "timeInForce": "GOOD_TIL_CANCEL",
+                "updatedAt": 1764999167578,
+                "limitFee": "0.150000000000000000",
+                "side": "SELL",
+                "clientId": "BTC-USDT-1764999164-29f628dd",
+                "triggerPrice": "0",
+                "triggerPriceType": "MARKET",
+                "expiresAt": 1767418364000,
+                "openTpParams": {
+                    "triggerSize": "",
+                    "triggerPrice": "",
+                    "triggerPriceType": "UNKNOWN_PRICE_TYPE"
+                },
+                "cumSuccessFillSize": "0",
+                "accountId": "782698642907594851",
+                "size": "0.003",
+                "reduceOnly": true,
+                "isSetOpenSl": false,
+                "isLiquidate": false,
+                "remainingSize": "0.003",
+                "status": "OPEN",
+                "_cache_id": "BTC-USDT-1764999164-29f628dd"
+            },
+            {
+                "cumSuccessLiquidateFee": "0",
+                "symbol": "BTC-USDT",
+                "openSlParams": {
+                    "triggerSize": "0.017",
+                    "triggerPrice": "68000",
+                    "triggerPriceType": "MARKET"
+                },
+                "cumSuccessFillFee": "0",
+                "type": "LIMIT",
+                "isPositionTpsl": false,
+                "isDeleverage": false,
+                "createdAt": 1764990125380,
+                "isSetOpenTp": true,
+                "price": "69000.0",
+                "cumSuccessFillValue": "0",
+                "id": "784977941256733539",
+                "cancelReason": "UNKNOWN_ORDER_CANCEL_REASON",
+                "timeInForce": "GOOD_TIL_CANCEL",
+                "updatedAt": 1764990125392,
+                "limitFee": "0.586500000000000000",
+                "side": "BUY",
+                "clientId": "BTC-USDT-1764990122-fb7b0d53",
+                "triggerPrice": "0",
+                "triggerPriceType": "MARKET",
+                "expiresAt": 1767409322000,
+                "openTpParams": {
+                    "triggerSize": "0.017",
+                    "triggerPrice": "169000",
+                    "triggerPriceType": "MARKET"
+                },
+                "cumSuccessFillSize": "0",
+                "accountId": "782698642907594851",
+                "size": "0.017",
+                "reduceOnly": false,
+                "isSetOpenSl": true,
+                "isLiquidate": false,
+                "remainingSize": "0.017",
+                "status": "OPEN",
+                "_cache_id": "BTC-USDT-1764990122-fb7b0d53"
+            },
+            {
+                "cumSuccessLiquidateFee": "0",
+                "symbol": "SOL-USDT",
+                "openSlParams": {
+                    "triggerSize": "10.3",
+                    "triggerPrice": "130",
+                    "triggerPriceType": "MARKET"
+                },
+                "cumSuccessFillFee": "0",
+                "type": "LIMIT",
+                "isPositionTpsl": false,
+                "isDeleverage": false,
+                "createdAt": 1765040008883,
+                "isSetOpenTp": false,
+                "price": "131.700",
+                "cumSuccessFillValue": "0",
+                "id": "785187167832900451",
+                "cancelReason": "UNKNOWN_ORDER_CANCEL_REASON",
+                "timeInForce": "GOOD_TIL_CANCEL",
+                "updatedAt": 1765040008893,
+                "limitFee": "0.678255000000000000",
+                "side": "BUY",
+                "clientId": "SOL-USDT-1765040007-b4916e2b",
+                "triggerPrice": "0",
+                "triggerPriceType": "MARKET",
+                "expiresAt": 1767459207000,
+                "openTpParams": {
+                    "triggerSize": "10.3",
+                    "triggerPrice": "",
+                    "triggerPriceType": "MARKET"
+                },
+                "cumSuccessFillSize": "0",
+                "accountId": "782698642907594851",
+                "size": "10.3",
+                "reduceOnly": false,
+                "isSetOpenSl": true,
+                "isLiquidate": false,
+                "remainingSize": "10.3",
+                "status": "OPEN",
+                "_cache_id": "SOL-USDT-1765040007-b4916e2b"
+            },
+            {
+                "cumSuccessLiquidateFee": "0",
+                "symbol": "BTC-USDT",
+                "openSlParams": {
+                    "triggerSize": "",
+                    "triggerPrice": "",
+                    "triggerPriceType": "UNKNOWN_PRICE_TYPE"
+                },
+                "cumSuccessFillFee": "0",
+                "type": "TAKE_PROFIT_MARKET",
+                "isPositionTpsl": true,
+                "isDeleverage": false,
+                "createdAt": 1765039901120,
+                "isSetOpenTp": false,
+                "price": "101010.0",
+                "cumSuccessFillValue": "0",
+                "id": "785186715842118499",
+                "cancelReason": "UNKNOWN_ORDER_CANCEL_REASON",
+                "timeInForce": "IMMEDIATE_OR_CANCEL",
+                "updatedAt": 1765039901120,
+                "limitFee": "0.303030000000000000",
+                "side": "SELL",
+                "clientId": "6736766606899567",
+                "triggerPrice": "101010.0",
+                "triggerPriceType": "MARKET",
+                "expiresAt": 1767459099000,
+                "openTpParams": {
+                    "triggerSize": "",
+                    "triggerPrice": "",
+                    "triggerPriceType": "UNKNOWN_PRICE_TYPE"
+                },
+                "cumSuccessFillSize": "0",
+                "accountId": "782698642907594851",
+                "size": "0.006",
+                "reduceOnly": true,
+                "isSetOpenSl": false,
+                "isLiquidate": false,
+                "remainingSize": "0.006",
+                "status": "UNTRIGGERED"
+            },
+            {
+                "cumSuccessLiquidateFee": "0",
+                "symbol": "BTC-USDT",
+                "openSlParams": {
+                    "triggerSize": "",
+                    "triggerPrice": "",
+                    "triggerPriceType": "UNKNOWN_PRICE_TYPE"
+                },
+                "cumSuccessFillFee": "0",
+                "type": "STOP_MARKET",
+                "isPositionTpsl": true,
+                "isDeleverage": false,
+                "createdAt": 1764970394757,
+                "isSetOpenTp": false,
+                "price": "84003.0",
+                "cumSuccessFillValue": "0",
+                "id": "784895185025762147",
+                "cancelReason": "UNKNOWN_ORDER_CANCEL_REASON",
+                "timeInForce": "IMMEDIATE_OR_CANCEL",
+                "updatedAt": 1764970394757,
+                "limitFee": "0.252009000000000000",
+                "side": "SELL",
+                "clientId": "16182220974517024",
+                "triggerPrice": "84003.0",
+                "triggerPriceType": "MARKET",
+                "expiresAt": 1767389592000,
+                "openTpParams": {
+                    "triggerSize": "",
+                    "triggerPrice": "",
+                    "triggerPriceType": "UNKNOWN_PRICE_TYPE"
+                },
+                "cumSuccessFillSize": "0",
+                "accountId": "782698642907594851",
+                "size": "0.006",
+                "reduceOnly": true,
+                "isSetOpenSl": false,
+                "isLiquidate": false,
+                "remainingSize": "0.006",
+                "status": "UNTRIGGERED"
+            }
+        ]
+    }
+}
+{
+    "timestamp": "2025-12-06 10:12:29,499",
+    "level": "INFO",
+    "logger": "backend.api.routes_stream",
+    "message": "ws_orders_raw_event",
+    "event": "ws_orders_raw_event",
+    "extra": {
+        "taskName": "Task-11",
+        "count": 5,
+        "position_tpsl": 2,
+        "first_type": "LIMIT",
+        "first_status": "OPEN",
+        "first_symbol": "BTC-USDT",
+        "first_is_position_tpsl": false,
+        "first_trigger": "0"
+    }
+}
+{
+    "timestamp": "2025-12-06 10:12:29,499",
+    "level": "INFO",
+    "logger": "backend.trading.order_manager",
+    "message": "tpsl_extract_summary",
+    "event": "tpsl_extract_summary",
+    "extra": {
+        "taskName": "Task-11",
+        "total": 2,
+        "position_tpsl": 2,
+        "tp_found": 1,
+        "sl_found": 1,
+        "skipped_status": 0,
+        "skipped_trigger": 0,
+        "symbols": [
+            "BTC-USDT"
+        ]
+    }
+}
+{
+    "timestamp": "2025-12-06 10:12:29,500",
+    "level": "INFO",
+    "logger": "backend.trading.order_manager",
+    "message": "positions_normalized_sample",
+    "event": "positions_normalized_sample",
+    "extra": {
+        "taskName": "Task-11",
+        "count": 1,
+        "first_symbol": "BTC-USDT",
+        "first_tp": 101010.0,
+        "first_sl": 84003.0
+    }
+}
+{
+    "timestamp": "2025-12-06 10:12:29,500",
+    "level": "INFO",
+    "logger": "backend.api.routes_stream",
+    "message": "ws_orders_raw_tpsl_map_built",
+    "event": "ws_orders_raw_tpsl_map_built",
+    "extra": {
+        "taskName": "Task-11",
+        "symbols": [
+            "BTC-USDT"
+        ],
+        "orders_count": 5,
+        "position_tpsl": 2
+    }
+}
+{
+    "timestamp": "2025-12-06 10:12:29,766",
+    "level": "INFO",
+    "logger": "backend.exchange.exchange_gateway",
+    "message": "ws_orders_raw_received",
+    "event": "ws_orders_raw_received",
+    "extra": {
+        "taskName": null,
+        "count": 2,
+        "position_tpsl": 2,
+        "first_type": "TAKE_PROFIT_MARKET",
+        "first_status": "UNTRIGGERED",
+        "first_symbol": "BTC-USDT",
+        "first_is_position_tpsl": true,
+        "first_trigger": "101010.0"
+    }
+}
+{
+    "timestamp": "2025-12-06 10:12:29,766",
+    "level": "INFO",
+    "logger": "backend.api.routes_stream",
+    "message": "ws_orders_raw_event",
+    "event": "ws_orders_raw_event",
+    "extra": {
+        "taskName": "Task-11",
+        "count": 30,
+        "position_tpsl": 25,
+        "first_type": "TAKE_PROFIT_MARKET",
+        "first_status": "CANCELED",
+        "first_symbol": "BTC-USDT",
+        "first_is_position_tpsl": true,
+        "first_trigger": "133000.0"
+    }
+}
+{
+    "timestamp": "2025-12-06 10:12:29,766",
+    "level": "INFO",
+    "logger": "backend.trading.order_manager",
+    "message": "tpsl_extract_summary",
+    "event": "tpsl_extract_summary",
+    "extra": {
+        "taskName": "Task-11",
+        "total": 25,
+        "position_tpsl": 0,
+        "tp_found": 0,
+        "sl_found": 0,
+        "skipped_status": 25,
+        "skipped_trigger": 0,
+        "symbols": []
+    }
+}
+{
+    "timestamp": "2025-12-06 10:12:29,766",
+    "level": "INFO",
+    "logger": "backend.trading.order_manager",
+    "message": "positions_normalized_sample",
+    "event": "positions_normalized_sample",
+    "extra": {
+        "taskName": "Task-11",
+        "count": 1,
+        "first_symbol": "BTC-USDT",
+        "first_tp": null,
+        "first_sl": null
+    }
+}
+{
+    "timestamp": "2025-12-06 10:12:29,766",
+    "level": "INFO",
+    "logger": "backend.api.routes_stream",
+    "message": "ws_orders_raw_tpsl_map_built",
+    "event": "ws_orders_raw_tpsl_map_built",
+    "extra": {
+        "taskName": "Task-11",
+        "symbols": [],
+        "orders_count": 30,
+        "position_tpsl": 25
+    }
+}
+INFO: 127.0.0.1: 65144 - "WebSocket /ws/stream"[accepted
+]
+{
+    "timestamp": "2025-12-06 10:12:30,364",
+    "level": "INFO",
+    "logger": "backend.trading.order_manager",
+    "message": "tpsl_extract_summary",
+    "event": "tpsl_extract_summary",
+    "extra": {
+        "taskName": "Task-19",
+        "total": 2,
+        "position_tpsl": 2,
+        "tp_found": 1,
+        "sl_found": 1,
+        "skipped_status": 0,
+        "skipped_trigger": 0,
+        "symbols": [
+            "BTC-USDT"
+        ]
+    }
+}
+{
+    "timestamp": "2025-12-06 10:12:30,364",
+    "level": "INFO",
+    "logger": "backend.trading.order_manager",
+    "message": "positions_normalized_sample",
+    "event": "positions_normalized_sample",
+    "extra": {
+        "taskName": "Task-19",
+        "count": 1,
+        "first_symbol": "BTC-USDT",
+        "first_tp": 101010.0,
+        "first_sl": 84003.0
+    }
+}
+INFO:     connection open
+{
+    "timestamp": "2025-12-06 10:12:30,369",
+    "level": "INFO",
+    "logger": "backend.exchange.exchange_gateway",
+    "message": "open_orders_snapshot",
+    "event": "open_orders_snapshot",
+    "extra": {
+        "taskName": "Task-16",
+        "raw_count": 3,
+        "first_status": "OPEN",
+        "first_type": "LIMIT",
+        "contains_tpsl_flag": false,
+        "symbols_sample": [
+            "BTC-USDT",
+            "SOL-USDT"
+        ]
+    }
+}
+{
+    "timestamp": "2025-12-06 10:12:32,304",
+    "level": "INFO",
+    "logger": "backend.exchange.exchange_gateway",
+    "message": "open_orders_snapshot",
+    "event": "open_orders_snapshot",
+    "extra": {
+        "taskName": "Task-4",
+        "raw_count": 3,
+        "first_status": "OPEN",
+        "first_type": "LIMIT",
+        "contains_tpsl_flag": false,
+        "symbols_sample": [
+            "BTC-USDT",
+            "SOL-USDT"
+        ]
+    }
+}
+INFO: 127.0.0.1: 52223 - "WebSocket /ws/stream"[accepted
+]
+{
+    "timestamp": "2025-12-06 10:12:32,374",
+    "level": "INFO",
+    "logger": "backend.trading.order_manager",
+    "message": "tpsl_extract_summary",
+    "event": "tpsl_extract_summary",
+    "extra": {
+        "taskName": "Task-25",
+        "total": 2,
+        "position_tpsl": 2,
+        "tp_found": 1,
+        "sl_found": 1,
+        "skipped_status": 0,
+        "skipped_trigger": 0,
+        "symbols": [
+            "BTC-USDT"
+        ]
+    }
+}
+{
+    "timestamp": "2025-12-06 10:12:32,374",
+    "level": "INFO",
+    "logger": "backend.trading.order_manager",
+    "message": "positions_normalized_sample",
+    "event": "positions_normalized_sample",
+    "extra": {
+        "taskName": "Task-25",
+        "count": 1,
+        "first_symbol": "BTC-USDT",
+        "first_tp": 101010.0,
+        "first_sl": 84003.0
+    }
+}
+INFO:     connection open
+INFO: 127.0.0.1: 62216 - "WebSocket /ws/stream"[accepted
+]
+{
+    "timestamp": "2025-12-06 10:12:33,851",
+    "level": "INFO",
+    "logger": "backend.trading.order_manager",
+    "message": "tpsl_extract_summary",
+    "event": "tpsl_extract_summary",
+    "extra": {
+        "taskName": "Task-31",
+        "total": 2,
+        "position_tpsl": 2,
+        "tp_found": 1,
+        "sl_found": 1,
+        "skipped_status": 0,
+        "skipped_trigger": 0,
+        "symbols": [
+            "BTC-USDT"
+        ]
+    }
+}
+{
+    "timestamp": "2025-12-06 10:12:33,851",
+    "level": "INFO",
+    "logger": "backend.trading.order_manager",
+    "message": "positions_normalized_sample",
+    "event": "positions_normalized_sample",
+    "extra": {
+        "taskName": "Task-31",
+        "count": 1,
+        "first_symbol": "BTC-USDT",
+        "first_tp": 101010.0,
+        "first_sl": 84003.0
+    }
+}
+INFO:     connection open
+{
+    "timestamp": "2025-12-06 10:12:35,860",
+    "level": "INFO",
+    "logger": "backend.exchange.exchange_gateway",
+    "message": "open_orders_snapshot",
+    "event": "open_orders_snapshot",
+    "extra": {
+        "taskName": "Task-4",
+        "raw_count": 3,
+        "first_status": "OPEN",
+        "first_type": "LIMIT",
+        "contains_tpsl_flag": false,
+        "symbols_sample": [
+            "BTC-USDT",
+            "SOL-USDT"
+        ]
+    }
+}

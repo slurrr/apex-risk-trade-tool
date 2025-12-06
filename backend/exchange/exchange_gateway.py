@@ -30,6 +30,7 @@ class ExchangeGateway:
         self._ws_positions: Dict[str, Dict[str, Any]] = {}
         self._ws_orders_raw: list[Dict[str, Any]] = []
         self._ws_orders_tpsl: list[Dict[str, Any]] = []
+        self._initial_orders_raw_logged = False
         self._empty_order_snapshots: int = 0
         self._configs_loaded_at: Optional[float] = None
         self._ws_running: bool = False
@@ -44,6 +45,7 @@ class ExchangeGateway:
         self._positions_refresh_task: Optional[asyncio.Task] = None
         self._account_refresh_task: Optional[asyncio.Task] = None
         self._account_refresh_interval: float = 15.0
+        self._price_cache: dict[str, dict[str, float]] = {}
         self._last_order_event_ts: float = time.time()
         self._ws_snapshot_written: bool = False
         self._tpsl_client_ids: Dict[str, set[str]] = {}
@@ -52,6 +54,7 @@ class ExchangeGateway:
         self._client: Any = self.apex_client.private_client
         self._public_client: Any = self.apex_client.public_client
         self._prime_client()
+        self._ticker_cache: Dict[str, Dict[str, float]] = {}
         logger.info(
             "gateway_initialized",
             extra={
@@ -240,10 +243,11 @@ class ExchangeGateway:
         session = requests.Session()
         session.trust_env = False
         session.proxies = {"http": None, "https": None}
+        param_symbol = (symbol or "").replace("-", "").upper()
         for ep in endpoints:
             try:
                 url = ep.rstrip("/") + "/api/v3/get-worst-price"
-                resp = session.get(url, params={"symbol": symbol}, timeout=5)
+                resp = session.get(url, params={"symbol": param_symbol}, timeout=5)
                 data = resp.json()
                 result = data.get("result") or data.get("data") or data
                 if isinstance(result, dict):
@@ -260,12 +264,6 @@ class ExchangeGateway:
             return 1.0
         symbol = f"{token.upper()}-USDT"
         try:
-            worst = await asyncio.to_thread(self._get_worst_price, symbol)
-            if worst is not None:
-                return worst
-        except Exception as exc:
-            logger.warning("get_worst_price failed, trying ticker", extra={"symbol": symbol, "error": str(exc)})
-        try:
             ticker = await asyncio.to_thread(self._public_client.ticker_v3, symbol=symbol)
             result = ticker.get("result") or {}
             entries = result if isinstance(result, list) else [result]
@@ -279,6 +277,12 @@ class ExchangeGateway:
                     return float(price)
         except Exception as exc:
             logger.warning("ticker_v3 failed", extra={"symbol": symbol, "error": str(exc)})
+        try:
+            worst = await asyncio.to_thread(self._get_worst_price, symbol)
+            if worst is not None:
+                return worst
+        except Exception:
+            pass
         # Fallback: call ticker via HTTP on known endpoints without SDK
         endpoints = []
         if self.settings.apex_http_endpoint:
@@ -349,6 +353,7 @@ class ExchangeGateway:
             with self._lock:
                 norm_symbol = self._normalize_symbol_value(symbol)
                 self._ws_prices[norm_symbol] = price_f
+                self._ticker_cache[norm_symbol] = {"price": price_f, "ts": time.time()}
                 publish_positions = self._update_positions_pnl(norm_symbol, price_f)
             self._publish_event({"type": "ticker", "symbol": self._normalize_symbol_value(symbol), "price": price_f})
             if publish_positions:
@@ -509,6 +514,18 @@ class ExchangeGateway:
                     ),
                 },
             )
+            if not self._initial_orders_raw_logged:
+                self._initial_orders_raw_logged = True
+                try:
+                    logger.info(
+                        "orders_raw_initial_payload",
+                        extra={
+                            "event": "orders_raw_initial_payload",
+                            "payload": orders_raw,
+                        },
+                    )
+                except Exception:
+                    pass
             # Publish the original payload so downstream reconcilers see canceled entries too.
             self._publish_event({"type": "orders_raw", "payload": orders_raw})
 
@@ -565,6 +582,10 @@ class ExchangeGateway:
         mapped: Dict[str, Dict[str, Any]] = {}
         for o in orders:
             if not isinstance(o, dict):
+                continue
+            # Skip TP/SL reduce-only helpers; the UI has dedicated controls for these and Apex
+            # does not display them alongside discretionary orders.
+            if o.get("isPositionTpsl"):
                 continue
             status = str(o.get("status") or o.get("orderStatus") or "").lower()
             if status in {"canceled", "cancelled", "filled"} or "cancel" in status:
@@ -904,17 +925,17 @@ class ExchangeGateway:
                                 or payload.get("totalUpnl")
                                 or payload.get("unrealizedPnl")
                             )
-                            logger.info(
-                                "account_balance_payload",
-                                extra={
-                                    "event": "account_balance_payload",
-                                    "payload_keys": list(payload.keys()),
-                                    "account_keys": list(account.keys()) if isinstance(account, dict) else [],
-                                    "raw_total_upnl": payload.get("totalUnrealizedPnl")
-                                    or payload.get("totalUpnl")
-                                    or payload.get("unrealizedPnl"),
-                                },
-                            )
+                            # logger.info(
+                            #     "account_balance_payload",
+                            #     extra={
+                            #         "event": "account_balance_payload",
+                            #         "payload_keys": list(payload.keys()),
+                            #         "account_keys": list(account.keys()) if isinstance(account, dict) else [],
+                            #         "raw_total_upnl": payload.get("totalUnrealizedPnl")
+                            #         or payload.get("totalUpnl")
+                            #         or payload.get("unrealizedPnl"),
+                            #     },
+                            # )
                         if isinstance(account, dict):
                             account_equity = account_equity or account.get("totalEquityValue")
                             available_balance = available_balance or account.get("availableBalance")
@@ -1048,6 +1069,30 @@ class ExchangeGateway:
                 orders = payload
             if isinstance(orders, dict):
                 orders = orders.get("list") or orders.get("orders") or orders.get("data") or []
+            orders_list = orders if isinstance(orders, list) else []
+            if orders_list is None:
+                orders_list = []
+            try:
+                first_order = orders_list[0] if orders_list else {}
+                logger.info(
+                    "open_orders_snapshot",
+                    extra={
+                        "event": "open_orders_snapshot",
+                        "raw_count": len(orders_list),
+                        "first_status": first_order.get("status") if isinstance(first_order, dict) else None,
+                        "first_type": (
+                            first_order.get("type")
+                            or first_order.get("orderType")
+                            or first_order.get("order_type")
+                            if isinstance(first_order, dict)
+                            else None
+                        ),
+                        "contains_tpsl_flag": any(bool(o.get("isPositionTpsl")) for o in orders_list if isinstance(o, dict)),
+                        "symbols_sample": list({str(o.get("symbol") or o.get("market")) for o in orders_list if isinstance(o, dict)})[:5],
+                    },
+                )
+            except Exception:
+                pass
             mapped = self._filter_and_map_orders(orders)
             with self._lock:
                 if mapped:
@@ -1191,11 +1236,75 @@ class ExchangeGateway:
                 or resp.get("orderId")
                 or resp.get("orderID")
             )
-            return {"exchange_order_id": order_id, "raw": resp}
+            client_id = payload.get("clientId") or payload.get("client_id")
+            return {"exchange_order_id": order_id, "client_id": client_id, "raw": resp}
         except Exception as exc:
             redacted = self._redact_order_payload(payload)
             logger.exception("failed to place order", extra={"error": str(exc), "payload_redacted": redacted})
             raise
+
+    async def place_close_order(
+        self,
+        *,
+        symbol: str,
+        side: str,
+        size: float,
+        close_type: str,
+        limit_price: Optional[float] = None,
+    ) -> Dict[str, Any]:
+        """Submit a reduce-only close order (market or limit)."""
+        if size <= 0:
+            raise ValueError("Close size must be greater than 0")
+        close_type_norm = (close_type or "").lower()
+        if close_type_norm not in {"market", "limit"}:
+            raise ValueError("close_type must be 'market' or 'limit'")
+        side_norm = (side or "").upper()
+        order_side = "SELL"
+        if "SHORT" in side_norm or side_norm == "SELL":
+            order_side = "BUY"
+        elif "LONG" in side_norm or side_norm == "BUY":
+            order_side = "SELL"
+        else:
+            order_side = "SELL" if side_norm != "BUY" else "BUY"
+
+        price = limit_price
+        if close_type_norm == "limit":
+            if price is None:
+                raise ValueError("Limit close requires limit_price")
+        else:
+            if price is None:
+                base = symbol.split("-")[0] if "-" in symbol else symbol
+                try:
+                    price = await self._get_usdt_price(base)
+                except Exception:
+                    price = await asyncio.to_thread(self._get_worst_price, symbol)
+            if price is None:
+                raise ValueError("Unable to determine market price for close order")
+
+        payload, warning = await self.build_order_payload(
+            symbol=symbol,
+            side=order_side,
+            size=size,
+            entry_price=price,
+            reduce_only=True,
+        )
+        payload["type"] = "MARKET" if close_type_norm == "market" else "LIMIT"
+        if close_type_norm == "market":
+            payload["timeInForce"] = "IMMEDIATE_OR_CANCEL"
+        if warning:
+            logger.warning("close_order_payload_warning", extra={"event": "close_order_payload_warning", "warning": warning})
+        return await self.place_order(payload)
+
+    async def get_symbol_last_price(self, symbol: str) -> float:
+        norm_symbol = (symbol or "").upper()
+        now = time.time()
+        cache_entry = self._ticker_cache.get(norm_symbol)
+        if cache_entry and now - cache_entry.get("ts", 0) < 10:
+            return cache_entry["price"]
+        base = norm_symbol.split("-")[0] if "-" in norm_symbol else norm_symbol
+        price = await self._get_usdt_price(base)
+        self._ticker_cache[norm_symbol] = {"price": price, "ts": now}
+        return price
 
     async def cancel_order(self, order_id: str, client_id: Optional[str] = None) -> Dict[str, Any]:
         errors: list[str] = []

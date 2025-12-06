@@ -6,6 +6,7 @@
   let mediaQuery;
   const state = {
     symbols: [],
+    priceCache: new Map(),
   };
 
   function getStoredTheme() {
@@ -174,6 +175,8 @@
       btn.addEventListener("click", () => {
         input.value = sym.code;
         list.classList.remove("open");
+        prefillEntryPrice(sym.code);
+        updateSymbolClearState();
       });
       list.appendChild(btn);
     });
@@ -185,22 +188,32 @@
     }
   }
 
+  function updateSymbolClearState() {
+    const input = document.getElementById("symbol-input");
+    const clearBtn = document.getElementById("symbol-clear");
+    if (!input || !clearBtn) return;
+    const hasValue = Boolean((input.value || "").trim());
+    const isFocused = document.activeElement === input;
+    clearBtn.classList.toggle("hidden", !(hasValue || isFocused));
+  }
+
   function attachSymbolDropdown() {
     const input = document.getElementById("symbol-input");
     const list = document.getElementById("symbol-options");
     const clearBtn = document.getElementById("symbol-clear");
     const clearFormBtn = document.getElementById("clear-trade-form");
     if (!input || !list) return;
-    const toggleClear = () => {
-      if (!clearBtn) return;
-      const hasValue = Boolean((input.value || "").trim());
-      clearBtn.classList.toggle("hidden", !hasValue);
-    };
     input.addEventListener("input", () => {
       renderSymbolOptions(input.value);
-      toggleClear();
+      updateSymbolClearState();
     });
-    input.addEventListener("focus", () => renderSymbolOptions(input.value));
+    input.addEventListener("focus", () => {
+      renderSymbolOptions(input.value);
+      updateSymbolClearState();
+    });
+    input.addEventListener("blur", () => {
+      setTimeout(updateSymbolClearState, 0);
+    });
     document.addEventListener("click", (evt) => {
       if (!list.contains(evt.target) && evt.target !== input && evt.target !== clearBtn) {
         list.classList.remove("open");
@@ -212,7 +225,7 @@
         input.value = "";
         input.focus();
         renderSymbolOptions("");
-        toggleClear();
+        updateSymbolClearState();
       });
     }
     if (clearFormBtn) {
@@ -225,12 +238,11 @@
         renderSymbolOptions("");
         const dropdown = document.getElementById("side");
         if (dropdown) dropdown.selectedIndex = 0;
-        toggleClear();
+        updateSymbolClearState();
         document.getElementById("preview-result").innerHTML = "";
         document.getElementById("execute-result").innerHTML = "";
       });
     }
-    toggleClear();
   }
 
   function validateSymbol(value) {
@@ -246,12 +258,47 @@
     return num.toFixed(digits);
   }
 
+  async function fetchSymbolPrice(symbol) {
+    if (!symbol) return null;
+    const key = symbol.toUpperCase();
+    const cached = state.priceCache.get(key);
+    const now = Date.now();
+    if (cached && now - cached.ts < 10000) {
+      return cached.price;
+    }
+    try {
+      const resp = await fetch(`${API_BASE}/api/price/${encodeURIComponent(key)}`);
+      const data = await resp.json();
+      if (!resp.ok) {
+        throw new Error(data?.detail || "Unable to fetch price");
+      }
+      const price = typeof data?.price === "number" ? data.price : Number(data?.price || 0);
+      if (!Number.isFinite(price)) {
+        throw new Error("Price unavailable");
+      }
+      state.priceCache.set(key, { price, ts: now });
+      return price;
+    } catch (err) {
+      return null;
+    }
+  }
+
+  async function prefillEntryPrice(symbol) {
+    const entryInput = document.getElementById("entry_price");
+    if (!entryInput || !symbol) return;
+    const price = await fetchSymbolPrice(symbol);
+    if (price !== null && price !== undefined) {
+      entryInput.value = price;
+    }
+  }
+
   window.TradeApp = {
     API_BASE,
     state,
     SYMBOL_PATTERN,
     formatNumber,
     validateSymbol,
+    prefillEntryPrice,
     applyTheme,
     renderAccountSummary,
     applyAccountPayload,

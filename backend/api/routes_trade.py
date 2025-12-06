@@ -49,6 +49,25 @@ async def account_summary(manager: OrderManager = Depends(get_order_manager)):
         return error_response(status_code=500, code="unexpected_error", detail="Unable to fetch account summary")
 
 
+@router.get("/price/{symbol}", responses={500: {"model": ErrorResponse}})
+async def symbol_price(symbol: str, manager: OrderManager = Depends(get_order_manager)):
+    """Return latest price for symbol (best-effort)."""
+    try:
+        return await manager.get_symbol_price(symbol)
+    except ValueError as exc:
+        return error_response(status_code=400, code="validation_error", detail=str(exc))
+    except Exception as exc:
+        logger.exception(
+            "symbol_price_failed",
+            extra={
+                "event": "symbol_price_failed",
+                "symbol": symbol,
+                "error": str(exc),
+            },
+        )
+        return error_response(status_code=500, code="unexpected_error", detail="Unable to fetch symbol price")
+
+
 @router.post(
     "/trade",
     response_model=None,
