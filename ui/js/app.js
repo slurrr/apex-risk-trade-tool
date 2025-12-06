@@ -189,6 +189,7 @@
     const input = document.getElementById("symbol-input");
     const list = document.getElementById("symbol-options");
     const clearBtn = document.getElementById("symbol-clear");
+    const clearFormBtn = document.getElementById("clear-trade-form");
     if (!input || !list) return;
     const toggleClear = () => {
       if (!clearBtn) return;
@@ -212,6 +213,21 @@
         input.focus();
         renderSymbolOptions("");
         toggleClear();
+      });
+    }
+    if (clearFormBtn) {
+      clearFormBtn.addEventListener("click", () => {
+        const form = document.getElementById("preview-form");
+        if (form) {
+          form.reset();
+        }
+        input.value = "";
+        renderSymbolOptions("");
+        const dropdown = document.getElementById("side");
+        if (dropdown) dropdown.selectedIndex = 0;
+        toggleClear();
+        document.getElementById("preview-result").innerHTML = "";
+        document.getElementById("execute-result").innerHTML = "";
       });
     }
     toggleClear();
