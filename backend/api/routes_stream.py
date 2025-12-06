@@ -18,6 +18,37 @@ async def stream_updates(
     await websocket.accept()
     gateway = manager.gateway
     queue = gateway.register_subscriber()
+    tpsl_refresh_lock = asyncio.Lock()
+    pending_tpsl_refresh = False
+
+    async def _force_tpsl_refresh():
+        nonlocal pending_tpsl_refresh
+        async with tpsl_refresh_lock:
+            if pending_tpsl_refresh:
+                return
+            pending_tpsl_refresh = True
+        async def _run():
+            nonlocal pending_tpsl_refresh
+            try:
+                snapshot = await gateway.refresh_account_orders_from_rest()
+                if snapshot:
+                    try:
+                        manager._reconcile_tpsl(snapshot)
+                    except Exception:
+                        pass
+                    try:
+                        positions = await manager.list_positions()
+                        await websocket.send_json({"type": "positions", "payload": positions})
+                    except Exception:
+                        pass
+            except Exception as exc:
+                logger.warning(
+                    "tpsl_refresh_failed",
+                    extra={"event": "tpsl_refresh_failed", "error": str(exc)},
+                )
+            finally:
+                pending_tpsl_refresh = False
+        asyncio.create_task(_run())
 
     def _extract_tpsl_from_orders(payload: list[dict]) -> dict[str, dict[str, float]]:
         """Build a symbol->tp/sl map from any STOP/TAKE_PROFIT orders in the payload (no reduceOnly requirement)."""
@@ -111,15 +142,18 @@ async def stream_updates(
                         "first_trigger": (raw_orders[0].get("triggerPrice") if raw_orders else None),
                     },
                 )
+                refresh_needed = False
                 try:
-                    manager._reconcile_tpsl(raw_orders)
+                    refresh_needed = manager._reconcile_tpsl(raw_orders)
                 except Exception:
-                    pass
+                    refresh_needed = False
                 try:
                     positions = await manager.list_positions()
                     await websocket.send_json({"type": "positions", "payload": positions})
                 except Exception:
                     pass
+                if refresh_needed:
+                    await _force_tpsl_refresh()
                 logger.info(
                     "ws_orders_raw_tpsl_map_built",
                     extra={

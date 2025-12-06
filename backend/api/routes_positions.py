@@ -16,9 +16,21 @@ logger = get_logger(__name__)
 
 
 @router.get("/positions", response_model=list[PositionResponse], responses={500: {"model": ErrorResponse}})
-async def list_positions(manager: OrderManager = Depends(get_order_manager)) -> list[dict]:
+async def list_positions(
+    resync: bool = False, manager: OrderManager = Depends(get_order_manager)
+) -> list[dict]:
     """Return open positions from the gateway."""
     try:
+        if resync:
+            try:
+                snapshot = await manager.gateway.refresh_account_orders_from_rest()
+                if snapshot:
+                    manager._reconcile_tpsl(snapshot)
+            except Exception as exc:
+                logger.warning(
+                    "positions_resync_failed",
+                    extra={"event": "positions_resync_failed", "error": str(exc)},
+                )
         return await manager.list_positions()
     except ValueError as exc:
         return error_response(status_code=400, code="validation_error", detail=str(exc))

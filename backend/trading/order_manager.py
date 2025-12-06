@@ -60,7 +60,7 @@ class OrderManager:
             if sl_val is not None:
                 cur["stop_loss"] = sl_val
 
-    def _reconcile_tpsl(self, raw_orders: list[Dict[str, Any]]) -> None:
+    def _reconcile_tpsl(self, raw_orders: list[Dict[str, Any]]) -> bool:
         """
         Reconcile TP/SL map from a single orders_raw payload:
         - If the payload contains active TP/SL orders:
@@ -68,7 +68,10 @@ class OrderManager:
             * Otherwise, merge updates for symbols present without clearing others.
         - If the payload has no active TP/SL orders, leave the existing map untouched.
         - Special case: a single canceled TP/SL order payload indicates removal for that symbol; clear its entry.
+        Returns True when the payload only carried cancellations (no surviving targets) so callers
+        can trigger a follow-up refresh to rehydrate the map.
         """
+        needs_refresh = False
         # Work only on TP/SL position orders; ignore unrelated orders to avoid churn.
         tpsl_orders: list[Dict[str, Any]] = []
         for o in raw_orders or []:
@@ -82,7 +85,7 @@ class OrderManager:
                 continue
             tpsl_orders.append(o)
         if not tpsl_orders:
-            return
+            return False
         raw_orders = tpsl_orders
 
         # Handle one-off canceled TP/SL pushes to drop only that target for the symbol.
@@ -114,12 +117,14 @@ class OrderManager:
                             self.position_targets[sym_key] = hints
                         else:
                             self.position_targets.pop(sym_key, None)
-                    return
+                    needs_refresh = True
+                    return needs_refresh
 
         active_map = self._extract_tpsl_from_orders(raw_orders)
         has_active = bool(active_map)
 
         # Handle batches that carry only canceled TP/SL orders (no active updates).
+        removed_symbol = False
         if not has_active:
             for o in raw_orders or []:
                 if not isinstance(o, dict):
@@ -151,11 +156,14 @@ class OrderManager:
                     self.position_targets[sym_key] = hints
                 else:
                     self.position_targets.pop(sym_key, None)
-
+                removed_symbol = True
         if active_map:
             # Merge without clearing missing keys; cancels are handled above, so merging keeps surviving targets intact.
             self._merge_tpsl_map(active_map, replace=False)
         # canceled-only snapshot: do nothing; keep existing map intact
+        if removed_symbol and not active_map:
+            needs_refresh = True
+        return needs_refresh
 
     async def preview_trade(
         self,

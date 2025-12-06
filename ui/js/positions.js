@@ -87,8 +87,9 @@
     host.appendChild(pop);
   }
 
-  async function fetchPositions() {
-    const resp = await fetch(`${API_BASE}/api/positions`);
+  async function fetchPositions(forceResync = false) {
+    const query = forceResync ? "?resync=1" : "";
+    const resp = await fetch(`${API_BASE}/api/positions${query}`);
     const data = await resp.json();
     if (!resp.ok) {
       const msg = data?.detail || "Unable to load positions";
@@ -259,11 +260,11 @@
     });
   }
 
-  async function loadPositions() {
+  async function loadPositions(forceResync = false) {
     const errorBox = document.getElementById("positions-error");
     errorBox.textContent = "";
     try {
-      const positions = await fetchPositions();
+      const positions = await fetchPositions(forceResync);
       renderPositions(positions);
     } catch (err) {
       errorBox.textContent = err.message;
@@ -302,7 +303,7 @@
     const refreshBtn = document.getElementById("refresh-positions");
     const table = document.getElementById("positions-table");
 
-    refreshBtn.addEventListener("click", loadPositions);
+    refreshBtn.addEventListener("click", () => loadPositions(true));
 
     table.addEventListener("input", (event) => {
       const slider = event.target.closest(".close-slider");
