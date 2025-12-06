@@ -1,5 +1,5 @@
 (function () {
-  const API_BASE = window.API_BASE || "http://localhost:8000";
+  const API_BASE = `${window.location.protocol}//${window.location.hostname}:8000`;
   const SYMBOL_PATTERN = /^[A-Z0-9]+-[A-Z0-9]+$/;
   const THEME_STORAGE_KEY = "trade_app_theme";
   let manualTheme = null;

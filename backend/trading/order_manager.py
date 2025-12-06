@@ -44,6 +44,21 @@ class OrderManager:
                 return f"{sym[:-len(quote)]}-{quote}"
         return sym
 
+    @staticmethod
+    def _is_tpsl_order(order: Dict[str, Any]) -> bool:
+        """Detect TP/SL reduce-only orders even when isPositionTpsl flag is missing."""
+        if not isinstance(order, dict):
+            return False
+        order_type = (order.get("type") or order.get("orderType") or order.get("order_type") or "").upper()
+        if not (order_type.startswith("STOP") or order_type.startswith("TAKE_PROFIT")):
+            return False
+        if bool(order.get("isPositionTpsl")):
+            return True
+        reduce_only = order.get("reduceOnly")
+        if reduce_only is None:
+            reduce_only = order.get("reduce_only")
+        return bool(reduce_only)
+
     def _merge_tpsl_map(self, new_map: Dict[str, Dict[str, Optional[float]]], *, replace: bool = False) -> None:
         """Merge TP/SL values into the existing map, optionally replacing missing symbols."""
         if replace:
@@ -79,9 +94,7 @@ class OrderManager:
                 continue
             status_raw = str(o.get("status") or o.get("orderStatus") or "").lower()
             order_type = (o.get("type") or o.get("orderType") or o.get("order_type") or "").upper()
-            if not bool(o.get("isPositionTpsl")):
-                continue
-            if not (order_type.startswith("STOP") or order_type.startswith("TAKE_PROFIT")):
+            if not self._is_tpsl_order(o):
                 continue
             tpsl_orders.append(o)
         if not tpsl_orders:
@@ -94,11 +107,7 @@ class OrderManager:
             if isinstance(o, dict):
                 status_raw = str(o.get("status") or o.get("orderStatus") or "").lower()
                 order_type = (o.get("type") or o.get("orderType") or o.get("order_type") or "").upper()
-                if (
-                    status_raw in {"canceled", "cancelled"}
-                    and bool(o.get("isPositionTpsl"))
-                    and (order_type.startswith("STOP") or order_type.startswith("TAKE_PROFIT"))
-                ):
+                if status_raw in {"canceled", "cancelled"} and self._is_tpsl_order(o):
                     sym_key = self._normalize_symbol_value(o.get("symbol") or o.get("market"))
                     if sym_key:
                         entry = self._tpsl_targets_by_symbol.get(sym_key, {}).copy()
@@ -133,9 +142,7 @@ class OrderManager:
                 order_type = (o.get("type") or o.get("orderType") or o.get("order_type") or "").upper()
                 if status_raw not in {"canceled", "cancelled", "triggered", "filled"}:
                     continue
-                if not bool(o.get("isPositionTpsl")):
-                    continue
-                if not (order_type.startswith("STOP") or order_type.startswith("TAKE_PROFIT")):
+                if not self._is_tpsl_order(o):
                     continue
                 sym_key = self._normalize_symbol_value(o.get("symbol") or o.get("market"))
                 if not sym_key:
@@ -733,10 +740,8 @@ class OrderManager:
             if not symbol:
                 continue
             order_type = (order.get("type") or order.get("orderType") or order.get("order_type") or "").upper()
-            is_position_tpsl = bool(order.get("isPositionTpsl"))
+            is_position_tpsl = self._is_tpsl_order(order)
             if not is_position_tpsl:
-                continue
-            if not (order_type.startswith("STOP") or order_type.startswith("TAKE_PROFIT")):
                 continue
             debug_counts["position_tpsl"] += 1
 

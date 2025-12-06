@@ -1,5 +1,7 @@
 (function () {
-  const API_BASE = (window.TradeApp && window.TradeApp.API_BASE) || window.API_BASE || "http://localhost:8000";
+  const API_BASE = (window.TradeApp && window.TradeApp.API_BASE) || 
+  window.API_BASE || 
+  `${window.location.protocol}//${window.location.hostname}:8000`;
   const formatNumber = (window.TradeApp && window.TradeApp.formatNumber) || ((v) => v);
   const openPanels = {
     manage: new Set(),
@@ -366,6 +368,7 @@
       }
 
       if (manageBtn) {
+        event.stopPropagation();
         const panel = row.querySelector(".manage-panel");
         if (panel) {
           const isOpen = !panel.classList.contains("hidden");
@@ -379,6 +382,7 @@
         return;
       }
       if (modifyBtn) {
+        event.stopPropagation();
         const panel = row.querySelector(".modify-panel");
         if (panel) {
           const isOpen = !panel.classList.contains("hidden");
@@ -532,3 +536,6 @@
     }
   });
 })();
+      if (event.target.closest(".manage-panel") || event.target.closest(".modify-panel") || manageBtn || modifyBtn) {
+        event.stopPropagation();
+      }
