@@ -292,6 +292,18 @@
     }
   }
 
+  function updateTickerCache(symbol, price) {
+    if (!symbol || price === null || price === undefined) {
+      return;
+    }
+    const numeric = Number(price);
+    if (!Number.isFinite(numeric)) {
+      return;
+    }
+    const key = symbol.toUpperCase();
+    state.priceCache.set(key, { price: numeric, ts: Date.now() });
+  }
+
   window.TradeApp = {
     API_BASE,
     state,
@@ -299,6 +311,7 @@
     formatNumber,
     validateSymbol,
     prefillEntryPrice,
+    updateTickerCache,
     applyTheme,
     renderAccountSummary,
     applyAccountPayload,

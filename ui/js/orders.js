@@ -88,6 +88,9 @@
           if (msg.type === "account" && window.TradeApp && typeof window.TradeApp.applyAccountPayload === "function") {
             window.TradeApp.applyAccountPayload(msg.payload);
           }
+          if (msg.type === "ticker" && window.TradeApp && typeof window.TradeApp.updateTickerCache === "function") {
+            window.TradeApp.updateTickerCache(msg.symbol, msg.price);
+          }
           if (msg.type === "orders" && Array.isArray(msg.payload)) {
             renderOrders(msg.payload);
           }
