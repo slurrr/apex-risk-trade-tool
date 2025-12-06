@@ -17,9 +17,13 @@
 
   function showConfirmPopover(targetBtn, positionId, message, onConfirm) {
     if (!targetBtn) return;
-    const existing = targetBtn.closest(".tp-sl-cell")?.querySelector(".confirm-popover");
+    const host =
+      targetBtn.closest(".tp-sl-cell") ||
+      targetBtn.closest(".manage-panel") ||
+      targetBtn.closest(".actions-cell") ||
+      targetBtn.parentElement;
+    const existing = host?.querySelector(".confirm-popover");
     if (existing) existing.remove();
-    const cell = targetBtn.closest(".tp-sl-cell");
     const closeModifyPanel = () => {
       const row = targetBtn.closest("tr");
       if (row) {
@@ -30,7 +34,7 @@
         openPanels.modify.delete(positionId);
       }
     };
-    if (!cell) {
+    if (!host) {
       if (window.confirm(message || "Are you sure?")) {
         onConfirm && onConfirm();
         closeModifyPanel();
@@ -80,7 +84,7 @@
         renderPositions(toRender);
       }
     });
-    cell.appendChild(pop);
+    host.appendChild(pop);
   }
 
   async function fetchPositions() {
@@ -174,7 +178,7 @@
       const pnlValue = typeof pos.pnl === "number" ? pos.pnl : Number(pos.pnl);
       const pnlClass = Number.isFinite(pnlValue) ? (pnlValue > 0 ? "positive" : pnlValue < 0 ? "negative" : "") : "";
       const positionId = row.dataset.positionId;
-      const sliderVal = sliderValues.get(positionId) ?? 50;
+      const sliderVal = sliderValues.get(positionId) ?? 100;
       const limitVal = limitPriceValues.get(positionId) ?? "";
       const tpVal = tpValues.get(positionId) ?? "";
       const slVal = slValues.get(positionId) ?? "";
@@ -387,23 +391,25 @@
         return;
       }
       if (marketCloseBtn) {
-        const slider = row.querySelector(".close-slider");
-        const percent = slider ? parseFloat(slider.value) : 0;
-        marketCloseBtn.disabled = true;
-        try {
-          await closePosition(positionId, percent, "market", null);
-          await loadPositions();
-          openPanels.manage.delete(positionId);
-          sliderValues.delete(positionId);
-          limitPriceValues.delete(positionId);
-          if (window.TradeApp && window.TradeApp.loadAccountSummary) {
-            window.TradeApp.loadAccountSummary();
+        showConfirmPopover(marketCloseBtn, positionId, "Market close?", async () => {
+          const slider = row.querySelector(".close-slider");
+          const percent = slider ? parseFloat(slider.value) : 0;
+          marketCloseBtn.disabled = true;
+          try {
+            await closePosition(positionId, percent, "market", null);
+            await loadPositions();
+            openPanels.manage.delete(positionId);
+            sliderValues.delete(positionId);
+            limitPriceValues.delete(positionId);
+            if (window.TradeApp && window.TradeApp.loadAccountSummary) {
+              window.TradeApp.loadAccountSummary();
+            }
+          } catch (err) {
+            errorBox.textContent = err.message;
+          } finally {
+            marketCloseBtn.disabled = false;
           }
-        } catch (err) {
-          errorBox.textContent = err.message;
-        } finally {
-          marketCloseBtn.disabled = false;
-        }
+        });
         return;
       }
       if (limitCloseBtn) {
@@ -502,6 +508,7 @@
       document.querySelectorAll(".modify-panel").forEach((panel) => panel.classList.add("hidden"));
       openPanels.manage.clear();
       openPanels.modify.clear();
+      document.querySelectorAll(".confirm-popover").forEach((pop) => pop.remove());
     });
 
     loadPositions();

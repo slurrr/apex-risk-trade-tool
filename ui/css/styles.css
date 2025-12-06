@@ -433,6 +433,10 @@ thead {
   background: var(--panel-strong);
 }
 
+.manage-panel {
+  position: relative;
+}
+
 .manage-row {
   display: flex;
   flex-direction: column;
