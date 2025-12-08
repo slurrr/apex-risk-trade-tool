@@ -197,10 +197,10 @@ class ExchangeGateway:
             total_upnl = self._account_cache.get("totalUnrealizedPnl")
         if total_equity is None and available is None and total_upnl is None:
             return None
-        summary: Dict[str, float] = {
-            "total_equity": float(total_equity) if total_equity is not None else 0.0,
-            "available_margin": float(available) if available is not None else 0.0,
-            "total_upnl": float(total_upnl) if total_upnl is not None else 0.0,
+        summary: Dict[str, Optional[float]] = {
+            "total_equity": float(total_equity) if total_equity is not None else None,
+            "available_margin": float(available) if available is not None else None,
+            "total_upnl": float(total_upnl) if total_upnl is not None else None,
         }
         return summary
 
@@ -954,17 +954,11 @@ class ExchangeGateway:
                             account_equity = account.get("totalEquity") or account.get("total_equity")
                         if available_balance is not None and account_equity is None:
                             account_equity = available_balance
-                        combined_available = None
-                        if available_balance is not None or realized_pnl is not None:
-                            try:
-                                combined_available = float(available_balance or 0) + float(realized_pnl or 0)
-                            except Exception:
-                                combined_available = available_balance
                         if account_equity is not None:
                             self._account_cache.update(
                                 {
                                     "totalEquityValue": account_equity,
-                                    "availableBalance": combined_available if combined_available is not None else available_balance,
+                                    "availableBalance": available_balance,
                                     "totalUnrealizedPnl": total_upnl,
                                 }
                             )
@@ -980,15 +974,10 @@ class ExchangeGateway:
                                 token = wallet.get("token") or "USDT"
                                 price = await self._get_usdt_price(token)
                                 equity_usdt += bal * price
-                            combined_available = (
-                                float(available_balance or 0) + float(realized_pnl or 0)
-                                if available_balance is not None or realized_pnl is not None
-                                else available_balance
-                            )
                             self._account_cache.update(
                                 {
                                     "totalEquityValue": equity_usdt,
-                                    "availableBalance": combined_available,
+                                    "availableBalance": available_balance,
                                     "totalUnrealizedPnl": total_upnl,
                                 }
                             )
@@ -1142,8 +1131,7 @@ class ExchangeGateway:
                         o
                         for o in orders
                         if isinstance(o, dict)
-                        and o.get("isPositionTpsl")
-                        and str(o.get("type") or "").upper().startswith(("STOP", "TAKE_PROFIT"))
+                        and self._is_tpsl_order_payload(o)
                         and str(o.get("status") or "").lower() not in {"canceled", "cancelled", "filled", "triggered"}
                     ]
                 logger.info(
@@ -1734,3 +1722,17 @@ class ExchangeGateway:
             else:
                 redacted[key] = val
         return redacted
+    @staticmethod
+    def _is_tpsl_order_payload(order: Dict[str, Any]) -> bool:
+        """Detect TP/SL reduce-only orders even when isPositionTpsl flag is missing."""
+        if not isinstance(order, dict):
+            return False
+        order_type = (order.get("type") or order.get("orderType") or order.get("order_type") or "").upper()
+        if not (order_type.startswith("STOP") or order_type.startswith("TAKE_PROFIT")):
+            return False
+        if bool(order.get("isPositionTpsl")):
+            return True
+        reduce_only = order.get("reduceOnly")
+        if reduce_only is None:
+            reduce_only = order.get("reduce_only")
+        return bool(reduce_only)

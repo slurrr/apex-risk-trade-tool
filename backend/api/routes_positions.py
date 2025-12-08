@@ -22,14 +22,11 @@ async def list_positions(
     """Return open positions from the gateway."""
     try:
         if resync:
-            try:
-                snapshot = await manager.gateway.refresh_account_orders_from_rest()
-                if snapshot:
-                    manager._reconcile_tpsl(snapshot)
-            except Exception as exc:
+            ok = await manager.resync_tpsl_from_account()
+            if not ok:
                 logger.warning(
                     "positions_resync_failed",
-                    extra={"event": "positions_resync_failed", "error": str(exc)},
+                    extra={"event": "positions_resync_failed"},
                 )
         return await manager.list_positions()
     except ValueError as exc:

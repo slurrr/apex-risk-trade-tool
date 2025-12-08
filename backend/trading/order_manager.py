@@ -896,3 +896,30 @@ class OrderManager:
     async def get_symbol_price(self, symbol: str) -> Dict[str, Any]:
         price = await self.gateway.get_symbol_last_price(symbol)
         return {"symbol": symbol, "price": price}
+
+    async def resync_tpsl_from_account(self) -> bool:
+        """Force a refresh of TP/SL orders via full account snapshot."""
+        try:
+            snapshot = await self.gateway.refresh_account_orders_from_rest()
+        except Exception as exc:
+            logger.warning(
+                "tpsl_resync_snapshot_failed",
+                extra={"event": "tpsl_resync_snapshot_failed", "error": str(exc)},
+            )
+            return False
+        if not snapshot:
+            logger.warning(
+                "tpsl_resync_empty",
+                extra={"event": "tpsl_resync_empty"},
+            )
+            return False
+        try:
+            self._reconcile_tpsl(snapshot)
+        except Exception as exc:
+            logger.warning(
+                "tpsl_resync_reconcile_failed",
+                extra={"event": "tpsl_resync_reconcile_failed", "error": str(exc)},
+            )
+            return False
+        await self.list_positions()
+        return True
