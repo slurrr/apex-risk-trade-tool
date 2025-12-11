@@ -27,10 +27,11 @@ This quickstart outlines the high-level steps to implement and verify ATR-based 
 ## 2. Configuration
 
 1. Introduce or confirm environment/config entries for:
-   - ATR timeframe (e.g., `TIMEFRAME`).
-   - ATR lookback period (e.g., `ATR_PERIOD`).
-   - ATR multiplier (e.g., `ATR_MULTIPLIER`).
-2. Wire these values through the existing configuration module in `backend/core/` so they are accessible in the risk layer and API route.
+   - `ATR_TIMEFRAME` (or legacy `TIMEFRAME`): candle size (`1m`, `5m`, `15m`, `1h`, etc.).
+   - `ATR_PERIOD`: number of candles considered for each ATR calculation.
+   - `ATR_MULTIPLIER`: factor applied to ATR when deriving the default stop offset.
+2. Wire these values through the existing configuration module in `backend/core/` so they are accessible in the risk layer and API route (already handled by `Settings.atr_*` fields).
+3. After changing any ATR env var, restart the FastAPI service (or reload your process supervisor) so `backend/core/config.py` re-reads the new values.
 
 ## 3. UI Integration
 
@@ -56,3 +57,10 @@ This quickstart outlines the high-level steps to implement and verify ATR-based 
    - Editing Entry causes Stop to update.
    - Manual stop overrides are respected and not overwritten unexpectedly.
 
+## 5. Verification Notes
+
+Run (2025-12-11):
+- Verified `uvicorn backend.main:app --reload` loads ATR config from `ATR_TIMEFRAME/ATR_PERIOD/ATR_MULTIPLIER` and `/risk/atr-stop` returns calibrated stops for BTC-USDT on testnet.
+- Confirmed UI flow: select symbol → Entry auto-prefills (rounded to input step), ATR stop populates within ~1s; editing Entry re-requests ATR and updates Stop unless the user has typed their own stop.
+- Simulated degraded data via bogus symbol/timeframe: `/risk/atr-stop` returns 503 with `atr_history_unavailable`, UI clears the stop field and shows “market data unavailable” message while leaving the field editable.
+- Manual override test: typed custom stop, subsequent ATR calls (symbol/entry changes) left the manual stop untouched until field cleared, matching US3 behavior.

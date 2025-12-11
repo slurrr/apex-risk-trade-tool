@@ -5,10 +5,17 @@
     `${window.location.protocol}//${window.location.hostname}:8000`;
   const validateSymbol = (window.TradeApp && window.TradeApp.validateSymbol) || ((val) => val?.toUpperCase());
   const fetchAtrStop = window.TradeApp && window.TradeApp.fetchAtrStop;
+  const snapToStep = (window.TradeApp && window.TradeApp.snapToInputStep) || ((value) => value);
+  const ATR_STATUS_DEFAULT = "ATR stop will populate once symbol, side, and entry price are set.";
+
   const atrState = {
     timer: null,
     token: 0,
     statusEl: null,
+    manualOverride: false,
+    manualSymbol: null,
+    lastAutoPrice: null,
+    settingStopValue: false,
   };
 
   async function postPreview(payload) {
@@ -60,13 +67,29 @@
     const stopInput = document.getElementById("stop_price");
     const el = ensureAtrStatusElement(stopInput);
     if (!el) return;
-    el.textContent = message || "";
+    el.textContent = message || ATR_STATUS_DEFAULT;
     el.classList.remove("is-error", "is-success");
     if (mode === "error") {
       el.classList.add("is-error");
     } else if (mode === "success") {
       el.classList.add("is-success");
     }
+  }
+
+  function setManualOverride(symbol) {
+    atrState.manualOverride = true;
+    atrState.manualSymbol = symbol || null;
+    atrState.lastAutoPrice = null;
+  }
+
+  function clearManualOverride() {
+    atrState.manualOverride = false;
+    atrState.manualSymbol = null;
+  }
+
+  function manualOverrideActive(symbol) {
+    if (!symbol) return false;
+    return atrState.manualOverride && atrState.manualSymbol === symbol;
   }
 
   function normalizedSide(value) {
@@ -83,6 +106,7 @@
     const entryInput = document.getElementById("entry_price");
     const sideSelect = document.getElementById("side");
     const stopInput = document.getElementById("stop_price");
+    const form = document.getElementById("preview-form");
     if (!symbolInput || !entryInput || !sideSelect || !stopInput) {
       return;
     }
@@ -95,18 +119,58 @@
     };
 
     symbolInput.addEventListener("input", schedule);
-    symbolInput.addEventListener("change", schedule);
+    symbolInput.addEventListener("change", () => {
+      schedule();
+      const currentSymbol = validateSymbol(symbolInput.value);
+      if (atrState.manualOverride && atrState.manualSymbol && atrState.manualSymbol !== currentSymbol) {
+        clearManualOverride();
+        atrState.lastAutoPrice = null;
+        setAtrStatus(ATR_STATUS_DEFAULT);
+      }
+    });
     entryInput.addEventListener("input", schedule);
     sideSelect.addEventListener("change", schedule);
+
+    stopInput.addEventListener("input", () => {
+      if (atrState.settingStopValue) {
+        return;
+      }
+      const value = (stopInput.value || "").trim();
+      const symbol = validateSymbol(symbolInput.value);
+      if (value) {
+        setManualOverride(symbol);
+        setAtrStatus("Manual stop in use. Clear the Stop field to resume ATR suggestions.");
+      } else {
+        clearManualOverride();
+        atrState.lastAutoPrice = null;
+        setAtrStatus(ATR_STATUS_DEFAULT);
+        schedule();
+      }
+    });
 
     const clearBtn = document.getElementById("clear-trade-form");
     if (clearBtn) {
       clearBtn.addEventListener("click", () => {
-        setAtrStatus("");
+        clearManualOverride();
+        atrState.lastAutoPrice = null;
+        setAtrStatus(ATR_STATUS_DEFAULT);
+        if (stopInput) {
+          atrState.settingStopValue = true;
+          stopInput.value = "";
+          atrState.settingStopValue = false;
+        }
         symbolInput.dispatchEvent(new Event("input", { bubbles: true }));
       });
     }
-    setAtrStatus("ATR stop will populate once symbol, side, and entry are set.");
+    if (form) {
+      form.addEventListener("reset", () => {
+        clearManualOverride();
+        atrState.lastAutoPrice = null;
+        setAtrStatus(ATR_STATUS_DEFAULT);
+        window.setTimeout(schedule, 0);
+      });
+    }
+    setAtrStatus(ATR_STATUS_DEFAULT);
     schedule();
   }
 
@@ -117,24 +181,61 @@
     const entry = parseFloat(entryInput.value);
 
     if (!symbol || !side || !Number.isFinite(entry) || entry <= 0) {
-      setAtrStatus("Select a symbol, side, and entry price to auto-calc stop.");
+      setAtrStatus("Select a symbol, side, and entry price to auto-calc the stop.");
       return;
     }
 
+    if (manualOverrideActive(symbol)) {
+      setAtrStatus("Manual stop preserved. Clear the Stop field to use ATR suggestions again.");
+      return;
+    }
+    if (atrState.manualOverride && atrState.manualSymbol && atrState.manualSymbol !== symbol) {
+      clearManualOverride();
+    }
+
     const token = ++atrState.token;
-    setAtrStatus("Calculating ATR stop…");
+    setAtrStatus("Calculating ATR stop...");
     try {
       const response = await fetchAtrStop(symbol, side, entry);
       if (token !== atrState.token) return;
       if (response && typeof response.stop_loss_price === "number" && Number.isFinite(response.stop_loss_price)) {
-        stopInput.value = response.stop_loss_price;
-        stopInput.dispatchEvent(new Event("input", { bubbles: true }));
+        const snapped = snapToStep(response.stop_loss_price, stopInput);
+        atrState.settingStopValue = true;
+        stopInput.value = snapped;
+        atrState.settingStopValue = false;
+        atrState.lastAutoPrice = typeof snapped === "string" ? parseFloat(snapped) : snapped;
       }
-      const label = response ? `Auto stop (${response.timeframe} · x${response.multiplier})` : "ATR stop ready.";
+      clearManualOverride();
+      const label = response
+        ? `Auto stop (${response.timeframe || symbol} x${response.multiplier})`
+        : "ATR stop ready.";
       setAtrStatus(label, "success");
     } catch (err) {
       if (token !== atrState.token) return;
-      setAtrStatus(err?.message || "ATR stop unavailable.", "error");
+      if (!manualOverrideActive(symbol)) {
+        atrState.settingStopValue = true;
+        stopInput.value = "";
+        atrState.settingStopValue = false;
+        atrState.lastAutoPrice = null;
+      }
+      setAtrStatus(buildAtrErrorMessage(err), "error");
+    }
+  }
+
+  function buildAtrErrorMessage(err) {
+    if (!err) {
+      return "ATR stop unavailable. Enter a stop price manually.";
+    }
+    switch (err.code) {
+      case "atr_insufficient_history":
+        return "ATR data needs more candles. Enter a stop manually while history loads.";
+      case "atr_history_unavailable":
+      case "atr_data_unavailable":
+        return "Market data unavailable for ATR. Please enter a stop price manually.";
+      case "atr_unavailable":
+        return err.message || "ATR calculation unavailable. Enter a stop manually.";
+      default:
+        return err.message || "ATR stop unavailable. Enter a stop price manually.";
     }
   }
 
@@ -142,6 +243,10 @@
     const form = document.getElementById("preview-form");
     const resultContainer = document.getElementById("preview-result");
     setupAtrAutofill();
+
+    if (!form) {
+      return;
+    }
 
     form.addEventListener("submit", async (event) => {
       event.preventDefault();

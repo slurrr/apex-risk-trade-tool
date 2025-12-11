@@ -27,6 +27,7 @@ Response:
 }
 
 
+
 WS for buffer
 python
 from apexomni.constants import APEX_OMNI_WS_MAIN, APEX_OMNI_WS_TEST
@@ -39,6 +40,7 @@ ws_client = WebSocket(
 
 def h4(message):
     print(4, message)
+
 
 shell
 ws_client.klines_stream(h4,'BTCUSDT',1)

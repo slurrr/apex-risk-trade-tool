@@ -2,7 +2,7 @@
 
 **Feature Branch**: `[001-atr-stop-autofill]`  
 **Created**: 2025-12-11  
-**Status**: Draft  
+**Status**: Complete  
 **Input**: User description: "New feature - I would like to implement a stop loss calculation and automatic population of the Stop field in the UI. This project currently auto populates the Entry field with the last price after fetching it based on the symbol selected in the UI Symbol dropdown menu. I would like the Stop field to automatically populate a stop loss based on whatever price is entered into the Entry field. The price in the Entry field will be used to calculate the stop loss based on ATR, for example stop_price = entry_price - atr * multiplier and atr = compute_atr(timeframe, period), where multiplier, timeframe and period are configurable and can be pulled from env vars MULTIPLIER, TIMEFRAME, PERIOD. Apex SDK shows GET /v3/klines for OHLC data and a WS subscription for candle data. I've included a reference API document scoped to this feature: klines_api.txt. We can prefetch candles with the public REST endpoint and subscribe to the WS candle stream to build a buffer that we can use to calculate ATR in near real time. The Stop field should load almost instantly with the stop_loss."
 
 ## User Scenarios & Testing *(mandatory)*
@@ -18,7 +18,7 @@ When a trader selects a symbol and has an entry price filled in (either automati
 **Acceptance Scenarios**:
 
 1. **Given** a trader selects a symbol in the Symbol dropdown and the Entry field is populated with the latest price, **When** the Entry field contains a valid price and ATR data is available, **Then** the Stop field is automatically populated with a default stop loss price derived from the ATR-based rule.
-2. **Given** the Stop field is auto-populated from an ATR-based rule, **When** the trader edits the Entry price before submitting the order, **Then** the Stop field is recalculated and updated to reflect the new entry price before order submission.
+2. **Given** the Stop field is auto-populated from an ATR-based rule, **When** the trader edits the Entry price before submitting the order, **Then** the Stop field is recalculated and updated to reflect the new entry price before order submission (unless the trader has manually overridden the stop).
 
 ---
 
@@ -48,7 +48,7 @@ When ATR data is not available or a trader prefers a custom stop loss, they can 
 **Acceptance Scenarios**:
 
 1. **Given** ATR data for the selected symbol and configured timeframe is unavailable or incomplete, **When** a trader selects that symbol and sets an entry price, **Then** the system clearly indicates that automatic stop loss calculation is unavailable and leaves the Stop field empty but editable.
-2. **Given** the Stop field is auto-populated with an ATR-based value, **When** a trader manually edits the Stop field, **Then** the system retains the trader’s manual stop loss value and uses it for any subsequent risk checks or order previews.
+2. **Given** the Stop field is auto-populated with an ATR-based value, **When** a trader manually edits the Stop field, **Then** the system retains the trader's manual stop loss value and uses it for any subsequent risk checks or order previews, and future ATR requests do not overwrite the manual stop unless the field is cleared.
 
 ---
 

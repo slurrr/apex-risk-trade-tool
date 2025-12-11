@@ -16,6 +16,8 @@ CandlePayload = Mapping[str, Any]
 
 @dataclass(frozen=True)
 class AtrConfig:
+    """Normalized ATR configuration used by helpers (timeframe, period, multiplier)."""
+
     timeframe: str
     period: int
     multiplier: float
@@ -23,6 +25,8 @@ class AtrConfig:
 
 @dataclass(frozen=True)
 class AtrStopResult:
+    """Result returned by `compute_configured_stop`, including the stop price and ATR inputs."""
+
     symbol: str
     side: str
     entry_price: float
@@ -45,6 +49,7 @@ def calculate_atr(symbol: str, timeframe: str, candles: Sequence[CandlePayload],
     Calculate Wilder's ATR for the supplied symbol/timeframe using ordered candles.
 
     Candles should be ordered from oldest -> newest and must expose high/low/close keys.
+    Returns None when insufficient candles or incomplete data prevents a safe calculation.
     """
     if period <= 0:
         raise ValueError("ATR period must be positive")
@@ -97,7 +102,11 @@ def compute_configured_stop(
     atr_value: float,
     config: AtrConfig,
 ) -> Optional[AtrStopResult]:
-    """Combine ATR output and configured multiplier to derive a default stop."""
+    """
+    Combine ATR output and configured multiplier to derive a default stop.
+
+    Returns None if the stop cannot be computed (e.g., invalid entry or ATR value).
+    """
     stop_price = default_stop_price(entry_price, side, atr_value, config.multiplier)
     if stop_price is None:
         return None

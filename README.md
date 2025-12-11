@@ -17,7 +17,11 @@ Backend + static UI for previewing, executing, and monitoring ApeX trades with r
 ## ATR Stop-Loss Autofill
 - Purpose: automatically suggests a stop price using configurable ATR timeframe, period, and multiplier whenever the trade entry price is known.
 - Backend/API details live in `specs/001-atr-stop-autofill/spec.md`; implementation steps and verification flow are in `specs/001-atr-stop-autofill/quickstart.md`.
-- Configure defaults via `.env` (see `TIMEFRAME`, `ATR_PERIOD`, `ATR_MULTIPLIER`) and restart the FastAPI service to apply updates.
+- Configure defaults via `.env`:
+  - `ATR_TIMEFRAME` (or legacy `TIMEFRAME`): candle size such as `5m`, `15m`, or `1h`.
+  - `ATR_PERIOD`: number of candles included in the Wilder ATR calculation.
+  - `ATR_MULTIPLIER`: factor applied to ATR when deriving the stop offset.
+- After editing any of the above values, restart the FastAPI service (or your process manager) so the new configuration is loaded by `backend/core/config.py`.
 
 ## Notes
 - Network is validated and defaults to testnet; unexpected networks log a warning on startup.

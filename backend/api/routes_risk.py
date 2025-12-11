@@ -67,15 +67,52 @@ async def atr_stop(
             status_code=503,
             code="atr_data_unavailable",
             detail="Unable to fetch ATR data. Please retry shortly.",
+            context={
+                "symbol": request.symbol,
+                "timeframe": config.timeframe,
+                "reason": "fetch_failed",
+            },
         )
 
     candles = _sort_candles(candles)
+    available_candles = len(candles)
+    if available_candles == 0:
+        return error_response(
+            status_code=503,
+            code="atr_history_unavailable",
+            detail="Market data unavailable for ATR calculation. Enter a stop price manually.",
+            context={
+                "symbol": request.symbol,
+                "timeframe": config.timeframe,
+                "required_candles": config.period,
+                "available_candles": available_candles,
+            },
+        )
+    if available_candles < config.period:
+        return error_response(
+            status_code=503,
+            code="atr_insufficient_history",
+            detail=f"ATR requires {config.period} candles but only {available_candles} are available.",
+            context={
+                "symbol": request.symbol,
+                "timeframe": config.timeframe,
+                "required_candles": config.period,
+                "available_candles": available_candles,
+            },
+        )
+
     atr_value = calculate_atr(request.symbol, config.timeframe, candles, config.period)
     if atr_value is None:
         return error_response(
             status_code=503,
             code="atr_unavailable",
             detail="ATR calculation unavailable for the selected symbol/timeframe.",
+            context={
+                "symbol": request.symbol,
+                "timeframe": config.timeframe,
+                "period": config.period,
+                "available_candles": available_candles,
+            },
         )
 
     result = compute_configured_stop(

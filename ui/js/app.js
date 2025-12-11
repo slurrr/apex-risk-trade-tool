@@ -84,6 +84,24 @@
     return data;
   }
 
+  function snapToInputStep(value, input) {
+    if (!input) return value;
+    const numeric = Number(value);
+    if (!Number.isFinite(numeric)) return numeric;
+    const stepAttr = input.getAttribute("step");
+    const step = Number(stepAttr);
+    if (!Number.isFinite(step) || step <= 0) {
+      return numeric;
+    }
+    const decimals = stepAttr && stepAttr.includes(".") ? stepAttr.split(".")[1].length : 0;
+    const snapped = Math.round(numeric / step) * step;
+    if (!Number.isFinite(snapped)) return numeric;
+    if (decimals > 0) {
+      return snapped.toFixed(decimals);
+    }
+    return snapped.toString();
+  }
+
   async function fetchAtrStop(symbol, side, entryPrice) {
     const cleanSymbol = (symbol || "").trim().toUpperCase();
     const numericEntry = Number(entryPrice);
@@ -106,7 +124,11 @@
     const data = await resp.json();
     if (!resp.ok) {
       const msg = data?.detail || "Unable to fetch ATR stop";
-      throw new Error(msg);
+      const err = new Error(msg);
+      err.code = data?.error;
+      err.context = data?.context;
+      err.status = resp.status;
+      throw err;
     }
     return data;
   }
@@ -316,7 +338,8 @@
     if (!entryInput || !symbol) return;
     const price = await fetchSymbolPrice(symbol);
     if (price !== null && price !== undefined) {
-      entryInput.value = price;
+      const snapped = snapToInputStep(price, entryInput);
+      entryInput.value = snapped;
       entryInput.dispatchEvent(new Event("input", { bubbles: true }));
     }
   }
@@ -348,6 +371,7 @@
     renderSymbolOptions,
     loadSymbols,
     fetchAtrStop,
+    snapToInputStep,
   };
 
   document.addEventListener("DOMContentLoaded", () => {

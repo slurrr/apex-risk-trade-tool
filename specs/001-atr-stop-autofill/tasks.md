@@ -68,8 +68,8 @@ description: "Task list for Automatic ATR-Based Stop Loss Prefill"
 
 ### Implementation for User Story 2
 
-- [ ] T012 [US2] Ensure ATR configuration in `backend/core/config.py` reads the ATR timeframe from a single runtime setting (for example, TIMEFRAME) and passes it through to ATR helpers in `backend/risk/atr.py` instead of using any hard-coded timeframe.
-- [ ] T013 [US2] Document how operations can change ATR timeframe, period, and multiplier in `specs/001-atr-stop-autofill/quickstart.md` and `README.md`, including any required reload or restart steps.
+- [X] T012 [US2] Ensure ATR configuration in `backend/core/config.py` reads the ATR timeframe from a single runtime setting (for example, TIMEFRAME) and passes it through to ATR helpers in `backend/risk/atr.py` instead of using any hard-coded timeframe.
+- [X] T013 [US2] Document how operations can change ATR timeframe, period, and multiplier in `specs/001-atr-stop-autofill/quickstart.md` and `README.md`, including any required reload or restart steps.
 
 **Checkpoint**: User Story 2 is complete when changing the configured ATR timeframe affects new automatic stop loss values without requiring code modifications.
 
@@ -83,9 +83,9 @@ description: "Task list for Automatic ATR-Based Stop Loss Prefill"
 
 ### Implementation for User Story 3
 
-- [ ] T014 [US3] Update the `/risk/atr-stop` handler in `backend/api/routes_risk.py` to distinguish between successful calculations and ATR-unavailable cases, returning an appropriate 503-style response (with error body) when a safe automatic stop cannot be computed.
-- [ ] T015 [US3] Update UI error handling in `ui/js/app.js` and `ui/js/preview.js` so that when ATR stop calculation fails (e.g., 503 or invalid data), the `stop_price` input remains empty and editable and a clear, non-blocking message is shown near the trade form.
-- [ ] T016 [US3] Add client-side logic in `ui/js/preview.js` to track manual edits to the `stop_price` input and prevent subsequent automatic ATR updates from overwriting user-provided stop loss values.
+- [X] T014 [US3] Update the `/risk/atr-stop` handler in `backend/api/routes_risk.py` to distinguish between successful calculations and ATR-unavailable cases, returning an appropriate 503-style response (with error body) when a safe automatic stop cannot be computed.
+- [X] T015 [US3] Update UI error handling in `ui/js/app.js` and `ui/js/preview.js` so that when ATR stop calculation fails (e.g., 503 or invalid data), the `stop_price` input remains empty and editable and a clear, non-blocking message is shown near the trade form.
+- [X] T016 [US3] Add client-side logic in `ui/js/preview.js` to track manual edits to the `stop_price` input and prevent subsequent automatic ATR updates from overwriting user-provided stop loss values.
 
 **Checkpoint**: User Story 3 is complete when traders can rely on manual stops in all degraded scenarios and are clearly informed when automatic ATR-based stops are not applied.
 
@@ -95,9 +95,9 @@ description: "Task list for Automatic ATR-Based Stop Loss Prefill"
 
 **Purpose**: Improvements that affect multiple user stories and overall maintainability.
 
-- [ ] T017 [P] Add inline documentation and docstrings for ATR helpers and configuration fields in `backend/risk/atr.py` and `backend/core/config.py`.
-- [ ] T018 [P] Update feature documentation in `specs/001-atr-stop-autofill/spec.md` and `specs/001-atr-stop-autofill/quickstart.md` to reflect any final adjustments made during implementation.
-- [ ] T019 Run through the ATR stop-loss quickstart in `specs/001-atr-stop-autofill/quickstart.md` end-to-end and verify that all described steps and behaviors match the implemented system.
+- [X] T017 [P] Add inline documentation and docstrings for ATR helpers and configuration fields in `backend/risk/atr.py` and `backend/core/config.py`.
+- [X] T018 [P] Update feature documentation in `specs/001-atr-stop-autofill/spec.md` and `specs/001-atr-stop-autofill/quickstart.md` to reflect any final adjustments made during implementation.
+- [X] T019 Run through the ATR stop-loss quickstart in `specs/001-atr-stop-autofill/quickstart.md` end-to-end and verify that all described steps and behaviors match the implemented system.
 
 ---
 

@@ -15,6 +15,8 @@ load_dotenv(ENV_PATH)
 
 
 class Settings(BaseSettings):
+    """Central application settings loaded via Pydantic (includes ATR config)."""
+
     model_config = SettingsConfigDict(
         env_file=ENV_PATH,
         case_sensitive=False,
@@ -38,9 +40,21 @@ class Settings(BaseSettings):
     apex_enable_ws: bool = Field(False, env="APEX_ENABLE_WS")
     slippage_factor: float = Field(0.0, env="SLIPPAGE_FACTOR")
     fee_buffer_pct: float = Field(0.0, env="FEE_BUFFER_PCT")
-    atr_timeframe: str = Field("5m", env=("ATR_TIMEFRAME", "TIMEFRAME"))
-    atr_period: int = Field(14, env=("ATR_PERIOD", "PERIOD"))
-    atr_multiplier: float = Field(1.5, env=("ATR_MULTIPLIER", "MULTIPLIER"))
+    atr_timeframe: str = Field(
+        "5m",
+        env=("ATR_TIMEFRAME", "TIMEFRAME"),
+        description="ATR candle timeframe (e.g., '5m', '15m', '1h').",
+    )
+    atr_period: int = Field(
+        14,
+        env=("ATR_PERIOD", "PERIOD"),
+        description="ATR lookback window in candles.",
+    )
+    atr_multiplier: float = Field(
+        1.5,
+        env=("ATR_MULTIPLIER", "MULTIPLIER"),
+        description="ATR multiplier applied when deriving stop offsets.",
+    )
 
     @field_validator("apex_network")
     @classmethod
