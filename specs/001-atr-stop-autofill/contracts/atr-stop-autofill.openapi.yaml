@@ -1,0 +1,70 @@
+openapi: 3.0.3
+info:
+  title: ATR-Based Stop Loss Prefill API
+  version: "1.0.0"
+  description: >
+    Contracts to support automatic ATR-based stop loss calculation for trade entry.
+
+paths:
+  /risk/atr-stop:
+    post:
+      summary: Calculate an ATR-based stop loss suggestion
+      description: >
+        Given a symbol, side, and entry price, returns an ATR-based stop loss suggestion
+        using the currently configured timeframe, period, and multiplier.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - symbol
+                - side
+                - entry_price
+              properties:
+                symbol:
+                  type: string
+                  description: Trading symbol (e.g., BTCUSDC).
+                side:
+                  type: string
+                  enum: [long, short]
+                  description: Trade direction.
+                entry_price:
+                  type: number
+                  format: double
+                  description: Entry price to use for the stop loss calculation.
+      responses:
+        "200":
+          description: ATR-based stop loss calculated successfully.
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - stop_loss_price
+                  - atr_value
+                properties:
+                  stop_loss_price:
+                    type: number
+                    format: double
+                    description: Suggested stop loss price based on ATR.
+                  atr_value:
+                    type: number
+                    format: double
+                    description: ATR value used for this calculation.
+                  multiplier:
+                    type: number
+                    format: double
+                    description: ATR multiplier applied.
+                  timeframe:
+                    type: string
+                    description: Timeframe used (from configuration).
+                  period:
+                    type: integer
+                    description: ATR lookback period used.
+        "400":
+          description: Invalid request (e.g., missing fields, invalid entry price).
+        "503":
+          description: ATR data unavailable or insufficient for calculation.
+

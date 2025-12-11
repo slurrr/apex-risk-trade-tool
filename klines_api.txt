@@ -1,0 +1,67 @@
+Apex API reference document
+
+REST for prefetch
+Request:
+GET /v3/klines
+# APEX_OMNI_HTTP_MAIN for mainnet, APEX_OMNI_HTTP_TEST for testnet
+client = HttpPublic(APEX_OMNI_HTTP_MAIN)
+print(client.klines_v3(symbol="ETHUSDT",interval=5,start=1718358480, end=1718950620, limit=5))
+print(client.klines_v3(symbol, timeframe))
+note: all request parameters are optional. max limit=200
+
+Response:
+{
+  "data": [
+    {
+      "start": 1647511440000,
+      "symbol": "BTCUSDC",
+      "interval": "1",
+      "low": "40000",
+      "high": "45000",
+      "open": "45000",
+      "close": "40000",
+      "volume": "1.002",
+      "turnover": "3"
+    }
+  ]
+}
+
+
+WS for buffer
+python
+from apexomni.constants import APEX_OMNI_WS_MAIN, APEX_OMNI_WS_TEST
+from apexomni.websocket_api import WebSocket
+
+# APEX_OMNI_WS_MAIN for mainnet, APEX_OMNI_WS_TEST for testnet
+ws_client = WebSocket(
+    endpoint=APEX_OMNI_WS_TEST
+)
+
+def h4(message):
+    print(4, message)
+
+shell
+ws_client.klines_stream(h4,'BTCUSDT',1)
+wscat -c wss://quote.omni.apex.exchange/realtime_public?v=2&timestamp=1661415017232
+> {"op":"subscribe","args":["candle.1.BTCUSDT"]}
+< {
+    "topic":"candle.1.BTCUSDT",
+        "data":[
+        {
+            "start":1647511440000,
+            "end":1647511499999,
+            "interval":"1",
+            "open":"44111",
+            "close":"44111",
+            "high":"44111",
+            "low":"44111",
+            "volume":"0",
+            "turnover":"0",
+            "confirm":true,
+            "time":1647511500752
+        }
+    ],
+        "ts":1647511500752,
+        "type":"snapshot"
+  }
+
