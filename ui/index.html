@@ -64,17 +64,17 @@
           <span>Stop</span>
           <input type="number" step="0.0001" id="stop_price" required />
         </label>
+        <label class="field side-field">
+          <span>Side (Optional)</span>
+          <div class="side-toggle" role="group" aria-label="Position side selector">
+            <input type="hidden" id="side" value="BUY" />
+            <button type="button" class="side-option is-active" data-value="BUY" aria-pressed="true">Long</button>
+            <button type="button" class="side-option" data-value="SELL" aria-pressed="false">Short</button>
+          </div>
+        </label>
         <label class="field">
           <span>Take Profit (Optional)</span>
           <input type="number" step="0.0001" id="tp" />
-        </label>
-        <label class="field">
-          <span>Side (Optional)</span>
-          <select id="side">
-            <option value="">Select side</option>
-            <option value="BUY">Buy / Long</option>
-            <option value="SELL">Sell / Short</option>
-          </select>
         </label>
         <div class="grid-actions">
           <button type="submit" class="btn primary">Calculate</button>
@@ -99,19 +99,23 @@
         <button id="refresh-orders" type="button" class="btn ghost">Refresh</button>
       </div>
       <div id="orders-error" class="error"></div>
-      <table id="orders-table">
-        <thead>
-          <tr>
-            <th>Symbol</th>
-            <th>Price</th>
-            <th>Side</th>
-            <th>Size</th>
-            <th>Status</th>
-            <th>Action</th>
-          </tr>
-        </thead>
-        <tbody></tbody>
-      </table>
+      <div class="table-shell">
+        <div class="table-scroll">
+          <table id="orders-table" class="data-table">
+            <thead>
+              <tr>
+                <th>Symbol</th>
+                <th>Price</th>
+                <th>Side</th>
+                <th>Size</th>
+                <th>Status</th>
+                <th>Action</th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </div>
       <div id="orders-empty" class="muted">No open orders.</div>
     </section>
 
@@ -121,20 +125,24 @@
         <button id="refresh-positions" type="button" class="btn ghost">Refresh</button>
       </div>
       <div id="positions-error" class="error"></div>
-      <table id="positions-table">
-        <thead>
-          <tr>
-            <th>Symbol</th>
-            <th>Entry</th>
-            <th>Side</th>
-            <th>Size</th>
-            <th>PnL</th>
-            <th>TP/SL</th>
-            <th>Actions</th>
-          </tr>
-        </thead>
-        <tbody></tbody>
-      </table>
+      <div class="table-shell">
+        <div class="table-scroll">
+          <table id="positions-table" class="data-table">
+            <thead>
+              <tr>
+                <th>Symbol</th>
+                <th>Entry</th>
+                <th>Side</th>
+                <th>Size</th>
+                <th>PnL</th>
+                <th>TP/SL</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </div>
       <div id="positions-empty" class="muted">No open positions.</div>
     </section>
   </main>

@@ -8,6 +8,7 @@
     symbols: [],
     priceCache: new Map(),
   };
+  let sideToggleControl = null;
 
   function getStoredTheme() {
     try {
@@ -252,6 +253,7 @@
     const list = document.getElementById("symbol-options");
     const clearBtn = document.getElementById("symbol-clear");
     const clearFormBtn = document.getElementById("clear-trade-form");
+    const form = document.getElementById("preview-form");
     if (!input || !list) return;
     input.addEventListener("input", () => {
       renderSymbolOptions(input.value);
@@ -280,18 +282,85 @@
     }
     if (clearFormBtn) {
       clearFormBtn.addEventListener("click", () => {
-        const form = document.getElementById("preview-form");
         if (form) {
           form.reset();
         }
         input.value = "";
         renderSymbolOptions("");
-        const dropdown = document.getElementById("side");
-        if (dropdown) dropdown.selectedIndex = 0;
+        resetSideValue();
         updateSymbolClearState();
         document.getElementById("preview-result").innerHTML = "";
         document.getElementById("execute-result").innerHTML = "";
       });
+    }
+    if (form) {
+      form.addEventListener("reset", () => {
+        window.setTimeout(() => {
+          resetSideValue();
+        }, 0);
+      });
+    }
+  }
+
+  function initSideToggle() {
+    const wrapper = document.querySelector(".side-toggle");
+    const hiddenInput = document.getElementById("side");
+    if (!wrapper || !hiddenInput) return;
+    const buttons = Array.from(wrapper.querySelectorAll(".side-option"));
+    if (!buttons.length) return;
+    const normalize = (val) => (val || "").toString().trim().toUpperCase();
+    const defaultValue = normalize(hiddenInput.getAttribute("value") || buttons[0]?.dataset.value || "");
+
+    const applyState = (nextValue, { silent = false, force = false } = {}) => {
+      const normalized = normalize(nextValue || defaultValue);
+      const changed = hiddenInput.value !== normalized;
+      hiddenInput.value = normalized;
+      buttons.forEach((btn) => {
+        const btnValue = normalize(btn.dataset.value);
+        const isActive = btnValue === normalized;
+        btn.classList.toggle("is-active", isActive);
+        btn.setAttribute("aria-pressed", String(isActive));
+      });
+      if (!silent && (changed || force)) {
+        hiddenInput.dispatchEvent(new Event("change", { bubbles: true }));
+      }
+    };
+
+    buttons.forEach((btn) => {
+      btn.addEventListener("click", () => applyState(btn.dataset.value));
+    });
+
+    applyState(hiddenInput.value || defaultValue, { silent: true, force: true });
+
+    sideToggleControl = {
+      set(value, options = {}) {
+        applyState(value, options);
+      },
+      reset() {
+        applyState(defaultValue, { force: true });
+      },
+    };
+  }
+
+  function setSideValue(value, options) {
+    if (sideToggleControl && typeof sideToggleControl.set === "function") {
+      sideToggleControl.set(value, options);
+    } else {
+      const sideInput = document.getElementById("side");
+      if (sideInput) {
+        sideInput.value = (value || "").toString().trim().toUpperCase();
+      }
+    }
+  }
+
+  function resetSideValue() {
+    if (sideToggleControl && typeof sideToggleControl.reset === "function") {
+      sideToggleControl.reset();
+    } else {
+      const sideInput = document.getElementById("side");
+      if (sideInput) {
+        sideInput.value = sideInput.getAttribute("value") || "";
+      }
     }
   }
 
@@ -372,10 +441,13 @@
     loadSymbols,
     fetchAtrStop,
     snapToInputStep,
+    setSideValue,
+    resetSideValue,
   };
 
   document.addEventListener("DOMContentLoaded", () => {
     initThemeListener();
+    initSideToggle();
     attachSymbolDropdown();
     loadSymbols();
     loadAccountSummary();
