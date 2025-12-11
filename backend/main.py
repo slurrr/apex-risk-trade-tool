@@ -22,6 +22,8 @@ def create_app() -> FastAPI:
         per_trade_risk_cap_pct=settings.per_trade_risk_cap_pct,
         daily_loss_cap_pct=settings.daily_loss_cap_pct,
         open_risk_cap_pct=settings.open_risk_cap_pct,
+        slippage_factor=settings.slippage_factor,
+        fee_buffer_pct=settings.fee_buffer_pct,
     )
     configure_order_manager(order_manager)
 

@@ -18,11 +18,15 @@ class OrderManager:
         per_trade_risk_cap_pct: Optional[float] = None,
         daily_loss_cap_pct: Optional[float] = None,
         open_risk_cap_pct: Optional[float] = None,
+        slippage_factor: float = 0.0,
+        fee_buffer_pct: float = 0.0,
     ) -> None:
         self.gateway = gateway
         self.per_trade_risk_cap_pct = per_trade_risk_cap_pct
         self.daily_loss_cap_pct = daily_loss_cap_pct
         self.open_risk_cap_pct = open_risk_cap_pct
+        self.slippage_factor = slippage_factor or 0.0
+        self.fee_buffer_pct = fee_buffer_pct or 0.0
         self.daily_realized_loss: float = 0.0
         self.open_risk_estimates: Dict[str, float] = {}
         self.open_orders: list[Dict[str, Any]] = []
@@ -195,6 +199,8 @@ class OrderManager:
             entry_price=entry_price,
             stop_price=stop_price,
             symbol_config=symbol_info,
+            slippage_factor=self.slippage_factor,
+            fee_buffer_pct=self.fee_buffer_pct,
         )
         logger.info(
             "preview_trade",
@@ -241,6 +247,8 @@ class OrderManager:
             entry_price=entry_price,
             stop_price=stop_price,
             symbol_config=symbol_info,
+            slippage_factor=self.slippage_factor,
+            fee_buffer_pct=self.fee_buffer_pct,
         )
 
         if self.daily_loss_cap_pct is not None:

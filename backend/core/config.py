@@ -31,6 +31,8 @@ class Settings(BaseSettings):
     apex_network: str = Field("testnet", env="APEX_NETWORK")
     apex_http_endpoint: Optional[str] = Field(None, env="APEX_HTTP_ENDPOINT")
     apex_enable_ws: bool = Field(False, env="APEX_ENABLE_WS")
+    slippage_factor: float = Field(0.0, env="SLIPPAGE_FACTOR")
+    fee_buffer_pct: float = Field(0.0, env="FEE_BUFFER_PCT")
 
     class Config:
         env_file = ENV_PATH
