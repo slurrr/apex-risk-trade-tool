@@ -4,7 +4,7 @@ from typing import Optional
 
 from dotenv import load_dotenv
 from pydantic import Field, field_validator
-from pydantic_settings import BaseSettings
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
@@ -15,6 +15,11 @@ load_dotenv(ENV_PATH)
 
 
 class Settings(BaseSettings):
+    model_config = SettingsConfigDict(
+        env_file=ENV_PATH,
+        case_sensitive=False,
+        extra="ignore",
+    )
     app_env: str = Field("development", env="APP_ENV")
     app_host: str = Field("127.0.0.1", env="APP_HOST")
     app_port: int = Field(8000, env="APP_PORT")
@@ -33,10 +38,9 @@ class Settings(BaseSettings):
     apex_enable_ws: bool = Field(False, env="APEX_ENABLE_WS")
     slippage_factor: float = Field(0.0, env="SLIPPAGE_FACTOR")
     fee_buffer_pct: float = Field(0.0, env="FEE_BUFFER_PCT")
-
-    class Config:
-        env_file = ENV_PATH
-        case_sensitive = False
+    atr_timeframe: str = Field("5m", env=("ATR_TIMEFRAME", "TIMEFRAME"))
+    atr_period: int = Field(14, env=("ATR_PERIOD", "PERIOD"))
+    atr_multiplier: float = Field(1.5, env=("ATR_MULTIPLIER", "MULTIPLIER"))
 
     @field_validator("apex_network")
     @classmethod
@@ -45,6 +49,28 @@ class Settings(BaseSettings):
         allowed = {"testnet", "base", "base-sepolia", "testnet-base", "mainnet"}
         if normalized not in allowed:
             raise ValueError(f"Unsupported APEX_NETWORK '{value}'. Use one of {sorted(allowed)}")
+        return normalized
+
+    @field_validator("atr_period")
+    @classmethod
+    def validate_atr_period(cls, value: int) -> int:
+        if value <= 0:
+            raise ValueError("ATR_PERIOD must be greater than zero")
+        return value
+
+    @field_validator("atr_multiplier")
+    @classmethod
+    def validate_atr_multiplier(cls, value: float) -> float:
+        if value <= 0:
+            raise ValueError("ATR_MULTIPLIER must be greater than zero")
+        return value
+
+    @field_validator("atr_timeframe")
+    @classmethod
+    def validate_atr_timeframe(cls, value: str) -> str:
+        normalized = (value or "").strip()
+        if not normalized:
+            raise ValueError("TIMEFRAME must be a non-empty candle interval (e.g., 5m)")
         return normalized
 
 

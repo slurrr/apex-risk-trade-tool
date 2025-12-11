@@ -1,4 +1,4 @@
-from typing import Optional
+from typing import Literal, Optional
 
 from pydantic import BaseModel, Field, model_validator, validator
 
@@ -112,3 +112,35 @@ class ErrorResponse(BaseModel):
     error: str
     detail: str
     context: Optional[dict] = None
+
+
+class AtrStopRequest(BaseModel):
+    symbol: str = Field(..., pattern=r"^[A-Z0-9]+-[A-Z0-9]+$")
+    side: Literal["long", "short"]
+    entry_price: float = Field(..., gt=0)
+
+    @validator("symbol", pre=True)
+    def normalize_symbol(cls, value: str) -> str:
+        if not value:
+            raise ValueError("symbol is required")
+        return value.strip().upper()
+
+    @validator("side", pre=True)
+    def normalize_side(cls, value: str) -> str:
+        if not value:
+            raise ValueError("side is required")
+        normalized = value.strip().lower()
+        if normalized not in {"long", "short"}:
+            if normalized in {"buy", "sell"}:
+                normalized = "long" if normalized == "buy" else "short"
+            else:
+                raise ValueError("side must be 'long' or 'short'")
+        return normalized
+
+
+class AtrStopResponse(BaseModel):
+    stop_loss_price: float = Field(..., gt=0)
+    atr_value: float = Field(..., gt=0)
+    multiplier: float = Field(..., gt=0)
+    timeframe: str
+    period: int

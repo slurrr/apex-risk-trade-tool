@@ -4,6 +4,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from backend.api.routes_orders import router as orders_router
 from backend.api.routes_positions import router as positions_router
+from backend.api.routes_risk import configure_gateway as configure_risk_gateway, router as risk_router
 from backend.api.routes_trade import configure_order_manager, router as trade_router
 from backend.api.routes_stream import router as stream_router
 from backend.core.config import get_settings
@@ -17,6 +18,7 @@ def create_app() -> FastAPI:
     init_logging(settings.log_level)
 
     gateway = ExchangeGateway(settings)
+    configure_risk_gateway(gateway)
     order_manager = OrderManager(
         gateway,
         per_trade_risk_cap_pct=settings.per_trade_risk_cap_pct,
@@ -61,6 +63,7 @@ def create_app() -> FastAPI:
     app.include_router(orders_router)
     app.include_router(positions_router)
     app.include_router(stream_router)
+    app.include_router(risk_router)
     return app
 
 

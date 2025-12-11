@@ -192,6 +192,20 @@ body {
   outline: 2px solid var(--accent);
 }
 
+.atr-stop-status {
+  font-size: 0.8rem;
+  color: var(--muted);
+  min-height: 1rem;
+}
+
+.atr-stop-status.is-error {
+  color: var(--negative);
+}
+
+.atr-stop-status.is-success {
+  color: var(--positive);
+}
+
 .dropdown {
   position: relative;
   width: 100%;

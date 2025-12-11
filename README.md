@@ -14,6 +14,11 @@ Backend + static UI for previewing, executing, and monitoring ApeX trades with r
 - Design/spec: `specs/001-constitution-aligned-spec/spec.md`, plan in `specs/001-constitution-aligned-spec/plan.md`.
 - Manual testnet checklist: `specs/001-constitution-aligned-spec/quickstart.md`.
 
+## ATR Stop-Loss Autofill
+- Purpose: automatically suggests a stop price using configurable ATR timeframe, period, and multiplier whenever the trade entry price is known.
+- Backend/API details live in `specs/001-atr-stop-autofill/spec.md`; implementation steps and verification flow are in `specs/001-atr-stop-autofill/quickstart.md`.
+- Configure defaults via `.env` (see `TIMEFRAME`, `ATR_PERIOD`, `ATR_MULTIPLIER`) and restart the FastAPI service to apply updates.
+
 ## Notes
 - Network is validated and defaults to testnet; unexpected networks log a warning on startup.
 - UI/assets contain no secrets; keep API keys only in local `.env`.

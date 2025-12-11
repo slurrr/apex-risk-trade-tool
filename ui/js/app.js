@@ -84,6 +84,33 @@
     return data;
   }
 
+  async function fetchAtrStop(symbol, side, entryPrice) {
+    const cleanSymbol = (symbol || "").trim().toUpperCase();
+    const numericEntry = Number(entryPrice);
+    if (!cleanSymbol || !side) {
+      throw new Error("Symbol and side are required");
+    }
+    if (!Number.isFinite(numericEntry) || numericEntry <= 0) {
+      throw new Error("Entry price must be greater than zero");
+    }
+    const payload = {
+      symbol: cleanSymbol,
+      side,
+      entry_price: numericEntry,
+    };
+    const resp = await fetch(`${API_BASE}/risk/atr-stop`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    const data = await resp.json();
+    if (!resp.ok) {
+      const msg = data?.detail || "Unable to fetch ATR stop";
+      throw new Error(msg);
+    }
+    return data;
+  }
+
   function renderAccountSummary(summary) {
     const equityEl = document.getElementById("summary-equity");
     const upnlEl = document.getElementById("summary-upnl");
@@ -177,6 +204,7 @@
         list.classList.remove("open");
         prefillEntryPrice(sym.code);
         updateSymbolClearState();
+        input.dispatchEvent(new Event("input", { bubbles: true }));
       });
       list.appendChild(btn);
     });
@@ -289,6 +317,7 @@
     const price = await fetchSymbolPrice(symbol);
     if (price !== null && price !== undefined) {
       entryInput.value = price;
+      entryInput.dispatchEvent(new Event("input", { bubbles: true }));
     }
   }
 
@@ -318,6 +347,7 @@
     loadAccountSummary,
     renderSymbolOptions,
     loadSymbols,
+    fetchAtrStop,
   };
 
   document.addEventListener("DOMContentLoaded", () => {

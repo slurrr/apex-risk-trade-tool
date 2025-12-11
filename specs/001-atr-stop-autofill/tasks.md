@@ -22,8 +22,8 @@ description: "Task list for Automatic ATR-Based Stop Loss Prefill"
 
 **Purpose**: Prepare configuration and documentation needed by the ATR stop-loss feature.
 
-- [ ] T001 [P] Add ATR configuration keys (TIMEFRAME, ATR_PERIOD, ATR_MULTIPLIER) to `.env.example` so they are visible to operators.
-- [ ] T002 [P] Add a short overview of the ATR-based stop loss feature to `README.md`, pointing to specs/001-atr-stop-autofill/spec.md and quickstart.md.
+- [X] T001 [P] Add ATR configuration keys (TIMEFRAME, ATR_PERIOD, ATR_MULTIPLIER) to `.env.example` so they are visible to operators.
+- [X] T002 [P] Add a short overview of the ATR-based stop loss feature to `README.md`, pointing to specs/001-atr-stop-autofill/spec.md and quickstart.md.
 
 ---
 
@@ -33,10 +33,10 @@ description: "Task list for Automatic ATR-Based Stop Loss Prefill"
 
 **CRITICAL**: No user story work should begin until this phase is complete.
 
-- [ ] T003 Add ATR configuration settings (timeframe, period, multiplier) to `backend/core/config.py` and expose them via `get_settings()`.
-- [ ] T004 [P] Add an OHLC/klines fetch helper for Apex market data to `backend/exchange/apex_client.py` that returns recent candles for a symbol and timeframe.
-- [ ] T005 Create `backend/risk/atr.py` with a pure ATR calculation function that consumes a sequence of candles and returns an ATR value for a given symbol, timeframe, and period.
-- [ ] T006 Implement a helper in `backend/risk/atr.py` that combines ATR configuration and the ATR value to compute a default stop loss price for long and short trades.
+- [X] T003 Add ATR configuration settings (timeframe, period, multiplier) to `backend/core/config.py` and expose them via `get_settings()`.
+- [X] T004 [P] Add an OHLC/klines fetch helper for Apex market data to `backend/exchange/apex_client.py` that returns recent candles for a symbol and timeframe.
+- [X] T005 Create `backend/risk/atr.py` with a pure ATR calculation function that consumes a sequence of candles and returns an ATR value for a given symbol, timeframe, and period.
+- [X] T006 Implement a helper in `backend/risk/atr.py` that combines ATR configuration and the ATR value to compute a default stop loss price for long and short trades.
 
 **Checkpoint**: ATR configuration, market data access, and ATR computation helpers are ready for use by user-story-level endpoints and UI logic.
 
@@ -50,11 +50,11 @@ description: "Task list for Automatic ATR-Based Stop Loss Prefill"
 
 ### Implementation for User Story 1
 
-- [ ] T007 [P] [US1] Add `AtrStopRequest` and `AtrStopResponse` Pydantic models to `backend/trading/schemas.py` for requesting and returning ATR-based stop loss suggestions.
-- [ ] T008 [US1] Create `backend/api/routes_risk.py` with a `POST /risk/atr-stop` endpoint that validates `AtrStopRequest`, invokes the ATR stop helper in `backend/risk/atr.py`, and returns `AtrStopResponse`.
-- [ ] T009 [US1] Register the new risk router in `backend/main.py` using `app.include_router(...)` so the `/risk/atr-stop` endpoint is exposed to the UI.
-- [ ] T010 [P] [US1] Add a `TradeApp.fetchAtrStop` helper to `ui/js/app.js` that calls the `/risk/atr-stop` endpoint with `symbol`, `side`, and `entry_price` and returns the suggested stop loss.
-- [ ] T011 [US1] Wire automatic stop loss prefilling into symbol selection and `entry_price` changes in `ui/js/app.js` and `ui/js/preview.js` so the `stop_price` input is auto-populated when a valid entry price and ATR data are available, and is recalculated when the Entry price is modified before submission.
+- [X] T007 [P] [US1] Add `AtrStopRequest` and `AtrStopResponse` Pydantic models to `backend/trading/schemas.py` for requesting and returning ATR-based stop loss suggestions.
+- [X] T008 [US1] Create `backend/api/routes_risk.py` with a `POST /risk/atr-stop` endpoint that validates `AtrStopRequest`, invokes the ATR stop helper in `backend/risk/atr.py`, and returns `AtrStopResponse`.
+- [X] T009 [US1] Register the new risk router in `backend/main.py` using `app.include_router(...)` so the `/risk/atr-stop` endpoint is exposed to the UI.
+- [X] T010 [P] [US1] Add a `TradeApp.fetchAtrStop` helper to `ui/js/app.js` that calls the `/risk/atr-stop` endpoint with `symbol`, `side`, and `entry_price` and returns the suggested stop loss.
+- [X] T011 [US1] Wire automatic stop loss prefilling into symbol selection and `entry_price` changes in `ui/js/app.js` and `ui/js/preview.js` so the `stop_price` input is auto-populated when a valid entry price and ATR data are available, and is recalculated when the Entry price is modified before submission.
 
 **Checkpoint**: User Story 1 is complete when the Stop field populates and updates automatically based on ATR whenever a valid Entry price is present and ATR data is available.
 
@@ -179,4 +179,3 @@ With multiple developers:
   - Developer D: Degraded behavior and manual override tasks for US3 (T014–T016).
 
 The tasks are structured so each user story remains independently implementable and testable while allowing safe parallel work.
-
