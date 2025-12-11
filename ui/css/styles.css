@@ -543,6 +543,7 @@ html[data-theme="light"] .side-option.is-active {
   border-radius: 10px;
   border: 1px solid var(--border);
   background: var(--panel-strong);
+  position: relative;
 }
 
 .manage-panel {
@@ -642,9 +643,8 @@ html[data-theme="light"] .side-option.is-active {
 .confirm-popover {
   position: absolute;
   top: -0.35rem;
-  left: 0;
-  right: 0;
-  transform: translateY(-100%);
+  left: 50%;
+  transform: translate(-50%, -100%);
   background: var(--panel-strong);
   color: var(--text);
   border: 1px solid var(--border);

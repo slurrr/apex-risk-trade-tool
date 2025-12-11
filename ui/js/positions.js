@@ -20,6 +20,7 @@
   function showConfirmPopover(targetBtn, positionId, message, onConfirm) {
     if (!targetBtn) return;
     const host =
+      targetBtn.closest(".modify-panel") ||
       targetBtn.closest(".tp-sl-cell") ||
       targetBtn.closest(".manage-panel") ||
       targetBtn.closest(".actions-cell") ||
