@@ -113,3 +113,16 @@ def test_open_orders_handles_data_payload():
     gateway = ExchangeGateway(FakeSettings(), client=FakeDataClient())
     orders = asyncio.run(gateway.get_open_orders(force_rest=True))
     assert orders and orders[0]["orderId"] == "abc-123"
+
+
+def test_update_positions_stream_updates_account_cache():
+    gateway = ExchangeGateway(FakeSettings(), client=FakeClient())
+    with gateway._lock:
+        gateway._ws_positions = {
+            "BTC-USDT": {"symbol": "BTC-USDT", "size": "1", "entryPrice": "100", "side": "LONG"},
+        }
+        changed = gateway._update_positions_pnl("BTC-USDT", 110)
+        assert changed is True
+        total = gateway._recalculate_total_upnl_locked()
+    assert total == 10.0
+    assert gateway._account_cache["totalUnrealizedPnl"] == 10.0

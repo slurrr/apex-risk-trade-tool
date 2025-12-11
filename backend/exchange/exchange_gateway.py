@@ -350,14 +350,20 @@ class ExchangeGateway:
             except Exception:
                 continue
             publish_positions = False
+            summary_changed = False
             with self._lock:
                 norm_symbol = self._normalize_symbol_value(symbol)
                 self._ws_prices[norm_symbol] = price_f
                 self._ticker_cache[norm_symbol] = {"price": price_f, "ts": time.time()}
                 publish_positions = self._update_positions_pnl(norm_symbol, price_f)
+                if publish_positions:
+                    self._recalculate_total_upnl_locked()
+                    summary_changed = True
             self._publish_event({"type": "ticker", "symbol": self._normalize_symbol_value(symbol), "price": price_f})
             if publish_positions:
                 self._publish_event({"type": "positions", "payload": list(self._ws_positions.values())})
+            if summary_changed:
+                self._publish_account_summary_event()
 
     def _handle_account_stream(self, message: Dict[str, Any]) -> None:
         payload = None
@@ -577,6 +583,17 @@ class ExchangeGateway:
             pos["pnl"] = pnl
             changed = True
         return changed
+
+    def _recalculate_total_upnl_locked(self) -> float:
+        total = 0.0
+        for pos in self._ws_positions.values():
+            pnl = pos.get("pnl")
+            try:
+                total += float(pnl)
+            except Exception:
+                continue
+        self._account_cache["totalUnrealizedPnl"] = total
+        return total
 
     def _filter_and_map_orders(self, orders: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
         mapped: Dict[str, Dict[str, Any]] = {}
@@ -1179,10 +1196,16 @@ class ExchangeGateway:
         """Recompute PnL for cached positions using latest known prices to reduce flicker."""
         if not self._ws_prices or not self._ws_positions:
             return
-        for sym, pos in self._ws_positions.items():
-            price = self._ws_prices.get(sym)
-            if price is not None:
-                self._update_positions_pnl(sym, price)
+        summary_changed = False
+        with self._lock:
+            for sym in list(self._ws_positions.keys()):
+                price = self._ws_prices.get(sym)
+                if price is not None and self._update_positions_pnl(sym, price):
+                    summary_changed = True
+            if summary_changed:
+                self._recalculate_total_upnl_locked()
+        if summary_changed:
+            self._publish_account_summary_event()
 
     async def _ping_loop(self) -> None:
         """Send periodic pings to keep WS connections alive."""

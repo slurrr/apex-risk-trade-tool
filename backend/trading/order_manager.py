@@ -861,12 +861,17 @@ class OrderManager:
             or position.get("slTriggerPrice")
             or position.get("triggerPrice")
         )
-        pnl_val = _coerce_float(
-            position.get("unrealizedPnl")
-            or position.get("unrealizedPnlUsd")
-            or position.get("pnl")
-            or position.get("unrealizedPnlValue")
+        pnl_val = None
+        pnl_candidates = (
+            position.get("pnl"),
+            position.get("unrealizedPnl"),
+            position.get("unrealizedPnlUsd"),
+            position.get("unrealizedPnlValue"),
         )
+        for candidate in pnl_candidates:
+            pnl_val = _coerce_float(candidate)
+            if pnl_val is not None:
+                break
 
         norm = {
             "id": position.get("positionId") or position.get("id") or symbol,

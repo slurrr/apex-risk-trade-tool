@@ -150,6 +150,21 @@ def test_list_positions_normalizes_fields():
     ]
 
 
+def test_normalize_position_prefers_runtime_pnl():
+    gateway = FakeGateway()
+    manager = OrderManager(gateway)
+    pos = {
+        "symbol": "ETH-USDT",
+        "positionSide": "LONG",
+        "size": "1",
+        "entryPrice": "2000",
+        "unrealizedPnl": "3.5",  # stale payload
+        "pnl": "15.25",  # runtime mark-to-market from WS ticker
+    }
+    normalized = manager._normalize_position(pos)
+    assert normalized["pnl"] == pytest.approx(15.25)
+
+
 def test_extract_tpsl_prefers_latest_untriggered():
     gateway = FakeGateway()
     manager = OrderManager(gateway)

@@ -211,6 +211,10 @@
     }
   }
 
+  const symbolDropdownState = {
+    suppressOpen: false,
+  };
+
   function renderSymbolOptions(filter) {
     const list = document.getElementById("symbol-options");
     const input = document.getElementById("symbol-input");
@@ -223,15 +227,19 @@
       btn.type = "button";
       btn.textContent = sym.code;
       btn.addEventListener("click", () => {
+        symbolDropdownState.suppressOpen = true;
         input.value = sym.code;
         list.classList.remove("open");
         prefillEntryPrice(sym.code);
         updateSymbolClearState();
         input.dispatchEvent(new Event("input", { bubbles: true }));
+        window.setTimeout(() => {
+          symbolDropdownState.suppressOpen = false;
+        }, 0);
       });
       list.appendChild(btn);
     });
-    const shouldOpen = document.activeElement === input && matches.length > 0;
+    const shouldOpen = document.activeElement === input && matches.length > 0 && !symbolDropdownState.suppressOpen;
     if (shouldOpen) {
       list.classList.add("open");
     } else {

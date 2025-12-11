@@ -537,6 +537,3 @@
     }
   });
 })();
-      if (event.target.closest(".manage-panel") || event.target.closest(".modify-panel") || manageBtn || modifyBtn) {
-        event.stopPropagation();
-      }
