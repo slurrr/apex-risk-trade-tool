@@ -129,18 +129,18 @@ async def atr_stop(
             detail="Unable to derive a stop price for the provided entry price.",
         )
 
-    logger.info(
-        "atr_stop_computed",
-        extra={
-            "event": "atr_stop_computed",
-            "symbol": request.symbol,
-            "side": request.side,
-            "entry": request.entry_price,
-            "atr": atr_value,
-            "timeframe": config.timeframe,
-            "period": config.period,
-        },
-    )
+    # logger.info(
+    #     "atr_stop_computed",
+    #     extra={
+    #         "event": "atr_stop_computed",
+    #         "symbol": request.symbol,
+    #         "side": request.side,
+    #         "entry": request.entry_price,
+    #         "atr": atr_value,
+    #         "timeframe": config.timeframe,
+    #         "period": config.period,
+    #     },
+    # )
 
     return AtrStopResponse(
         stop_loss_price=result.stop_price,

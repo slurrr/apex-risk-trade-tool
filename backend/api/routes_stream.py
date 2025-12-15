@@ -129,19 +129,19 @@ async def stream_updates(
                     and o.get("isPositionTpsl")
                     and str(o.get("type") or "").upper().startswith(("STOP", "TAKE_PROFIT"))
                 )
-                logger.info(
-                    "ws_orders_raw_event",
-                    extra={
-                        "event": "ws_orders_raw_event",
-                        "count": len(raw_orders),
-                        "position_tpsl": position_tpsl_count,
-                        "first_type": (raw_orders[0].get("type") if raw_orders else None),
-                        "first_status": (raw_orders[0].get("status") if raw_orders else None),
-                        "first_symbol": (raw_orders[0].get("symbol") if raw_orders else None),
-                        "first_is_position_tpsl": (raw_orders[0].get("isPositionTpsl") if raw_orders else None),
-                        "first_trigger": (raw_orders[0].get("triggerPrice") if raw_orders else None),
-                    },
-                )
+                # logger.info(
+                #     "ws_orders_raw_event",
+                #     extra={
+                #         "event": "ws_orders_raw_event",
+                #         "count": len(raw_orders),
+                #         "position_tpsl": position_tpsl_count,
+                #         "first_type": (raw_orders[0].get("type") if raw_orders else None),
+                #         "first_status": (raw_orders[0].get("status") if raw_orders else None),
+                #         "first_symbol": (raw_orders[0].get("symbol") if raw_orders else None),
+                #         "first_is_position_tpsl": (raw_orders[0].get("isPositionTpsl") if raw_orders else None),
+                #         "first_trigger": (raw_orders[0].get("triggerPrice") if raw_orders else None),
+                #     },
+                # )
                 refresh_needed = False
                 try:
                     refresh_needed = manager._reconcile_tpsl(raw_orders)
@@ -154,15 +154,15 @@ async def stream_updates(
                     pass
                 if refresh_needed:
                     await _force_tpsl_refresh()
-                logger.info(
-                    "ws_orders_raw_tpsl_map_built",
-                    extra={
-                        "event": "ws_orders_raw_tpsl_map_built",
-                        "symbols": list(manager._tpsl_targets_by_symbol.keys()),
-                        "orders_count": len(raw_orders),
-                        "position_tpsl": position_tpsl_count,
-                    },
-                )
+                # logger.info(
+                #     "ws_orders_raw_tpsl_map_built",
+                #     extra={
+                #         "event": "ws_orders_raw_tpsl_map_built",
+                #         "symbols": list(manager._tpsl_targets_by_symbol.keys()),
+                #         "orders_count": len(raw_orders),
+                #         "position_tpsl": position_tpsl_count,
+                #     },
+                # )
                 # push normalized positions using updated TP/SL map
                 try:
                     cached_positions = list(getattr(gateway, "_ws_positions", {}).values())
@@ -199,12 +199,13 @@ async def stream_updates(
             try:
                 await websocket.send_json(msg)
             except WebSocketDisconnect:
-                logger.info("ws_disconnect", extra={"event": "ws_disconnect"})
+                # logger.info("ws_disconnect", extra={"event": "ws_disconnect"})
                 break
             except Exception as exc:
                 logger.warning("ws_send_failed", extra={"event": "ws_send_failed", "error": str(exc)})
                 break
     except WebSocketDisconnect:
-        logger.info("ws_disconnect", extra={"event": "ws_disconnect"})
+        # logger.info("ws_disconnect", extra={"event": "ws_disconnect"})
+        pass
     finally:
         gateway.unregister_subscriber(queue)

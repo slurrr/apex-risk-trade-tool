@@ -202,19 +202,19 @@ class OrderManager:
             slippage_factor=self.slippage_factor,
             fee_buffer_pct=self.fee_buffer_pct,
         )
-        logger.info(
-            "preview_trade",
-            extra={
-                "event": "preview_trade",
-                "symbol": symbol,
-                "entry": entry_price,
-                "stop": stop_price,
-                "risk_pct": risk_pct,
-                "size": result.size,
-                "side": result.side,
-                "warnings": result.warnings,
-            },
-        )
+        # logger.info(
+        #     "preview_trade",
+        #     extra={
+        #         "event": "preview_trade",
+        #         "symbol": symbol,
+        #         "entry": entry_price,
+        #         "stop": stop_price,
+        #         "risk_pct": risk_pct,
+        #         "size": result.size,
+        #         "side": result.side,
+        #         "warnings": result.warnings,
+        #     },
+        # )
         # warnings may be extended later with caps/other checks
         return result, result.warnings
 
@@ -276,19 +276,19 @@ class OrderManager:
         if payload_warning:
             warnings.append(payload_warning)
 
-        logger.info(
-            "execute_trade",
-            extra={
-                "event": "execute_trade",
-                "symbol": symbol,
-                "entry": entry_price,
-                "stop": stop_price,
-                "risk_pct": risk_pct,
-                "size": sizing.size,
-                "side": sizing.side,
-                "warnings": warnings,
-            },
-        )
+        # logger.info(
+        #     "execute_trade",
+        #     extra={
+        #         "event": "execute_trade",
+        #         "symbol": symbol,
+        #         "entry": entry_price,
+        #         "stop": stop_price,
+        #         "risk_pct": risk_pct,
+        #         "size": sizing.size,
+        #         "side": sizing.side,
+        #         "warnings": warnings,
+        #     },
+        # )
 
         order_resp = await self.gateway.place_order(payload)
         exchange_order_id = order_resp.get("exchange_order_id")
@@ -317,14 +317,14 @@ class OrderManager:
         self.open_risk_estimates = {
             order_id: risk for order_id, risk in self.open_risk_estimates.items() if order_id in open_ids
         }
-        logger.info(
-            "state_refreshed",
-            extra={
-                "event": "state_refreshed",
-                "positions_count": len(self.positions),
-                "open_orders_count": len(self.open_orders),
-            },
-        )
+        # logger.info(
+        #     "state_refreshed",
+        #     extra={
+        #         "event": "state_refreshed",
+        #         "positions_count": len(self.positions),
+        #         "open_orders_count": len(self.open_orders),
+        #     },
+        # )
 
     async def list_orders(self) -> list[Dict[str, Any]]:
         """Return open orders from gateway and update cache."""
@@ -388,17 +388,6 @@ class OrderManager:
         if not positions_raw:
             positions_raw = await self.gateway.get_open_positions(force_rest=True, publish=True)
         self.positions = await self._enrich_positions(positions_raw, tpsl_map=self._tpsl_targets_by_symbol)
-        if self.positions:
-            logger.info(
-                "positions_normalized_sample",
-                extra={
-                    "event": "positions_normalized_sample",
-                    "count": len(self.positions),
-                    "first_symbol": self.positions[0].get("symbol"),
-                    "first_tp": self.positions[0].get("take_profit"),
-                    "first_sl": self.positions[0].get("stop_loss"),
-                },
-            )
         return self.positions
 
     async def close_position(
@@ -417,19 +406,19 @@ class OrderManager:
         close_size = size_val * (close_percent / 100.0)
         if close_size <= 0:
             raise ValueError("close_percent must be greater than 0")
-        logger.info(
-            "close_position_request",
-            extra={
-                "event": "close_position_request",
-                "position_id": position_id,
-                "symbol": target.get("symbol"),
-                "side": target.get("side"),
-                "close_percent": close_percent,
-                "close_size": close_size,
-                "close_type": (close_type or "").lower(),
-                "limit_price": limit_price,
-            },
-        )
+        # logger.info(
+        #     "close_position_request",
+        #     extra={
+        #         "event": "close_position_request",
+        #         "position_id": position_id,
+        #         "symbol": target.get("symbol"),
+        #         "side": target.get("side"),
+        #         "close_percent": close_percent,
+        #         "close_size": close_size,
+        #         "close_type": (close_type or "").lower(),
+        #         "limit_price": limit_price,
+        #     },
+        # )
         resp = await self.gateway.place_close_order(
             symbol=target.get("symbol") or "",
             side=target.get("side") or "",
@@ -473,30 +462,30 @@ class OrderManager:
             self.pending_order_prices[str(order_id)] = limit_price
         if client_id and limit_price is not None:
             self.pending_order_prices_client[str(client_id)] = limit_price
-        logger.info(
-            "close_position_submitted",
-            extra={
-                "event": "close_position_submitted",
-                "position_id": position_id,
-                "symbol": target.get("symbol"),
-                "close_type": (close_type or "").lower(),
-                "close_percent": close_percent,
-                "order_id": order_id,
-                "client_id": client_id,
-            },
-        )
+        # logger.info(
+        #     "close_position_submitted",
+        #     extra={
+        #         "event": "close_position_submitted",
+        #         "position_id": position_id,
+        #         "symbol": target.get("symbol"),
+        #         "close_type": (close_type or "").lower(),
+        #         "close_percent": close_percent,
+        #         "order_id": order_id,
+        #         "client_id": client_id,
+        #     },
+        # )
         if isinstance(close_type, str) and close_type.lower() == "limit":
             try:
                 await self.gateway.get_open_orders(force_rest=True, publish=True)
             except Exception:
                 # Non-fatal; WS/next refresh will pick up the new order.
-                logger.debug("close_position_refresh_orders_failed", exc_info=True)
-        return {
-            "position_id": position_id,
-            "requested_percent": close_percent,
-            "close_size": close_size,
-            "exchange": resp,
-        }
+                # logger.debug("close_position_refresh_orders_failed", exc_info=True)
+                return {
+                    "position_id": position_id,
+                    "requested_percent": close_percent,
+                    "close_size": close_size,
+                    "exchange": resp,
+                }
 
     async def modify_targets(
         self,
@@ -511,17 +500,17 @@ class OrderManager:
         if take_profit is None and stop_loss is None and not clear_tp and not clear_sl:
             raise ValueError("At least one of take_profit, stop_loss, clear_tp, or clear_sl must be provided")
 
-        logger.info(
-            "modify_targets_request",
-            extra={
-                "event": "modify_targets_request",
-                "position_id": position_id,
-                "take_profit": take_profit,
-                "stop_loss": stop_loss,
-                "clear_tp": clear_tp,
-                "clear_sl": clear_sl,
-            },
-        )
+        # logger.info(
+        #     "modify_targets_request",
+        #     extra={
+        #         "event": "modify_targets_request",
+        #         "position_id": position_id,
+        #         "take_profit": take_profit,
+        #         "stop_loss": stop_loss,
+        #         "clear_tp": clear_tp,
+        #         "clear_sl": clear_sl,
+        #     },
+        # )
 
         positions = await self.list_positions()
         target = next((p for p in positions if str(p.get("id")) == str(position_id)), None)
@@ -658,15 +647,15 @@ class OrderManager:
         result["canceled"] = canceled
         if canceled:
             self.open_risk_estimates.pop(order_id, None)
-        logger.info(
-            "cancel_order",
-            extra={
-                "event": "cancel_order",
-                "order_id": order_id,
-                "canceled": canceled,
-                "still_open": still_open,
-            },
-        )
+        # logger.info(
+        #     "cancel_order",
+        #     extra={
+        #         "event": "cancel_order",
+        #         "order_id": order_id,
+        #         "canceled": canceled,
+        #         "still_open": still_open,
+        #     },
+        # )
         return result
 
     def _normalize_order(self, order: Dict[str, Any]) -> Dict[str, Any]:
@@ -805,22 +794,22 @@ class OrderManager:
                 clean_entry["stop_loss"] = sl_val
             if clean_entry:
                 cleaned[sym] = clean_entry
-        try:
-            logger.info(
-                "tpsl_extract_summary",
-                extra={
-                    "event": "tpsl_extract_summary",
-                    "total": debug_counts["total"],
-                    "position_tpsl": debug_counts["position_tpsl"],
-                    "tp_found": debug_counts["tp"],
-                    "sl_found": debug_counts["sl"],
-                    "skipped_status": debug_counts["skipped_status"],
-                    "skipped_trigger": debug_counts["skipped_trigger"],
-                    "symbols": list(cleaned.keys()),
-                },
-            )
-        except Exception:
-            pass
+        #try:
+            # logger.info(
+            #     "tpsl_extract_summary",
+            #     extra={
+            #         "event": "tpsl_extract_summary",
+            #         "total": debug_counts["total"],
+            #         "position_tpsl": debug_counts["position_tpsl"],
+            #         "tp_found": debug_counts["tp"],
+            #         "sl_found": debug_counts["sl"],
+            #         "skipped_status": debug_counts["skipped_status"],
+            #         "skipped_trigger": debug_counts["skipped_trigger"],
+            #         "symbols": list(cleaned.keys()),
+            #     },
+            # )
+        #except Exception:
+        #    pass
         return cleaned
 
     def _normalize_position(

@@ -55,15 +55,15 @@ class ExchangeGateway:
         self._public_client: Any = self.apex_client.public_client
         self._prime_client()
         self._ticker_cache: Dict[str, Dict[str, float]] = {}
-        logger.info(
-            "gateway_initialized",
-            extra={
-                "event": "gateway_initialized",
-                "network": self._network,
-                "testnet": self._testnet,
-                "ws_enabled": self.apex_enable_ws,
-            },
-        )
+        # logger.info(
+        #     "gateway_initialized",
+        #     extra={
+        #         "event": "gateway_initialized",
+        #         "network": self._network,
+        #         "testnet": self._testnet,
+        #         "ws_enabled": self.apex_enable_ws,
+        #     },
+        # )
         if not self._testnet:
             logger.warning(
                 "non_testnet_network_detected",
@@ -135,7 +135,7 @@ class ExchangeGateway:
         try:
             self._ws_public = self.apex_client.create_public_ws()
             self._ws_public.all_ticker_stream(self._handle_ticker)
-            logger.info("public WS stream started")
+            # logger.info("public WS stream started")
         except Exception as exc:
             logger.warning("public WS stream failed", extra={"error": str(exc)})
 
@@ -144,7 +144,7 @@ class ExchangeGateway:
             self._ws_private = self.apex_client.create_private_ws()
             # Use SDK helper to subscribe to account info stream (handles auth/ping)
             self._ws_private.account_info_stream_v3(self._handle_account_stream)
-            logger.info("private WS stream started and subscribed", extra={"topic": "ws_zk_accounts_v3"})
+            # logger.info("private WS stream started and subscribed", extra={"topic": "ws_zk_accounts_v3"})
         except Exception as exc:
             logger.warning("private WS stream failed", extra={"error": str(exc)})
 
@@ -402,16 +402,16 @@ class ExchangeGateway:
                             or acct.get("totalUpnl")
                         )
                     self._publish_event({"type": "account", "payload": acct})
-                    logger.info(
-                        "account_stream_update",
-                        extra={
-                            "event": "account_stream_update",
-                            "payload_keys": list(acct.keys()),
-                            "total_equity_stream": total_equity_stream,
-                            "available_stream": available_balance_stream,
-                            "total_upnl_stream": total_upnl_stream,
-                        },
-                    )
+                    # logger.info(
+                    #     "account_stream_update",
+                    #     extra={
+                    #         "event": "account_stream_update",
+                    #         "payload_keys": list(acct.keys()),
+                    #         "total_equity_stream": total_equity_stream,
+                    #         "available_stream": available_balance_stream,
+                    #         "total_upnl_stream": total_upnl_stream,
+                    #     },
+                    # )
         if total_equity_stream is not None:
             self._account_cache["totalEquityValue"] = total_equity_stream
         if available_balance_stream is not None:
@@ -503,33 +503,34 @@ class ExchangeGateway:
                 self._ws_orders_raw = list(self._ws_orders_tpsl)
 
             position_tpsl_count = len(self._ws_orders_tpsl or [])
-            logger.info(
-                "ws_orders_raw_received",
-                extra={
-                    "event": "ws_orders_raw_received",
-                    "count": len(self._ws_orders_raw) if isinstance(self._ws_orders_raw, list) else 0,
-                    "position_tpsl": position_tpsl_count,
-                    "first_type": (self._ws_orders_tpsl[0].get("type") if self._ws_orders_tpsl else None),
-                    "first_status": (self._ws_orders_tpsl[0].get("status") if self._ws_orders_tpsl else None),
-                    "first_symbol": (self._ws_orders_tpsl[0].get("symbol") if self._ws_orders_tpsl else None),
-                    "first_is_position_tpsl": (self._ws_orders_tpsl[0].get("isPositionTpsl") if self._ws_orders_tpsl else None),
-                    "first_trigger": (
-                        self._ws_orders_tpsl[0].get("triggerPrice")
-                        if self._ws_orders_tpsl
-                        else None
-                    ),
-                },
-            )
+            # logger.info(
+            #     "ws_orders_raw_received",
+            #     extra={
+            #         "event": "ws_orders_raw_received",
+            #         "count": len(self._ws_orders_raw) if isinstance(self._ws_orders_raw, list) else 0,
+            #         "position_tpsl": position_tpsl_count,
+            #         "first_type": (self._ws_orders_tpsl[0].get("type") if self._ws_orders_tpsl else None),
+            #         "first_status": (self._ws_orders_tpsl[0].get("status") if self._ws_orders_tpsl else None),
+            #         "first_symbol": (self._ws_orders_tpsl[0].get("symbol") if self._ws_orders_tpsl else None),
+            #         "first_is_position_tpsl": (self._ws_orders_tpsl[0].get("isPositionTpsl") if self._ws_orders_tpsl else None),
+            #         "first_trigger": (
+            #             self._ws_orders_tpsl[0].get("triggerPrice")
+            #             if self._ws_orders_tpsl
+            #             else None
+            #         ),
+            #     },
+            # )
             if not self._initial_orders_raw_logged:
                 self._initial_orders_raw_logged = True
                 try:
-                    logger.info(
-                        "orders_raw_initial_payload",
-                        extra={
-                            "event": "orders_raw_initial_payload",
-                            "payload": orders_raw,
-                        },
-                    )
+                    # logger.info(
+                    #     "orders_raw_initial_payload",
+                    #     extra={
+                    #         "event": "orders_raw_initial_payload",
+                    #         "payload": orders_raw,
+                    #     },
+                    # )
+                    pass
                 except Exception:
                     pass
             # Publish the original payload so downstream reconcilers see canceled entries too.
@@ -707,16 +708,16 @@ class ExchangeGateway:
                 if total_upnl is None:
                     total_upnl = self._account_cache.get("totalUnrealizedPnl")
         if total_equity is None or available is None or total_upnl is None:
-            logger.info(
-                "account_summary_cache_miss",
-                extra={
-                    "event": "account_summary_cache_miss",
-                    "cached_keys": list(self._account_cache.keys()),
-                    "has_equity": total_equity is not None,
-                    "has_available": available is not None,
-                    "has_upnl": total_upnl is not None,
-                },
-            )
+            # logger.info(
+            #     "account_summary_cache_miss",
+            #     extra={
+            #         "event": "account_summary_cache_miss",
+            #         "cached_keys": list(self._account_cache.keys()),
+            #         "has_equity": total_equity is not None,
+            #         "has_available": available is not None,
+            #         "has_upnl": total_upnl is not None,
+            #     },
+            # )
             try:
                 resp = await asyncio.to_thread(self._client.get_account_v3)
                 payload = self._unwrap_payload(resp)
@@ -764,28 +765,28 @@ class ExchangeGateway:
                         self._account_cache["availableBalance"] = available
                     if total_upnl is not None:
                         self._account_cache["totalUnrealizedPnl"] = total_upnl
-                logger.info(
-                    "account_summary_refetched",
-                    extra={
-                        "event": "account_summary_refetched",
-                        "payload_keys": list(payload_dict.keys()),
-                        "account_keys": list(account.keys()),
-                        "total_equity": total_equity,
-                        "available": available,
-                        "total_upnl": total_upnl,
-                    },
-                )
+                # logger.info(
+                #     "account_summary_refetched",
+                #     extra={
+                #         "event": "account_summary_refetched",
+                #         "payload_keys": list(payload_dict.keys()),
+                #         "account_keys": list(account.keys()),
+                #         "total_equity": total_equity,
+                #         "available": available,
+                #         "total_upnl": total_upnl,
+                #     },
+                # )
             except Exception:
                 pass
-        logger.info(
-            "account_summary_snapshot",
-            extra={
-                "event": "account_summary_snapshot",
-                "total_equity": total_equity,
-                "available": available,
-                "total_upnl": total_upnl,
-            },
-        )
+        # logger.info(
+        #     "account_summary_snapshot",
+        #     extra={
+        #         "event": "account_summary_snapshot",
+        #         "total_equity": total_equity,
+        #         "available": available,
+        #         "total_upnl": total_upnl,
+        #     },
+        # )
         summary = self._current_account_summary()
         if summary:
             return summary
@@ -836,15 +837,15 @@ class ExchangeGateway:
             except Exception:
                 pass
             self._configs_loaded_at = time.time()
-            logger.info(
-                "configs_cached",
-                extra={
-                    "event": "configs_cached",
-                    "count": len(self._configs_cache),
-                    "network": self._network,
-                    "testnet": self._testnet,
-                },
-            )
+            # logger.info(
+            #     "configs_cached",
+            #     extra={
+            #         "event": "configs_cached",
+            #         "count": len(self._configs_cache),
+            #         "network": self._network,
+            #         "testnet": self._testnet,
+            #     },
+            # )
         except Exception as exc:
             logger.exception("failed to load configs", extra={"error": str(exc)})
             raise
@@ -1080,23 +1081,23 @@ class ExchangeGateway:
                 orders_list = []
             try:
                 first_order = orders_list[0] if orders_list else {}
-                logger.info(
-                    "open_orders_snapshot",
-                    extra={
-                        "event": "open_orders_snapshot",
-                        "raw_count": len(orders_list),
-                        "first_status": first_order.get("status") if isinstance(first_order, dict) else None,
-                        "first_type": (
-                            first_order.get("type")
-                            or first_order.get("orderType")
-                            or first_order.get("order_type")
-                            if isinstance(first_order, dict)
-                            else None
-                        ),
-                        "contains_tpsl_flag": any(bool(o.get("isPositionTpsl")) for o in orders_list if isinstance(o, dict)),
-                        "symbols_sample": list({str(o.get("symbol") or o.get("market")) for o in orders_list if isinstance(o, dict)})[:5],
-                    },
-                )
+                # logger.info(
+                #     "open_orders_snapshot",
+                #     extra={
+                #         "event": "open_orders_snapshot",
+                #         "raw_count": len(orders_list),
+                #         "first_status": first_order.get("status") if isinstance(first_order, dict) else None,
+                #         "first_type": (
+                #             first_order.get("type")
+                #             or first_order.get("orderType")
+                #             or first_order.get("order_type")
+                #             if isinstance(first_order, dict)
+                #             else None
+                #         ),
+                #         "contains_tpsl_flag": any(bool(o.get("isPositionTpsl")) for o in orders_list if isinstance(o, dict)),
+                #         "symbols_sample": list({str(o.get("symbol") or o.get("market")) for o in orders_list if isinstance(o, dict)})[:5],
+                #     },
+                # )
             except Exception:
                 pass
             mapped = self._filter_and_map_orders(orders)
@@ -1151,14 +1152,14 @@ class ExchangeGateway:
                         and self._is_tpsl_order_payload(o)
                         and str(o.get("status") or "").lower() not in {"canceled", "cancelled", "filled", "triggered"}
                     ]
-                logger.info(
-                    "account_snapshot_refreshed",
-                    extra={
-                        "event": "account_snapshot_refreshed",
-                        "orders_count": len(orders),
-                        "position_tpsl": len(self._ws_orders_tpsl),
-                    },
-                )
+                # logger.info(
+                #     "account_snapshot_refreshed",
+                #     extra={
+                #         "event": "account_snapshot_refreshed",
+                #         "orders_count": len(orders),
+                #         "position_tpsl": len(self._ws_orders_tpsl),
+                #     },
+                # )
             return orders
         except Exception as exc:
             logger.warning(
@@ -1228,7 +1229,7 @@ class ExchangeGateway:
                 if idle > 60 and self._ws_private:
                     try:
                         self._ws_private.account_info_stream_v3(self._handle_account_stream)
-                        logger.info("ws_resubscribe", extra={"event": "ws_resubscribe", "topic": "ws_zk_accounts_v3"})
+                        # logger.info("ws_resubscribe", extra={"event": "ws_resubscribe", "topic": "ws_zk_accounts_v3"})
                     except Exception as exc:  # pragma: no cover
                         logger.warning("ws_resubscribe_failed", extra={"error": str(exc)})
             except Exception:
@@ -1475,16 +1476,16 @@ class ExchangeGateway:
         errors: list[str] = []
 
         if not targets:
-            logger.info(
-                "CANCEL_TPSL_EMPTY",
-                extra={
-                    "event": "cancel_tpsl_empty",
-                    "symbol": symbol_key,
-                    "cancel_tp": cancel_tp,
-                    "cancel_sl": cancel_sl,
-                    "cache_orders": len(orders),
-                },
-            )
+            # logger.info(
+            #     "CANCEL_TPSL_EMPTY",
+            #     extra={
+            #         "event": "cancel_tpsl_empty",
+            #         "symbol": symbol_key,
+            #         "cancel_tp": cancel_tp,
+            #         "cancel_sl": cancel_sl,
+            #         "cache_orders": len(orders),
+            #     },
+            # )
             return {"canceled": [], "errors": ["no targets"], "attempted": attempted_count}
 
         def _cancel_success(resp: Dict[str, Any]) -> bool:
@@ -1541,28 +1542,28 @@ class ExchangeGateway:
                 if not attempted:
                     errors.append(f"cancel error id={oid or cid} err=no cancel payload attempted")
 
-        logger.info(
-            "### CANCEL_TPSL_ATTEMPT ###",
-            extra={
-                "event": "cancel_tpsl_attempt",
-                "symbol": symbol_key,
-                "cancel_tp": cancel_tp,
-                "cancel_sl": cancel_sl,
-                "target_count": len(targets),
-                "targets_compact": [
-                    {
-                        "id": t.get("orderId") or t.get("order_id") or t.get("id"),
-                        "clientId": t.get("clientOrderId") or t.get("clientId"),
-                        "type": t.get("type"),
-                        "status": t.get("status"),
-                        "symbol": t.get("symbol") or t.get("market"),
-                        "trigger": t.get("triggerPrice") or t.get("price"),
-                    }
-                    for t in targets
-                ],
-                "summary": f"CANCEL_TPSL_ATTEMPT symbol={symbol_key} cancel_tp={cancel_tp} cancel_sl={cancel_sl} targets={len(targets)} first_id={targets[0].get('orderId') or targets[0].get('order_id') or targets[0].get('id') if targets else None} first_type={targets[0].get('type') if targets else None} first_status={targets[0].get('status') if targets else None}",
-            },
-        )
+        # logger.info(
+        #     "### CANCEL_TPSL_ATTEMPT ###",
+        #     extra={
+        #         "event": "cancel_tpsl_attempt",
+        #         "symbol": symbol_key,
+        #         "cancel_tp": cancel_tp,
+        #         "cancel_sl": cancel_sl,
+        #         "target_count": len(targets),
+        #         "targets_compact": [
+        #             {
+        #                 "id": t.get("orderId") or t.get("order_id") or t.get("id"),
+        #                 "clientId": t.get("clientOrderId") or t.get("clientId"),
+        #                 "type": t.get("type"),
+        #                 "status": t.get("status"),
+        #                 "symbol": t.get("symbol") or t.get("market"),
+        #                 "trigger": t.get("triggerPrice") or t.get("price"),
+        #             }
+        #             for t in targets
+        #         ],
+        #         "summary": f"CANCEL_TPSL_ATTEMPT symbol={symbol_key} cancel_tp={cancel_tp} cancel_sl={cancel_sl} targets={len(targets)} first_id={targets[0].get('orderId') or targets[0].get('order_id') or targets[0].get('id') if targets else None} first_type={targets[0].get('type') if targets else None} first_status={targets[0].get('status') if targets else None}",
+        #     },
+        # )
 
         await _attempt_cancel(targets)
         # If nothing canceled, retry once using the latest cached WS orders (no REST fallback) to avoid stale IDs.
@@ -1584,32 +1585,32 @@ class ExchangeGateway:
             limited_refreshed.extend(_pick_latest(refreshed, "TP") if cancel_tp else [])
             limited_refreshed.extend(_pick_latest(refreshed, "SL") if cancel_sl else [])
             refreshed = limited_refreshed
-            logger.info(
-                "### CANCEL_TPSL_RETRY ###",
-                extra={
-                    "event": "cancel_tpsl_retry",
-                    "symbol": symbol_key,
-                    "cancel_tp": cancel_tp,
-                    "cancel_sl": cancel_sl,
-                    "target_count": len(refreshed),
-                    "first_target_type": refreshed[0].get("type") if refreshed else None,
-                    "first_target_status": refreshed[0].get("status") if refreshed else None,
-                    "first_target_id": (refreshed[0].get("orderId") or refreshed[0].get("order_id") or refreshed[0].get("id")) if refreshed else None,
-                    "first_target_client": refreshed[0].get("clientOrderId") or refreshed[0].get("clientId") if refreshed else None,
-                    "targets_compact": [
-                        {
-                            "id": t.get("orderId") or t.get("order_id") or t.get("id"),
-                            "clientId": t.get("clientOrderId") or t.get("clientId"),
-                            "type": t.get("type"),
-                            "status": t.get("status"),
-                            "symbol": t.get("symbol") or t.get("market"),
-                            "trigger": t.get("triggerPrice") or t.get("price"),
-                        }
-                        for t in refreshed
-                    ],
-                    "summary": f"CANCEL_TPSL_RETRY symbol={symbol_key} cancel_tp={cancel_tp} cancel_sl={cancel_sl} targets={len(refreshed)} first_id={refreshed[0].get('orderId') or refreshed[0].get('order_id') or refreshed[0].get('id') if refreshed else None} first_type={refreshed[0].get('type') if refreshed else None} first_status={refreshed[0].get('status') if refreshed else None}",
-                },
-            )
+            # logger.info(
+            #     "### CANCEL_TPSL_RETRY ###",
+            #     extra={
+            #         "event": "cancel_tpsl_retry",
+            #         "symbol": symbol_key,
+            #         "cancel_tp": cancel_tp,
+            #         "cancel_sl": cancel_sl,
+            #         "target_count": len(refreshed),
+            #         "first_target_type": refreshed[0].get("type") if refreshed else None,
+            #         "first_target_status": refreshed[0].get("status") if refreshed else None,
+            #         "first_target_id": (refreshed[0].get("orderId") or refreshed[0].get("order_id") or refreshed[0].get("id")) if refreshed else None,
+            #         "first_target_client": refreshed[0].get("clientOrderId") or refreshed[0].get("clientId") if refreshed else None,
+            #         "targets_compact": [
+            #             {
+            #                 "id": t.get("orderId") or t.get("order_id") or t.get("id"),
+            #                 "clientId": t.get("clientOrderId") or t.get("clientId"),
+            #                 "type": t.get("type"),
+            #                 "status": t.get("status"),
+            #                 "symbol": t.get("symbol") or t.get("market"),
+            #                 "trigger": t.get("triggerPrice") or t.get("price"),
+            #             }
+            #             for t in refreshed
+            #         ],
+            #         "summary": f"CANCEL_TPSL_RETRY symbol={symbol_key} cancel_tp={cancel_tp} cancel_sl={cancel_sl} targets={len(refreshed)} first_id={refreshed[0].get('orderId') or refreshed[0].get('order_id') or refreshed[0].get('id') if refreshed else None} first_type={refreshed[0].get('type') if refreshed else None} first_status={refreshed[0].get('status') if refreshed else None}",
+            #     },
+            # )
             await _attempt_cancel(refreshed)
         if not canceled_ids and errors:
             logger.warning(
