@@ -17,6 +17,14 @@ class Candle(TypedDict, total=False):
     volume: Optional[float]
 
 
+class Trade(TypedDict, total=False):
+    price: float
+    size: float
+    side: str
+    timestamp: int
+    is_maker: Optional[bool]
+
+
 class ApexClient:
     """Thin wrapper around ApeX Omni SDK clients (HTTP + WebSocket)."""
 
@@ -127,6 +135,31 @@ class ApexClient:
             )
         return candles
 
+    def fetch_recent_trades(self, symbol: str, limit: int = 50) -> List[Trade]:
+        """
+        Fetch recent public trades for the provided symbol.
+        """
+        if not symbol:
+            raise ValueError("symbol is required for trades lookup")
+        limit = max(1, min(limit, 200))
+
+        response: Any = self.public_client.trades_v3(symbol=symbol, limit=limit)
+        rows = self._unwrap_trade_rows(response)
+        trades: List[Trade] = []
+        for row in rows:
+            normalized = self._normalize_trade(row)
+            if normalized:
+                trades.append(normalized)
+        trades.sort(key=lambda entry: entry["timestamp"], reverse=True)
+        if len(trades) > limit:
+            trades = trades[:limit]
+        if not trades:
+            logger.warning(
+                "apex_client.fetch_recent_trades.empty",
+                extra={"symbol": symbol, "limit": limit},
+            )
+        return trades
+
     def _unwrap_candle_rows(self, payload: Any) -> List[Any]:
         if payload is None:
             return []
@@ -215,6 +248,114 @@ class ApexClient:
             close=float(close),  # type: ignore[arg-type]
             volume=float(volume) if volume is not None else None,
         )
+
+    def _unwrap_trade_rows(self, payload: Any) -> List[Any]:
+        if payload is None:
+            return []
+        if isinstance(payload, list):
+            return payload
+        if isinstance(payload, dict):
+            for key in ("result", "data", "payload"):
+                if key in payload:
+                    return self._unwrap_trade_rows(payload[key])
+            for key in ("list", "rows", "trades"):
+                rows = payload.get(key)
+                if isinstance(rows, list):
+                    return rows
+            flattened: List[Any] = []
+            for value in payload.values():
+                if isinstance(value, list):
+                    flattened.extend(value)
+            if flattened:
+                return flattened
+        return []
+
+    def _normalize_trade(self, row: Union[Sequence[Any], dict]) -> Optional[Trade]:
+        price: Optional[float] = None
+        size: Optional[float] = None
+        timestamp: Optional[int] = None
+        side: Optional[str] = None
+        is_maker: Optional[bool] = None
+
+        def _parse_float(value: Any) -> Optional[float]:
+            if value is None:
+                return None
+            try:
+                return float(value)
+            except (TypeError, ValueError):
+                return None
+
+        def _parse_timestamp(value: Any) -> Optional[int]:
+            if value is None:
+                return None
+            try:
+                parsed = int(value)
+            except (TypeError, ValueError):
+                return None
+            return parsed if parsed > 0 else None
+
+        if isinstance(row, dict):
+            price = _parse_float(row.get("price") or row.get("p"))
+            size = _parse_float(
+                row.get("size")
+                or row.get("qty")
+                or row.get("quantity")
+                or row.get("q")
+                or row.get("volume")
+                or row.get("v")
+            )
+            timestamp = _parse_timestamp(
+                row.get("timestamp")
+                or row.get("time")
+                or row.get("ts")
+                or row.get("tradeTime")
+            )
+            raw_side = row.get("side") or row.get("direction") or row.get("S")
+            side = str(raw_side).upper() if raw_side is not None else None
+            maker_flag = (
+                row.get("isMaker")
+                or row.get("maker")
+                or row.get("M")
+                or row.get("liquidity")
+            )
+            is_maker = self._coerce_bool(maker_flag)
+        elif isinstance(row, Sequence) and len(row) >= 4:
+            price = _parse_float(row[1])
+            size = _parse_float(row[2])
+            timestamp = _parse_timestamp(row[0] if isinstance(row[0], (int, float, str)) else row[3])
+            if isinstance(row[3], str):
+                side = row[3].upper()
+            elif len(row) >= 5 and isinstance(row[4], str):
+                side = row[4].upper()
+            if len(row) >= 6:
+                is_maker = self._coerce_bool(row[5])
+
+        if any(value is None for value in (price, size, timestamp)):
+            return None
+        normalized_side = side or "UNKNOWN"
+        return Trade(
+            price=float(price),  # type: ignore[arg-type]
+            size=float(size),  # type: ignore[arg-type]
+            side=normalized_side,
+            timestamp=int(timestamp),  # type: ignore[arg-type]
+            is_maker=is_maker,
+        )
+
+    def _coerce_bool(self, value: Any) -> Optional[bool]:
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, (int, float)):
+            if value == 1:
+                return True
+            if value == 0:
+                return False
+        if isinstance(value, str):
+            lowered = value.strip().lower()
+            if lowered in {"true", "t", "1", "maker"}:
+                return True
+            if lowered in {"false", "f", "0", "taker"}:
+                return False
+        return None
 
     def _normalize_interval(self, timeframe: str) -> Tuple[str, Optional[int]]:
         raw = (timeframe or "").strip().lower()

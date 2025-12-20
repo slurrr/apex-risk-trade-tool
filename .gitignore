@@ -130,3 +130,6 @@ desktop.ini
 
 # Random Folders
 sessions/
+
+# logs and reports
+/log
