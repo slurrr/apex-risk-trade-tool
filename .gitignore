@@ -133,3 +133,4 @@ sessions/
 
 # logs and reports
 /log
+/backend/tests

@@ -8,6 +8,23 @@
   const snapToStep = (window.TradeApp && window.TradeApp.snapToInputStep) || ((value) => value);
   const ATR_STATUS_DEFAULT = "ATR stop will populate once symbol, side, and entry price are set.";
 
+  function getActiveTickSize() {
+    const tick = window.TradeApp && window.TradeApp.state && window.TradeApp.state.activeTickSize;
+    return typeof tick === "number" && tick > 0 ? tick : null;
+  }
+
+  function formatTickSize(tick) {
+    if (!Number.isFinite(tick)) return "";
+    const decimals =
+      window.TradeApp && window.TradeApp.state && typeof window.TradeApp.state.activePriceDecimals === "number"
+        ? window.TradeApp.state.activePriceDecimals
+        : null;
+    if (typeof decimals === "number" && decimals >= 0) {
+      return Number(tick).toFixed(Math.min(decimals, 10));
+    }
+    return `${tick}`;
+  }
+
   const atrState = {
     timer: null,
     token: 0,
@@ -265,6 +282,17 @@
         preview: true,
         execute: false,
       };
+      const tickSize = getActiveTickSize();
+      if (
+        tickSize &&
+        Number.isFinite(payload.entry_price) &&
+        Number.isFinite(payload.stop_price) &&
+        Math.abs(payload.entry_price - payload.stop_price) < tickSize
+      ) {
+        const formattedTick = formatTickSize(tickSize) || tickSize;
+        renderError(resultContainer, `Entry and stop must differ by at least ${formattedTick}.`);
+        return;
+      }
 
       try {
         const result = await postPreview(payload);

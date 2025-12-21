@@ -4,6 +4,23 @@
   `${window.location.protocol}//${window.location.hostname}:8000`;
   const validateSymbol = (window.TradeApp && window.TradeApp.validateSymbol) || ((val) => val?.toUpperCase());
 
+  function getActiveTickSize() {
+    const tick = window.TradeApp && window.TradeApp.state && window.TradeApp.state.activeTickSize;
+    return typeof tick === "number" && tick > 0 ? tick : null;
+  }
+
+  function formatTickSize(tick) {
+    if (!Number.isFinite(tick)) return "";
+    const decimals =
+      window.TradeApp && window.TradeApp.state && typeof window.TradeApp.state.activePriceDecimals === "number"
+        ? window.TradeApp.state.activePriceDecimals
+        : null;
+    if (typeof decimals === "number" && decimals >= 0) {
+      return Number(tick).toFixed(Math.min(decimals, 10));
+    }
+    return `${tick}`;
+  }
+
   async function postExecute(payload) {
     const response = await fetch(`${API_BASE}/api/trade`, {
       method: "POST",
@@ -48,6 +65,17 @@
         side: document.getElementById("side").value || null,
         tp: document.getElementById("tp").value ? parseFloat(document.getElementById("tp").value) : null,
       };
+      const tickSize = getActiveTickSize();
+      if (
+        tickSize &&
+        Number.isFinite(payload.entry_price) &&
+        Number.isFinite(payload.stop_price) &&
+        Math.abs(payload.entry_price - payload.stop_price) < tickSize
+      ) {
+        const formattedTick = formatTickSize(tickSize) || tickSize;
+        executeResult.innerHTML = `<div class="error">Entry and stop must differ by at least ${formattedTick}.</div>`;
+        return;
+      }
       try {
         const result = await postExecute(payload);
         renderExecute(executeResult, result);

@@ -1,3 +1,4 @@
+from decimal import Decimal, InvalidOperation
 from typing import Any, Dict, Optional, Tuple
 import re
 
@@ -6,6 +7,29 @@ from backend.exchange.exchange_gateway import ExchangeGateway
 from backend.risk import risk_engine
 
 logger = get_logger(__name__)
+
+
+def _coerce_float(value: Any) -> Optional[float]:
+    try:
+        if value is None:
+            return None
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _infer_decimal_places(value: Any) -> Optional[int]:
+    if value in (None, "", 0):
+        return None
+    try:
+        dec_value = Decimal(str(value))
+    except (InvalidOperation, ValueError, TypeError):
+        return None
+    dec_value = dec_value.normalize()
+    if dec_value == dec_value.to_integral():
+        return 0
+    exponent = -dec_value.as_tuple().exponent
+    return max(0, exponent)
 
 
 class OrderManager:
@@ -368,12 +392,23 @@ class OrderManager:
             status = cfg.get("status")
             if status is None and cfg.get("enableTrade") is not None:
                 status = "ENABLED" if cfg.get("enableTrade") else "DISABLED"
+            tick_size = _coerce_float(cfg.get("tickSize") or cfg.get("tick_size"))
+            step_size = _coerce_float(cfg.get("stepSize") or cfg.get("step_size"))
+            raw_cfg = cfg.get("raw") or {}
+            price_decimals = _infer_decimal_places(raw_cfg.get("tickSize") or tick_size)
+            size_decimals = _infer_decimal_places(raw_cfg.get("stepSize") or step_size)
+            tick_value = tick_size if tick_size and tick_size > 0 else None
+            step_value = step_size if step_size and step_size > 0 else None
             symbols.append(
                 {
                     "code": code_clean,
                     "base_asset": base,
                     "quote_asset": quote,
                     "status": status,
+                    "tick_size": tick_value,
+                    "step_size": step_value,
+                    "price_decimals": price_decimals,
+                    "size_decimals": size_decimals,
                 }
             )
         return symbols

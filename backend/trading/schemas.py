@@ -43,6 +43,10 @@ class SymbolResponse(BaseModel):
     base_asset: Optional[str] = None
     quote_asset: Optional[str] = None
     status: Optional[str] = None
+    tick_size: Optional[float] = Field(None, gt=0)
+    step_size: Optional[float] = Field(None, gt=0)
+    price_decimals: Optional[int] = Field(None, ge=0, le=12)
+    size_decimals: Optional[int] = Field(None, ge=0, le=12)
 
 
 class AccountSummary(BaseModel):

@@ -1,14 +1,85 @@
 (function () {
   const API_BASE = `${window.location.protocol}//${window.location.hostname}:8000`;
   const SYMBOL_PATTERN = /^[A-Z0-9]+-[A-Z0-9]+$/;
+  const DEFAULT_PRICE_DECIMALS = 6;
+  const PRICE_INPUT_IDS = ["entry_price", "stop_price", "tp"];
   const THEME_STORAGE_KEY = "trade_app_theme";
   let manualTheme = null;
   let mediaQuery;
   const state = {
     symbols: [],
+    symbolIndex: new Map(),
     priceCache: new Map(),
+    activeSymbol: null,
+    activeTickSize: null,
+    activePriceDecimals: DEFAULT_PRICE_DECIMALS,
   };
   let sideToggleControl = null;
+
+  function normalizeSymbolCode(value) {
+    const clean = (value || "").trim().toUpperCase();
+    if (SYMBOL_PATTERN.test(clean)) {
+      return clean;
+    }
+    return null;
+  }
+
+  function getPriceInputs() {
+    return PRICE_INPUT_IDS.map((id) => document.getElementById(id)).filter(Boolean);
+  }
+
+  function setInputPrecision(input, { step, decimals }) {
+    if (!input) return;
+    if (!step || step === "any") {
+      input.setAttribute("step", "any");
+    } else {
+      input.setAttribute("step", `${step}`);
+    }
+    if (input.dataset) {
+      if (typeof decimals === "number" && decimals >= 0) {
+        input.dataset.precision = String(decimals);
+      } else {
+        delete input.dataset.precision;
+      }
+    }
+  }
+
+  function setPriceInputsPrecision(options = {}) {
+    const priceInputs = getPriceInputs();
+    priceInputs.forEach((input) => setInputPrecision(input, options));
+  }
+
+  function getSymbolMeta(symbolCode) {
+    if (!symbolCode) return null;
+    const key = normalizeSymbolCode(symbolCode);
+    if (!key) return null;
+    return state.symbolIndex.get(key) || null;
+  }
+
+  function formatStepValue(step, decimals) {
+    const numeric = Number(step);
+    if (!Number.isFinite(numeric) || numeric <= 0) {
+      return null;
+    }
+    if (typeof decimals === "number" && decimals >= 0) {
+      return numeric.toFixed(Math.min(decimals, 10));
+    }
+    return `${numeric}`;
+  }
+
+  function applySymbolPrecision(symbolCode) {
+    const normalized = normalizeSymbolCode(symbolCode);
+    const meta = normalized ? getSymbolMeta(normalized) : null;
+    state.activeSymbol = normalized || null;
+    state.activeTickSize = meta && typeof meta.tick_size === "number" ? meta.tick_size : null;
+    const decimals =
+      typeof meta?.price_decimals === "number" && meta.price_decimals >= 0
+        ? meta.price_decimals
+        : DEFAULT_PRICE_DECIMALS;
+    state.activePriceDecimals = decimals;
+    const stepValue = formatStepValue(meta?.tick_size, decimals) || "any";
+    setPriceInputsPrecision({ step: stepValue, decimals });
+  }
 
   function getStoredTheme() {
     try {
@@ -85,22 +156,45 @@
     return data;
   }
 
+  function getPrecisionFromInput(input) {
+    if (!input || !input.dataset) return null;
+    const hint = Number(input.dataset.precision);
+    return Number.isFinite(hint) ? hint : null;
+  }
+
+  function decimalsFromStepString(stepStr) {
+    if (!stepStr || stepStr.toLowerCase() === "any") return null;
+    const parts = stepStr.split(".");
+    if (parts.length === 2) {
+      return parts[1].replace(/0+$/, "").length;
+    }
+    return null;
+  }
+
   function snapToInputStep(value, input) {
     if (!input) return value;
     const numeric = Number(value);
     if (!Number.isFinite(numeric)) return numeric;
-    const stepAttr = input.getAttribute("step");
-    const step = Number(stepAttr);
-    if (!Number.isFinite(step) || step <= 0) {
-      return numeric;
+    const stepAttr = (input.getAttribute("step") || "").toLowerCase();
+    const precisionHint = getPrecisionFromInput(input);
+    if (stepAttr && stepAttr !== "any") {
+      const step = Number(stepAttr);
+      if (Number.isFinite(step) && step > 0) {
+        const snapped = Math.round(numeric / step) * step;
+        if (!Number.isFinite(snapped)) {
+          return numeric;
+        }
+        const decimals = precisionHint ?? decimalsFromStepString(stepAttr);
+        if (typeof decimals === "number" && decimals >= 0) {
+          return snapped.toFixed(decimals);
+        }
+        return snapped;
+      }
     }
-    const decimals = stepAttr && stepAttr.includes(".") ? stepAttr.split(".")[1].length : 0;
-    const snapped = Math.round(numeric / step) * step;
-    if (!Number.isFinite(snapped)) return numeric;
-    if (decimals > 0) {
-      return snapped.toFixed(decimals);
+    if (typeof precisionHint === "number" && precisionHint >= 0) {
+      return numeric.toFixed(precisionHint);
     }
-    return snapped.toString();
+    return numeric;
   }
 
   async function fetchAtrStop(symbol, side, entryPrice) {
@@ -205,9 +299,27 @@
   async function loadSymbols() {
     try {
       const data = await fetchJson(`${API_BASE}/api/symbols`);
-      state.symbols = Array.isArray(data) ? data : [];
+      const list = Array.isArray(data) ? data : [];
+      state.symbols = list;
+      state.symbolIndex = new Map();
+      list.forEach((sym) => {
+        if (sym?.code) {
+          state.symbolIndex.set(sym.code.toUpperCase(), sym);
+        }
+      });
+      const input = document.getElementById("symbol-input");
+      const currentSymbol = normalizeSymbolCode(input ? input.value : state.activeSymbol);
+      if (currentSymbol && state.symbolIndex.has(currentSymbol)) {
+        applySymbolPrecision(currentSymbol);
+      } else {
+        applySymbolPrecision(null);
+      }
     } catch (err) {
       state.symbols = [];
+      state.symbolIndex = new Map();
+      if (!state.activeSymbol) {
+        applySymbolPrecision(null);
+      }
     }
   }
 
@@ -230,6 +342,7 @@
         symbolDropdownState.suppressOpen = true;
         input.value = sym.code;
         list.classList.remove("open");
+        applySymbolPrecision(sym.code);
         prefillEntryPrice(sym.code);
         updateSymbolClearState();
         input.dispatchEvent(new Event("input", { bubbles: true }));
@@ -263,6 +376,14 @@
     const clearFormBtn = document.getElementById("clear-trade-form");
     const form = document.getElementById("preview-form");
     if (!input || !list) return;
+    const syncPrecision = () => {
+      const symbol = normalizeSymbolCode(input.value);
+      if (symbol && state.symbolIndex.has(symbol)) {
+        applySymbolPrecision(symbol);
+      } else if (!symbol) {
+        applySymbolPrecision(null);
+      }
+    };
     input.addEventListener("input", () => {
       renderSymbolOptions(input.value);
       updateSymbolClearState();
@@ -271,8 +392,12 @@
       renderSymbolOptions(input.value);
       updateSymbolClearState();
     });
+    input.addEventListener("change", syncPrecision);
     input.addEventListener("blur", () => {
-      setTimeout(updateSymbolClearState, 0);
+      setTimeout(() => {
+        updateSymbolClearState();
+        syncPrecision();
+      }, 0);
     });
     document.addEventListener("click", (evt) => {
       if (!list.contains(evt.target) && evt.target !== input && evt.target !== clearBtn) {
@@ -286,6 +411,7 @@
         input.focus();
         renderSymbolOptions("");
         updateSymbolClearState();
+        applySymbolPrecision(null);
       });
     }
     if (clearFormBtn) {
@@ -299,12 +425,14 @@
         updateSymbolClearState();
         document.getElementById("preview-result").innerHTML = "";
         document.getElementById("execute-result").innerHTML = "";
+        applySymbolPrecision(null);
       });
     }
     if (form) {
       form.addEventListener("reset", () => {
         window.setTimeout(() => {
           resetSideValue();
+          applySymbolPrecision(null);
         }, 0);
       });
     }
@@ -373,9 +501,7 @@
   }
 
   function validateSymbol(value) {
-    const clean = (value || "").trim().toUpperCase();
-    if (SYMBOL_PATTERN.test(clean)) return clean;
-    return null;
+    return normalizeSymbolCode(value);
   }
 
   function formatNumber(value, digits = 2) {
@@ -413,6 +539,10 @@
   async function prefillEntryPrice(symbol) {
     const entryInput = document.getElementById("entry_price");
     if (!entryInput || !symbol) return;
+    const normalized = normalizeSymbolCode(symbol);
+    if (normalized) {
+      applySymbolPrecision(normalized);
+    }
     const price = await fetchSymbolPrice(symbol);
     if (price !== null && price !== undefined) {
       const snapped = snapToInputStep(price, entryInput);
@@ -439,6 +569,8 @@
     SYMBOL_PATTERN,
     formatNumber,
     validateSymbol,
+    getSymbolMeta,
+    applySymbolPrecision,
     prefillEntryPrice,
     updateTickerCache,
     applyTheme,
@@ -457,6 +589,7 @@
     initThemeListener();
     initSideToggle();
     attachSymbolDropdown();
+    applySymbolPrecision(null);
     loadSymbols();
     loadAccountSummary();
   });
