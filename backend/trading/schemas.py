@@ -122,6 +122,7 @@ class AtrStopRequest(BaseModel):
     symbol: str = Field(..., pattern=r"^[A-Z0-9]+-[A-Z0-9]+$")
     side: Literal["long", "short"]
     entry_price: float = Field(..., gt=0)
+    timeframe: Optional[str] = None
 
     @validator("symbol", pre=True)
     def normalize_symbol(cls, value: str) -> str:
@@ -140,6 +141,13 @@ class AtrStopRequest(BaseModel):
             else:
                 raise ValueError("side must be 'long' or 'short'")
         return normalized
+
+    @validator("timeframe", pre=True)
+    def normalize_timeframe(cls, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return None
+        normalized = value.strip().lower()
+        return normalized or None
 
 
 class AtrStopResponse(BaseModel):

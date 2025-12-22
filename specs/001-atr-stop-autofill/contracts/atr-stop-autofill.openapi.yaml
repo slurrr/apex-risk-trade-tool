@@ -11,7 +11,8 @@ paths:
       summary: Calculate an ATR-based stop loss suggestion
       description: >
         Given a symbol, side, and entry price, returns an ATR-based stop loss suggestion
-        using the currently configured timeframe, period, and multiplier.
+        using the currently configured timeframe, period, and multiplier unless a
+        timeframe override is supplied.
       requestBody:
         required: true
         content:
@@ -34,6 +35,10 @@ paths:
                   type: number
                   format: double
                   description: Entry price to use for the stop loss calculation.
+                timeframe:
+                  type: string
+                  enum: [3m, 15m, 1h, 4h]
+                  description: Optional ATR timeframe override.
       responses:
         "200":
           description: ATR-based stop loss calculated successfully.

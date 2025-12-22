@@ -84,8 +84,7 @@ INFO:     Waiting for application startup.
 }
 INFO:     Application startup complete.
 INFO:     Uvicorn running on http: //0.0.0.0:8000 (Press CTRL+C to quit)
-INFO: 127.0.0.1: 56753 - "WebSocket /ws/stream"[accepted
-]
+INFO: 127.0.0.1: 56753 - "WebSocket /ws/stream"[accepted]
 {
     "timestamp": "2025-12-06 10:12:29,069",
     "level": "INFO",

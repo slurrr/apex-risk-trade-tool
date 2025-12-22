@@ -21,6 +21,7 @@ Backend + static UI for previewing, executing, and monitoring ApeX trades with r
   - `ATR_TIMEFRAME` (or legacy `TIMEFRAME`): candle size such as `5m`, `15m`, or `1h`.
   - `ATR_PERIOD`: number of candles included in the Wilder ATR calculation.
   - `ATR_MULTIPLIER`: factor applied to ATR when deriving the stop offset.
+- The UI includes an ATR timeframe selector (3m/15m/1h/4h); the selection persists in localStorage and is sent as an optional `timeframe` override to `/risk/atr-stop`.
 - After editing any of the above values, restart the FastAPI service (or your process manager) so the new configuration is loaded by `backend/core/config.py`.
 
 ## Notes

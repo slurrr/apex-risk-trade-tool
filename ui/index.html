@@ -63,6 +63,16 @@
         <label class="field">
           <span>Stop</span>
           <input type="number" step="any" id="stop_price" required />
+          <div class="atr-timeframe">
+            <div class="atr-timeframe-label">ATR Timeframe</div>
+            <div class="atr-timeframe-toggle" role="group" aria-label="ATR timeframe selector">
+              <input type="hidden" id="atr_timeframe" value="15m" />
+              <button type="button" class="atr-timeframe-option" data-value="3m" aria-pressed="false">3m</button>
+              <button type="button" class="atr-timeframe-option" data-value="15m" aria-pressed="false">15m</button>
+              <button type="button" class="atr-timeframe-option" data-value="1h" aria-pressed="false">1h</button>
+              <button type="button" class="atr-timeframe-option" data-value="4h" aria-pressed="false">4h</button>
+            </div>
+          </div>
         </label>
         <label class="field side-field">
           <span>Side (Optional)</span>

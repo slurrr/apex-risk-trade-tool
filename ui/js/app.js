@@ -4,6 +4,9 @@
   const DEFAULT_PRICE_DECIMALS = 6;
   const PRICE_INPUT_IDS = ["entry_price", "stop_price", "tp"];
   const THEME_STORAGE_KEY = "trade_app_theme";
+  const ATR_TIMEFRAME_STORAGE_KEY = "atr_timeframe_override";
+  const ATR_TIMEFRAME_DEFAULT = "15m";
+  const ATR_TIMEFRAMES = ["3m", "15m", "1h", "4h"];
   let manualTheme = null;
   let mediaQuery;
   const state = {
@@ -146,6 +149,83 @@
     }
   }
 
+  function normalizeAtrTimeframe(value) {
+    const clean = (value || "").toString().trim().toLowerCase();
+    return ATR_TIMEFRAMES.includes(clean) ? clean : null;
+  }
+
+  function getStoredAtrTimeframe() {
+    try {
+      return window.localStorage ? window.localStorage.getItem(ATR_TIMEFRAME_STORAGE_KEY) : null;
+    } catch (err) {
+      return null;
+    }
+  }
+
+  function persistAtrTimeframe(timeframe) {
+    try {
+      if (window.localStorage) {
+        if (timeframe) {
+          window.localStorage.setItem(ATR_TIMEFRAME_STORAGE_KEY, timeframe);
+        } else {
+          window.localStorage.removeItem(ATR_TIMEFRAME_STORAGE_KEY);
+        }
+      }
+    } catch (err) {
+      // ignore storage errors
+    }
+  }
+
+  function getAtrTimeframeInput() {
+    return document.getElementById("atr_timeframe");
+  }
+
+  function applyAtrTimeframeSelection(value, options = {}) {
+    const { persist = false, silent = false } = options;
+    const normalized = normalizeAtrTimeframe(value) || ATR_TIMEFRAME_DEFAULT;
+    const input = getAtrTimeframeInput();
+    const buttons = Array.from(document.querySelectorAll(".atr-timeframe-option"));
+    if (input) {
+      const changed = input.value !== normalized;
+      input.value = normalized;
+      if (!silent && changed) {
+        input.dispatchEvent(new Event("change", { bubbles: true }));
+      }
+    }
+    buttons.forEach((btn) => {
+      const btnValue = normalizeAtrTimeframe(btn.dataset.value);
+      const isActive = btnValue === normalized;
+      btn.classList.toggle("is-active", isActive);
+      btn.setAttribute("aria-pressed", String(isActive));
+    });
+    if (persist) {
+      persistAtrTimeframe(normalized);
+    }
+    return normalized;
+  }
+
+  function getAtrTimeframe() {
+    const input = getAtrTimeframeInput();
+    const fromInput = input ? normalizeAtrTimeframe(input.value) : null;
+    if (fromInput) return fromInput;
+    const stored = normalizeAtrTimeframe(getStoredAtrTimeframe());
+    return stored || ATR_TIMEFRAME_DEFAULT;
+  }
+
+  function initAtrTimeframeSelector() {
+    const input = getAtrTimeframeInput();
+    const buttons = Array.from(document.querySelectorAll(".atr-timeframe-option"));
+    if (!input || buttons.length === 0) return;
+    const stored = normalizeAtrTimeframe(getStoredAtrTimeframe());
+    const initial = stored || normalizeAtrTimeframe(input.value) || ATR_TIMEFRAME_DEFAULT;
+    applyAtrTimeframeSelection(initial, { persist: true, silent: true });
+    buttons.forEach((btn) => {
+      btn.addEventListener("click", () => {
+        applyAtrTimeframeSelection(btn.dataset.value, { persist: true });
+      });
+    });
+  }
+
   async function fetchJson(url) {
     const resp = await fetch(url);
     const data = await resp.json();
@@ -197,7 +277,7 @@
     return numeric;
   }
 
-  async function fetchAtrStop(symbol, side, entryPrice) {
+  async function fetchAtrStop(symbol, side, entryPrice, timeframe) {
     const cleanSymbol = (symbol || "").trim().toUpperCase();
     const numericEntry = Number(entryPrice);
     if (!cleanSymbol || !side) {
@@ -211,6 +291,10 @@
       side,
       entry_price: numericEntry,
     };
+    const normalizedTimeframe = normalizeAtrTimeframe(timeframe);
+    if (normalizedTimeframe) {
+      payload.timeframe = normalizedTimeframe;
+    }
     const resp = await fetch(`${API_BASE}/risk/atr-stop`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -573,6 +657,8 @@
     applySymbolPrecision,
     prefillEntryPrice,
     updateTickerCache,
+    getAtrTimeframe,
+    applyAtrTimeframeSelection,
     applyTheme,
     renderAccountSummary,
     applyAccountPayload,
@@ -587,6 +673,7 @@
 
   document.addEventListener("DOMContentLoaded", () => {
     initThemeListener();
+    initAtrTimeframeSelector();
     initSideToggle();
     attachSymbolDropdown();
     applySymbolPrecision(null);

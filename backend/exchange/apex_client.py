@@ -122,18 +122,85 @@ class ApexClient:
             query["start"] = max(0, int(time.time()) - (lookback * interval_seconds))
 
         response: Any = self.public_client.klines_v3(**query)
+        candles = self._normalize_candles(response)
+        if candles:
+            return candles
+
+        if interval_label == "3" and interval_seconds == 180:
+            fallback = self._fetch_3m_from_1m(symbol, limit)
+            if fallback:
+                logger.info(
+                    "apex_client.fetch_klines.fallback_3m_from_1m",
+                    extra={"symbol": symbol, "timeframe": timeframe, "limit": limit, "fallback_count": len(fallback)},
+                )
+                return fallback
+
+        logger.warning(
+            "apex_client.fetch_klines.empty",
+            extra={"symbol": symbol, "timeframe": timeframe, "limit": limit},
+        )
+        return candles
+
+    def _normalize_candles(self, response: Any) -> List[Candle]:
         rows = self._unwrap_candle_rows(response)
         candles: List[Candle] = []
         for row in rows:
             normalized = self._normalize_candle(row)
             if normalized:
                 candles.append(normalized)
-        if not candles:
-            logger.warning(
-                "apex_client.fetch_klines.empty",
-                extra={"symbol": symbol, "timeframe": timeframe, "limit": limit},
-            )
         return candles
+
+    def _fetch_3m_from_1m(self, symbol: str, limit: int) -> List[Candle]:
+        limit_1m = max(3, min(limit * 3, 1000))
+        lookback = min(limit_1m, 200) + 2
+        query = {
+            "symbol": symbol,
+            "interval": "1",
+            "limit": limit_1m,
+            "start": max(0, int(time.time()) - (lookback * 60)),
+        }
+        response: Any = self.public_client.klines_v3(**query)
+        candles_1m = self._normalize_candles(response)
+        if not candles_1m:
+            return []
+        candles_1m.sort(key=lambda c: c.get("open_time", 0))
+        return self._aggregate_candles(candles_1m, bucket_seconds=180)
+
+    def _aggregate_candles(self, candles: Sequence[Candle], bucket_seconds: int) -> List[Candle]:
+        if not candles:
+            return []
+        bucket_ms = bucket_seconds * 1000
+        grouped: dict[int, List[Candle]] = {}
+        for candle in candles:
+            open_time = candle.get("open_time")
+            if open_time is None:
+                continue
+            bucket = int(open_time // bucket_ms) * bucket_ms
+            grouped.setdefault(bucket, []).append(candle)
+
+        aggregated: List[Candle] = []
+        for bucket in sorted(grouped.keys()):
+            bucket_candles = grouped[bucket]
+            if not bucket_candles:
+                continue
+            bucket_candles.sort(key=lambda c: c.get("open_time", 0))
+            open_price = bucket_candles[0]["open"]
+            close_price = bucket_candles[-1]["close"]
+            high_price = max(c["high"] for c in bucket_candles)
+            low_price = min(c["low"] for c in bucket_candles)
+            volumes = [c.get("volume") for c in bucket_candles if c.get("volume") is not None]
+            volume = sum(volumes) if volumes else None
+            aggregated.append(
+                Candle(
+                    open_time=int(bucket),
+                    open=float(open_price),
+                    high=float(high_price),
+                    low=float(low_price),
+                    close=float(close_price),
+                    volume=float(volume) if volume is not None else None,
+                )
+            )
+        return aggregated
 
     def fetch_recent_trades(self, symbol: str, limit: int = 50) -> List[Trade]:
         """

@@ -47,6 +47,20 @@ async def atr_stop(
 ):
     settings = get_settings()
     config: AtrConfig = config_from_settings(settings)
+    effective_timeframe = request.timeframe or config.timeframe
+    allowed_timeframes = {"3m", "15m", "1h", "4h", config.timeframe}
+    if effective_timeframe not in allowed_timeframes:
+        return error_response(
+            status_code=400,
+            code="validation_error",
+            detail=f"Unsupported ATR timeframe '{effective_timeframe}'.",
+            context={"allowed": sorted(allowed_timeframes)},
+        )
+    config = AtrConfig(
+        timeframe=effective_timeframe,
+        period=config.period,
+        multiplier=config.multiplier,
+    )
 
     limit = max(config.period * 3, config.period + 5)
     try:

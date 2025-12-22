@@ -5,6 +5,7 @@
     `${window.location.protocol}//${window.location.hostname}:8000`;
   const validateSymbol = (window.TradeApp && window.TradeApp.validateSymbol) || ((val) => val?.toUpperCase());
   const fetchAtrStop = window.TradeApp && window.TradeApp.fetchAtrStop;
+  const getAtrTimeframe = window.TradeApp && window.TradeApp.getAtrTimeframe;
   const snapToStep = (window.TradeApp && window.TradeApp.snapToInputStep) || ((value) => value);
   const ATR_STATUS_DEFAULT = "ATR stop will populate once symbol, side, and entry price are set.";
 
@@ -123,6 +124,7 @@
     const entryInput = document.getElementById("entry_price");
     const sideSelect = document.getElementById("side");
     const stopInput = document.getElementById("stop_price");
+    const timeframeInput = document.getElementById("atr_timeframe");
     const form = document.getElementById("preview-form");
     if (!symbolInput || !entryInput || !sideSelect || !stopInput) {
       return;
@@ -147,6 +149,9 @@
     });
     entryInput.addEventListener("input", schedule);
     sideSelect.addEventListener("change", schedule);
+    if (timeframeInput) {
+      timeframeInput.addEventListener("change", schedule);
+    }
 
     stopInput.addEventListener("input", () => {
       if (atrState.settingStopValue) {
@@ -196,9 +201,10 @@
     const symbol = validateSymbol(symbolInput.value);
     const side = normalizedSide(sideSelect.value);
     const entry = parseFloat(entryInput.value);
+    const timeframe = getAtrTimeframe ? getAtrTimeframe() : null;
 
     if (!symbol || !side || !Number.isFinite(entry) || entry <= 0) {
-      setAtrStatus("Select a symbol, side, and entry price to auto-calc the stop.");
+      setAtrStatus("Select a symbol, side, and entry to auto-calc the stop.");
       return;
     }
 
@@ -213,7 +219,7 @@
     const token = ++atrState.token;
     setAtrStatus("Calculating ATR stop...");
     try {
-      const response = await fetchAtrStop(symbol, side, entry);
+      const response = await fetchAtrStop(symbol, side, entry, timeframe);
       if (token !== atrState.token) return;
       if (response && typeof response.stop_loss_price === "number" && Number.isFinite(response.stop_loss_price)) {
         const snapped = snapToStep(response.stop_loss_price, stopInput);

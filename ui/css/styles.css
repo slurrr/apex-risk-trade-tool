@@ -206,6 +206,52 @@ body {
   color: var(--positive);
 }
 
+.atr-timeframe {
+  margin-top: 0.35rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.atr-timeframe-label {
+  font-size: 0.75rem;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.atr-timeframe-toggle {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0.35rem;
+}
+
+.atr-timeframe-option {
+  border: 1px solid var(--border);
+  background: rgba(16, 23, 36, 0.4);
+  color: var(--muted);
+  border-radius: 999px;
+  padding: 0.35rem 0.55rem;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 600;
+  font-size: 0.82rem;
+  transition: background 0.15s ease, color 0.15s ease, box-shadow 0.2s ease;
+}
+
+.atr-timeframe-option:hover {
+  color: var(--text);
+}
+
+.atr-timeframe-option.is-active {
+  background: var(--accent);
+  color: #fff;
+  box-shadow: 0 10px 20px rgba(204, 85, 0, 0.3);
+}
+
+
 .dropdown {
   position: relative;
   width: 100%;
@@ -355,6 +401,16 @@ html[data-theme="light"] .side-option {
 }
 
 html[data-theme="light"] .side-option.is-active {
+  background: var(--accent);
+  color: #fff;
+}
+
+html[data-theme="light"] .atr-timeframe-option {
+  background: rgba(15, 23, 42, 0.08);
+  color: rgba(15, 23, 42, 0.72);
+}
+
+html[data-theme="light"] .atr-timeframe-option.is-active {
   background: var(--accent);
   color: #fff;
 }

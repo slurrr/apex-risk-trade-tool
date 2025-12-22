@@ -105,3 +105,31 @@ def test_slippage_reduces_size():
     )
     # Without slippage: size = 10. With slippage, effective loss=1.1 -> size < 10
     assert result.size < 10
+
+
+def test_small_tick_precision_preserved():
+    cfg = base_config()
+    cfg["tickSize"] = 0.00001
+    result = calculate_position_size(
+        equity=1000,
+        risk_pct=1,
+        entry_price=0.00409,
+        stop_price=0.00398,
+        symbol_config=cfg,
+    )
+    assert math.isclose(result.entry_price, 0.00409, rel_tol=1e-9)
+    assert math.isclose(result.stop_price, 0.00398, rel_tol=1e-9)
+    assert result.entry_price != result.stop_price
+
+
+def test_rounding_collision_raises_error():
+    cfg = base_config()
+    cfg["tickSize"] = 0.0001
+    with pytest.raises(PositionSizingError):
+        calculate_position_size(
+            equity=1000,
+            risk_pct=1,
+            entry_price=1.00004,
+            stop_price=1.000049,
+            symbol_config=cfg,
+        )

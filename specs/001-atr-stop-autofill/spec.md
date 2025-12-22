@@ -26,6 +26,8 @@ When a trader selects a symbol and has an entry price filled in (either automati
 
 Operations staff can configure the timeframe used for ATR-based stop loss calculations in a single runtime configuration setting so that risk rules can align with different trading styles (e.g., intraday vs. swing) without code changes.
 
+Traders can optionally override the ATR timeframe in the UI (from a fixed set of presets) to match their current trading style, without changing the configured defaults for other users.
+
 **Why this priority**: The correct timeframe is important for valid risk management, but it does not prevent basic use of the tool; most users can still benefit from automatic stops even with a default timeframe.
 
 **Independent Test**: A tester can change the configured ATR timeframe, restart the application if required, and verify that subsequent automatic stop loss values use ATR data from the new timeframe.
@@ -34,6 +36,7 @@ Operations staff can configure the timeframe used for ATR-based stop loss calcul
 
 1. **Given** a default ATR timeframe is configured in the application settings, **When** operations change this setting and the application is refreshed or restarted, **Then** all newly calculated automatic stop loss values use ATR data from the updated timeframe.
 2. **Given** no explicit per-user timeframe selection is available in the UI, **When** different users enter trades after a timeframe change, **Then** all users see automatic stop loss values that consistently reflect the configured ATR timeframe.
+3. **Given** a trader selects a timeframe preset in the UI, **When** a new ATR stop loss is calculated, **Then** the ATR calculation uses the selected timeframe and the selection is restored on refresh for that user only.
 
 ---
 
@@ -70,6 +73,7 @@ When ATR data is not available or a trader prefers a custom stop loss, they can 
 - **FR-006**: For both long and short trades, the system MUST calculate the automatic stop loss on the appropriate side of the entry price (below entry for long positions, above entry for short positions) according to the defined ATR-based risk rule.
 - **FR-007**: The stop loss value (whether automatic or manually entered) MUST be included consistently in any risk checks, previews, or summaries presented to the user before finalizing the trade.
 - **FR-008**: The ATR-based risk rule MUST expose its key parameters (such as ATR lookback period and volatility multiplier) as operations-managed configuration values rather than hard-coded settings, so that risk policies can be updated without changes to application code.
+- **FR-009**: The UI MUST allow users to select a global ATR timeframe preset (3m/15m/1h/4h) that persists locally and overrides the default timeframe for ATR stop suggestions only.
 
 ### Key Entities *(include if feature involves data)*
 
