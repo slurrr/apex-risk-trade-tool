@@ -60,6 +60,44 @@ class OrderManager:
         self.position_targets: Dict[str, Dict[str, float]] = {}
         self._tpsl_targets_by_symbol: Dict[str, Dict[str, float]] = {}
 
+    def _estimate_position_risk(self, position: Dict[str, Any]) -> Optional[float]:
+        entry = _coerce_float(position.get("entry_price") or position.get("entryPrice"))
+        stop = _coerce_float(
+            position.get("stop_loss")
+            or position.get("stopLoss")
+            or position.get("sl")
+            or position.get("slPrice")
+            or position.get("stopLossPrice")
+        )
+        size = _coerce_float(position.get("size") or position.get("positionSize"))
+        if entry is None or stop is None or size is None:
+            return None
+        loss = abs(entry - stop) * abs(size)
+        return loss if loss > 0 else None
+
+    def _rebuild_open_risk_estimates(
+        self,
+        *,
+        open_orders: Optional[list[Dict[str, Any]]] = None,
+        positions: Optional[list[Dict[str, Any]]] = None,
+    ) -> None:
+        open_orders = open_orders if open_orders is not None else self.open_orders
+        positions = positions if positions is not None else self.positions
+        open_ids = {order.get("id") for order in open_orders if order.get("id")}
+        rebuilt: Dict[str, float] = {
+            order_id: risk
+            for order_id, risk in self.open_risk_estimates.items()
+            if order_id in open_ids
+        }
+        for pos in positions or []:
+            risk = self._estimate_position_risk(pos)
+            if risk is None:
+                continue
+            pos_id = pos.get("id") or pos.get("positionId") or pos.get("symbol")
+            if pos_id:
+                rebuilt[f"pos:{pos_id}"] = risk
+        self.open_risk_estimates = rebuilt
+
     def _normalize_symbol_value(self, symbol: Optional[str]) -> str:
         """Normalize symbols to a consistent KEY-QUOTE shape for map lookups."""
         if not symbol:
@@ -336,11 +374,7 @@ class OrderManager:
 
         raw_orders = await self.gateway.get_open_orders()
         self.open_orders = [self._normalize_order(order) for order in raw_orders]
-        # drop risk estimates for orders no longer present
-        open_ids = {order["id"] for order in self.open_orders if order.get("id")}
-        self.open_risk_estimates = {
-            order_id: risk for order_id, risk in self.open_risk_estimates.items() if order_id in open_ids
-        }
+        self._rebuild_open_risk_estimates(open_orders=self.open_orders, positions=self.positions)
         # logger.info(
         #     "state_refreshed",
         #     extra={
@@ -365,6 +399,7 @@ class OrderManager:
                     norm["entry_price"] = self.pending_order_prices_client.get(cid)
             normalized.append(norm)
         self.open_orders = normalized
+        self._rebuild_open_risk_estimates(open_orders=self.open_orders, positions=self.positions)
         # drop pending price hints for orders no longer open
         open_ids = {o.get("id") for o in self.open_orders if o.get("id")}
         open_cids = {o.get("client_id") for o in self.open_orders if o.get("client_id")}
@@ -423,6 +458,7 @@ class OrderManager:
         if not positions_raw:
             positions_raw = await self.gateway.get_open_positions(force_rest=True, publish=True)
         self.positions = await self._enrich_positions(positions_raw, tpsl_map=self._tpsl_targets_by_symbol)
+        self._rebuild_open_risk_estimates(open_orders=self.open_orders, positions=self.positions)
         return self.positions
 
     async def close_position(

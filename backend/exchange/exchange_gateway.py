@@ -401,7 +401,6 @@ class ExchangeGateway:
                             or acct.get("totalUnrealizedPnlUsd")
                             or acct.get("totalUpnl")
                         )
-                    self._publish_event({"type": "account", "payload": acct})
                     # logger.info(
                     #     "account_stream_update",
                     #     extra={
