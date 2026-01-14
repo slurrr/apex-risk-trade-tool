@@ -56,6 +56,18 @@ class AccountSummary(BaseModel):
     as_of: Optional[str] = None
 
 
+class DepthSummaryResponse(BaseModel):
+    symbol: str
+    tolerance_bps: int
+    levels_used: int
+    bid: Optional[float] = None
+    ask: Optional[float] = None
+    spread_bps: Optional[float] = None
+    max_buy_notional: Optional[float] = None
+    max_sell_notional: Optional[float] = None
+    as_of: Optional[str] = None
+
+
 class OrderResponse(BaseModel):
     id: Optional[str] = None
     symbol: Optional[str] = None

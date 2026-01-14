@@ -251,6 +251,118 @@ body {
   box-shadow: 0 10px 20px rgba(204, 85, 0, 0.3);
 }
 
+.liquidity-panel {
+  margin-top: 0.4rem;
+  padding: 0.6rem 0.65rem;
+  border-radius: 12px;
+  border: 1px dashed var(--border);
+  background: rgba(16, 23, 36, 0.35);
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.liquidity-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.liquidity-title {
+  font-size: 0.72rem;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.liquidity-chips {
+  display: flex;
+  gap: 0.35rem;
+  flex-wrap: wrap;
+}
+
+.liquidity-chip {
+  border: 1px solid var(--border);
+  background: rgba(16, 23, 36, 0.4);
+  color: var(--muted);
+  border-radius: 999px;
+  padding: 0.2rem 0.55rem;
+  cursor: pointer;
+  font-weight: 600;
+  font-size: 0.72rem;
+  transition: background 0.15s ease, color 0.15s ease, box-shadow 0.2s ease;
+}
+
+.liquidity-chip:hover {
+  color: var(--text);
+}
+
+.liquidity-chip.is-active {
+  background: var(--accent);
+  color: #fff;
+  box-shadow: 0 10px 20px rgba(204, 85, 0, 0.2);
+}
+
+.liquidity-body {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+}
+
+.liquidity-line {
+  font-size: 0.9rem;
+  font-weight: 700;
+}
+
+.liquidity-line.is-secondary {
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+.liquidity-panel.is-buy .liquidity-line.is-primary {
+  color: var(--positive);
+}
+
+.liquidity-panel.is-sell .liquidity-line.is-primary {
+  color: var(--negative);
+}
+
+.liquidity-panel.is-loading .liquidity-line.is-primary {
+  color: var(--muted);
+}
+
+.liquidity-meta {
+  display: flex;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  font-size: 0.75rem;
+  color: var(--muted);
+}
+
+.liquidity-bid {
+  color: var(--positive);
+  font-weight: 600;
+}
+
+.liquidity-ask {
+  color: var(--negative);
+  font-weight: 600;
+}
+
+.liquidity-status {
+  font-size: 0.75rem;
+  color: var(--muted);
+  min-height: 0.9rem;
+}
+
+.liquidity-status.is-error {
+  color: var(--negative);
+}
+
 
 .dropdown {
   position: relative;
@@ -411,6 +523,20 @@ html[data-theme="light"] .atr-timeframe-option {
 }
 
 html[data-theme="light"] .atr-timeframe-option.is-active {
+  background: var(--accent);
+  color: #fff;
+}
+
+html[data-theme="light"] .liquidity-panel {
+  background: rgba(241, 244, 249, 0.9);
+}
+
+html[data-theme="light"] .liquidity-chip {
+  background: rgba(15, 23, 42, 0.08);
+  color: rgba(15, 23, 42, 0.72);
+}
+
+html[data-theme="light"] .liquidity-chip.is-active {
   background: var(--accent);
   color: #fff;
 }

@@ -378,6 +378,7 @@ class ExchangeGateway:
 
         publish_orders = False
         publish_positions = False
+        summary_changed = False
         total_equity_stream = payload.get("totalEquityValue") or payload.get("totalEquity") or None
         available_balance_stream = payload.get("availableBalance") or payload.get("available_margin")
         total_upnl_stream = (
@@ -385,6 +386,9 @@ class ExchangeGateway:
             or payload.get("totalUnrealizedPnlUsd")
             or payload.get("totalUpnl")
         )
+
+        if has_positions_key and not positions:
+            total_upnl_stream = None
 
         with self._lock:
             if accounts:
@@ -411,13 +415,21 @@ class ExchangeGateway:
                     #         "total_upnl_stream": total_upnl_stream,
                     #     },
                     # )
+            if positions:
+                mapped = {self._normalize_symbol(p): p for p in positions if isinstance(p, dict)}
+                if mapped:
+                    self._ws_positions = {**self._ws_positions, **mapped}
+                    publish_positions = True
         if total_equity_stream is not None:
             self._account_cache["totalEquityValue"] = total_equity_stream
         if available_balance_stream is not None:
             self._account_cache["availableBalance"] = available_balance_stream
         if total_upnl_stream is not None:
             self._account_cache["totalUnrealizedPnl"] = total_upnl_stream
-        self._publish_account_summary_event()
+        if total_upnl_stream is not None or total_equity_stream is not None or available_balance_stream is not None:
+            summary_changed = True
+        if summary_changed:
+            self._publish_account_summary_event()
         # Positions: trigger REST refresh to avoid dropping on partial WS snapshots
         if has_positions_key and self._loop and (self._positions_refresh_task is None or self._positions_refresh_task.done()):
             self._positions_refresh_task = self._loop.create_task(self._refresh_positions_now())
@@ -972,6 +984,11 @@ class ExchangeGateway:
                         if available_balance is not None and account_equity is None:
                             account_equity = available_balance
                         if account_equity is not None:
+                            existing_upnl = self._account_cache.get("totalUnrealizedPnl")
+                            if total_upnl is None:
+                                total_upnl = existing_upnl
+                            elif self.apex_enable_ws and existing_upnl is not None:
+                                total_upnl = existing_upnl
                             self._account_cache.update(
                                 {
                                     "totalEquityValue": account_equity,
@@ -991,6 +1008,11 @@ class ExchangeGateway:
                                 token = wallet.get("token") or "USDT"
                                 price = await self._get_usdt_price(token)
                                 equity_usdt += bal * price
+                            existing_upnl = self._account_cache.get("totalUnrealizedPnl")
+                            if total_upnl is None:
+                                total_upnl = existing_upnl
+                            elif self.apex_enable_ws and existing_upnl is not None:
+                                total_upnl = existing_upnl
                             self._account_cache.update(
                                 {
                                     "totalEquityValue": equity_usdt,
@@ -1012,8 +1034,12 @@ class ExchangeGateway:
                 self._account_cache.update(legacy_payload)
             legacy_account = legacy_payload.get("account", {}) if isinstance(legacy_payload, dict) else {}
             if legacy_account.get("totalEquity") is not None:
-                if legacy_account.get("totalUnrealizedPnl") is not None:
-                    self._account_cache["totalUnrealizedPnl"] = legacy_account.get("totalUnrealizedPnl")
+                legacy_upnl = legacy_account.get("totalUnrealizedPnl")
+                if legacy_upnl is not None:
+                    existing_upnl = self._account_cache.get("totalUnrealizedPnl")
+                    if self.apex_enable_ws and existing_upnl is not None:
+                        legacy_upnl = existing_upnl
+                    self._account_cache["totalUnrealizedPnl"] = legacy_upnl
                 self._publish_account_summary_event()
                 return float(legacy_account["totalEquity"])
             wallets = legacy_payload.get("contractWallets") or []
@@ -1046,6 +1072,9 @@ class ExchangeGateway:
             with self._lock:
                 if mapped:
                     self._ws_positions = mapped
+                elif has_key:
+                    self._ws_positions = {}
+                    self._recalculate_total_upnl_locked()
                 elif not force_rest and self._ws_positions:
                     return list(self._ws_positions.values())
                 else:
@@ -1054,6 +1083,8 @@ class ExchangeGateway:
                 self._recompute_positions_pnl()
             if publish:
                 self._publish_event({"type": "positions", "payload": list(self._ws_positions.values())})
+                if has_key and not mapped:
+                    self._publish_account_summary_event()
             return list(self._ws_positions.values())
         except Exception as exc:
             # Connection hiccups happen; keep cache and avoid noisy stack traces.
@@ -1316,6 +1347,15 @@ class ExchangeGateway:
         price = await self._get_usdt_price(base)
         self._ticker_cache[norm_symbol] = {"price": price, "ts": now}
         return price
+
+    async def get_depth_snapshot(self, symbol: str, *, levels: int = 25) -> Dict[str, Any]:
+        if not symbol:
+            raise ValueError("symbol is required for depth snapshot")
+        safe_levels = max(1, int(levels))
+        try:
+            return await asyncio.to_thread(self._public_client.depth_v3, symbol=symbol, limit=safe_levels)
+        except TypeError:
+            return await asyncio.to_thread(self._public_client.depth_v3, symbol=symbol)
 
     async def cancel_order(self, order_id: str, client_id: Optional[str] = None) -> Dict[str, Any]:
         errors: list[str] = []

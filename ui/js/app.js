@@ -16,6 +16,7 @@
     activeSymbol: null,
     activeTickSize: null,
     activePriceDecimals: DEFAULT_PRICE_DECIMALS,
+    lastAccountUpdate: 0,
   };
   let sideToggleControl = null;
 
@@ -366,6 +367,7 @@
     const summary = normalizeAccountPayload(payload);
     if (summary) {
       renderAccountSummary(summary);
+      state.lastAccountUpdate = Date.now();
     }
   }
 
@@ -373,11 +375,22 @@
     try {
       const data = await fetchJson(`${API_BASE}/api/account/summary`);
       renderAccountSummary(data);
+      state.lastAccountUpdate = Date.now();
     } catch (err) {
       // silent fail for header; avoid blocking UI
       const upnlEl = document.getElementById("summary-upnl");
       if (upnlEl) upnlEl.textContent = "--";
     }
+  }
+
+  function startAccountSummaryHeartbeat() {
+    window.setInterval(() => {
+      const staleMs = 20000;
+      const last = state.lastAccountUpdate || 0;
+      if (!last || Date.now() - last > staleMs) {
+        loadAccountSummary();
+      }
+    }, 10000);
   }
 
   async function loadSymbols() {
@@ -679,5 +692,6 @@
     applySymbolPrecision(null);
     loadSymbols();
     loadAccountSummary();
+    startAccountSummaryHeartbeat();
   });
 })();

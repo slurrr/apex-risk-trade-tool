@@ -59,6 +59,26 @@
         <label class="field">
           <span>Entry</span>
           <input type="number" step="any" id="entry_price" required />
+          <div class="liquidity-panel" id="liquidity-panel" aria-live="polite">
+            <div class="liquidity-header">
+              <div class="liquidity-title">Liquidity</div>
+              <div class="liquidity-chips" role="group" aria-label="Slippage tolerance">
+                <button type="button" class="liquidity-chip" data-bps="5">5 bps</button>
+                <button type="button" class="liquidity-chip" data-bps="10">10 bps</button>
+                <button type="button" class="liquidity-chip" data-bps="25">25 bps</button>
+              </div>
+            </div>
+            <div class="liquidity-body">
+              <div class="liquidity-line is-primary" id="liquidity-headline">--</div>
+              <div class="liquidity-line is-secondary" id="liquidity-headline-buy">--</div>
+              <div class="liquidity-line is-secondary" id="liquidity-headline-sell">--</div>
+            </div>
+            <div class="liquidity-meta">
+              <div><span>Spread</span> <span id="liquidity-spread">--</span></div>
+              <div><span>Top-of-book</span> <span id="liquidity-top">--</span></div>
+            </div>
+            <div class="liquidity-status" id="liquidity-status"></div>
+          </div>
         </label>
         <label class="field">
           <span>Stop</span>
@@ -157,6 +177,7 @@
     </section>
   </main>
   <script src="/js/app.js"></script>
+  <script src="/js/liquidity.js"></script>
   <script src="/js/preview.js"></script>
   <script src="/js/execute.js"></script>
   <script src="/js/orders.js"></script>

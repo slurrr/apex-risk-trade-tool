@@ -1,6 +1,7 @@
 from decimal import Decimal, InvalidOperation
 from typing import Any, Dict, Optional, Tuple
 import re
+import time
 
 from backend.core.logging import get_logger
 from backend.exchange.exchange_gateway import ExchangeGateway
@@ -59,6 +60,8 @@ class OrderManager:
         self.pending_order_prices_client: Dict[str, float] = {}
         self.position_targets: Dict[str, Dict[str, float]] = {}
         self._tpsl_targets_by_symbol: Dict[str, Dict[str, float]] = {}
+        self._depth_summary_cache: Dict[tuple[str, int, int], tuple[float, Dict[str, Any]]] = {}
+        self._depth_summary_cache_ttl = 1.5
 
     def _estimate_position_risk(self, position: Dict[str, Any]) -> Optional[float]:
         entry = _coerce_float(position.get("entry_price") or position.get("entryPrice"))
@@ -969,6 +972,26 @@ class OrderManager:
     async def get_symbol_price(self, symbol: str) -> Dict[str, Any]:
         price = await self.gateway.get_symbol_last_price(symbol)
         return {"symbol": symbol, "price": price}
+
+    async def get_depth_summary(
+        self, *, symbol: str, tolerance_bps: int, levels: int
+    ) -> Dict[str, Any]:
+        if not symbol:
+            raise ValueError("symbol is required")
+        symbol_key = self._normalize_symbol_value(symbol)
+        cache_key = (symbol_key, int(tolerance_bps), int(levels))
+        now = time.monotonic()
+        cached = self._depth_summary_cache.get(cache_key)
+        if cached and now - cached[0] < self._depth_summary_cache_ttl:
+            return cached[1]
+        payload = await self.gateway.get_depth_snapshot(symbol_key, levels=levels)
+        from backend.market.depth_summary import compute_depth_summary
+
+        summary = compute_depth_summary(payload, tolerance_bps=tolerance_bps)
+        if summary.get("bid") is None or summary.get("ask") is None:
+            raise ValueError("Liquidity unavailable")
+        self._depth_summary_cache[cache_key] = (now, summary)
+        return summary
 
     async def resync_tpsl_from_account(self) -> bool:
         """Force a refresh of TP/SL orders via full account snapshot."""

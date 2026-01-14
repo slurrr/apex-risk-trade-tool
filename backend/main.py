@@ -3,6 +3,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from backend.api.routes_orders import router as orders_router
+from backend.api.routes_market import configure_order_manager as configure_market_manager, router as market_router
 from backend.api.routes_positions import router as positions_router
 from backend.api.routes_risk import configure_gateway as configure_risk_gateway, router as risk_router
 from backend.api.routes_trade import configure_order_manager, router as trade_router
@@ -28,6 +29,7 @@ def create_app() -> FastAPI:
         fee_buffer_pct=settings.fee_buffer_pct,
     )
     configure_order_manager(order_manager)
+    configure_market_manager(order_manager)
 
     app = FastAPI(
         title="ApeX Risk & Trade Sizing Tool",
@@ -62,6 +64,7 @@ def create_app() -> FastAPI:
     app.include_router(trade_router)
     app.include_router(orders_router)
     app.include_router(positions_router)
+    app.include_router(market_router)
     app.include_router(stream_router)
     app.include_router(risk_router)
     return app

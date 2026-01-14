@@ -12,6 +12,7 @@
   const tpValues = new Map();
   const slValues = new Map();
   let lastPositions = [];
+  let lastPositionsUpdate = 0;
   let editLockCount = 0;
   let pendingRender = null;
   const lockEditing = () => {};
@@ -134,8 +135,51 @@
     return data;
   }
 
+  function normalizePositionList(list) {
+    if (!Array.isArray(list)) return [];
+    return list
+      .map((pos) => ({
+        id: String(pos.id || pos.symbol || ""),
+        symbol: pos.symbol || "",
+        side: pos.side || "",
+        size: pos.size ?? null,
+        entry: pos.entry_price ?? null,
+        pnl: pos.pnl ?? null,
+        tp: pos.take_profit ?? null,
+        sl: pos.stop_loss ?? null,
+      }))
+      .sort((a, b) => a.id.localeCompare(b.id));
+  }
+
+  function positionsEqual(a, b) {
+    const normA = normalizePositionList(a);
+    const normB = normalizePositionList(b);
+    if (normA.length !== normB.length) return false;
+    for (let i = 0; i < normA.length; i += 1) {
+      const left = normA[i];
+      const right = normB[i];
+      if (
+        left.id !== right.id ||
+        left.symbol !== right.symbol ||
+        left.side !== right.side ||
+        left.size !== right.size ||
+        left.entry !== right.entry ||
+        left.pnl !== right.pnl ||
+        left.tp !== right.tp ||
+        left.sl !== right.sl
+      ) {
+        return false;
+      }
+    }
+    return true;
+  }
+
   function renderPositions(positions) {
+    if (positionsEqual(lastPositions, positions)) {
+      return;
+    }
     lastPositions = positions;
+    lastPositionsUpdate = Date.now();
     // If a confirmation popover is open, defer rendering to avoid wiping it out mid-action.
     if (document.querySelector(".confirm-popover")) {
       pendingRender = positions;
@@ -519,6 +563,13 @@
 
     loadPositions();
     startStream();
+
+    window.setInterval(() => {
+      const staleMs = 20000;
+      if (!lastPositionsUpdate || Date.now() - lastPositionsUpdate > staleMs) {
+        loadPositions();
+      }
+    }, 10000);
   });
 
   document.addEventListener("focusin", (event) => {
