@@ -4,16 +4,19 @@ Utility script to run curl-like requests with ApeX credentials from environment 
 Usage:
     python tools/curl_runner.py "curl https://omni.apex.exchange/api/v3/account"
     python tools/curl_runner.py "curl -X POST https://omni.apex.exchange/api/v3/order -d '{\"symbol\":\"BTC-USDT\"}'"
+    python tools/curl_runner.py --public "curl https://omni.apex.exchange/api/v3/klines?symbol=BTCUSDT&interval=5"
 
 Notes:
     - You do NOT need to paste APEX headers; the script signs with env vars:
       APEX_API_KEY, APEX_API_SECRET, APEX_PASSPHRASE
+    - Use --public/--no-sign to run unsigned public endpoints (no creds required).
     - Optional: APEX_HTTP_ENDPOINT to override the base (e.g., testnet)
     - Supports simple GET/POST/DELETE with JSON bodies (-d / --data). For other curl flags, extend as needed.
 """
 
 import json
 import os
+import argparse
 import shlex
 import sys
 import time
@@ -30,6 +33,9 @@ if str(repo_root) not in sys.path:
 
 from backend.core.config import get_settings
 from backend.exchange.apex_client import ApexClient
+
+
+BODYLESS_METHODS = {"GET", "HEAD"}
 
 
 def parse_curl(curl_cmd: str) -> Tuple[str, str, Dict[str, str], Optional[str]]:
@@ -106,15 +112,14 @@ def apply_apex_auth(headers: Dict[str, str], method: str, url: str, data: Dict[s
     return out
 
 
-def maybe_override_base(url: str) -> str:
-    """If APEX_HTTP_ENDPOINT is set, override base of the given URL."""
+def maybe_override_base(url: str, *, allow_default: bool = True) -> str:
+    """If APEX_HTTP_ENDPOINT is set (or allow_default), override base of the given URL."""
     network = (os.getenv("APEX_NETWORK") or "testnet").lower()
     base = os.getenv("APEX_HTTP_ENDPOINT")
     if not base:
-        if network in {"base", "base-sepolia", "testnet-base", "testnet"}:
-            base = "https://testnet.omni.apex.exchange"
-        else:
-            base = "https://omni.apex.exchange"
+        if not allow_default:
+            return url
+        base = "https://testnet.omni.apex.exchange" if network in {"base", "base-sepolia", "testnet-base", "testnet"} else "https://omni.apex.exchange"
     if url.startswith("http://") or url.startswith("https://"):
         # replace scheme/host with base
         try:
@@ -164,18 +169,53 @@ def replace_placeholders(text: str) -> str:
     return out
 
 
+def build_send_kwargs(
+    *,
+    method: str,
+    url: str,
+    headers: Dict[str, str],
+    data: Optional[str],
+    json_data: Optional[object],
+    form_data: Dict[str, str],
+    signature_value: Optional[str],
+) -> Dict[str, object]:
+    send_kwargs: Dict[str, object] = {"method": method, "url": url, "headers": headers}
+
+    if json_data is not None:
+        send_kwargs["json"] = json_data
+        return send_kwargs
+
+    # Avoid sending a request body on GET/HEAD unless the user explicitly provided one via -d.
+    if method.upper() in BODYLESS_METHODS and data is None:
+        return send_kwargs
+
+    if signature_value:
+        form_data["signature"] = signature_value
+    send_kwargs["data"] = form_data
+    return send_kwargs
+
+
 def main() -> None:
     load_dotenv()
-    settings = get_settings()
-    sdk_client = ApexClient(settings).private_client
-    if len(sys.argv) < 2:
-        print("Usage: python tools/curl_runner.py \"<curl command>\"")
-        sys.exit(1)
-    curl_cmd = replace_placeholders(sys.argv[1])
+
+    parser = argparse.ArgumentParser(description="Run curl-like requests, optionally signed with ApeX credentials.")
+    parser.add_argument("curl", help="curl command to execute (wrap in quotes)")
+    parser.add_argument("--public", "--no-sign", dest="public", action="store_true", help="Do not sign or inject ApeX auth headers")
+
+    args = parser.parse_args()
+    curl_cmd = replace_placeholders(args.curl)
+
     method, url, headers, data = parse_curl(curl_cmd)
-    # strip any user-supplied apex headers from pasted curl
-    headers = {k: v for k, v in headers.items() if not k.upper().startswith("APEX-")}
-    url = maybe_override_base(url)
+    use_signing = not args.public
+
+    if use_signing:
+        # strip any user-supplied apex headers from pasted curl
+        headers = {k: v for k, v in headers.items() if not k.upper().startswith("APEX-")}
+        url = maybe_override_base(url, allow_default=True)
+    else:
+        # In public mode, only override the base if the user explicitly configured it.
+        url = maybe_override_base(url, allow_default=False)
+
     try:
         json_data = json.loads(data) if data else None
     except Exception:
@@ -197,16 +237,22 @@ def main() -> None:
     sign_data.pop("signature", None)
     sign_data = {k: v for k, v in sign_data.items() if not k.upper().startswith("APEX-")}
 
-    headers = apply_apex_auth(headers, method, url, sign_data, sdk_client)
-    signature_value = headers.get("APEX-SIGNATURE")
+    signature_value: Optional[str] = None
+    if use_signing:
+        settings = get_settings()
+        sdk_client = ApexClient(settings).private_client
+        headers = apply_apex_auth(headers, method, url, sign_data, sdk_client)
+        signature_value = headers.get("APEX-SIGNATURE")
 
-    send_kwargs = {"method": method, "url": url, "headers": headers}
-    if json_data is not None:
-        send_kwargs["json"] = json_data
-    else:
-        if signature_value:
-            sign_data["signature"] = signature_value
-        send_kwargs["data"] = sign_data
+    send_kwargs = build_send_kwargs(
+        method=method,
+        url=url,
+        headers=headers,
+        data=data,
+        json_data=json_data,
+        form_data=sign_data,
+        signature_value=signature_value if use_signing else None,
+    )
 
     resp = requests.request(**send_kwargs)
     print(f"Status: {resp.status_code}")

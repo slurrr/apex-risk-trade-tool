@@ -38,6 +38,13 @@ class Settings(BaseSettings):
     apex_network: str = Field("testnet", env="APEX_NETWORK")
     apex_http_endpoint: Optional[str] = Field(None, env="APEX_HTTP_ENDPOINT")
     apex_enable_ws: bool = Field(False, env="APEX_ENABLE_WS")
+    apex_rest_timeout_seconds: int = Field(10, env="APEX_REST_TIMEOUT_SECONDS")
+    apex_rest_retries: int = Field(2, env="APEX_REST_RETRIES")
+    apex_rest_retry_backoff_seconds: float = Field(0.5, env="APEX_REST_RETRY_BACKOFF_SECONDS")
+    apex_rest_retry_backoff_max_seconds: float = Field(4.0, env="APEX_REST_RETRY_BACKOFF_MAX_SECONDS")
+    apex_rest_retry_jitter_seconds: float = Field(0.2, env="APEX_REST_RETRY_JITTER_SECONDS")
+    apex_positions_empty_stale_seconds: float = Field(12.0, env="APEX_POSITIONS_EMPTY_STALE_SECONDS")
+    apex_orders_empty_stale_seconds: float = Field(12.0, env="APEX_ORDERS_EMPTY_STALE_SECONDS")
     slippage_factor: float = Field(0.0, env="SLIPPAGE_FACTOR")
     fee_buffer_pct: float = Field(0.0, env="FEE_BUFFER_PCT")
     atr_timeframe: str = Field(
@@ -86,6 +93,21 @@ class Settings(BaseSettings):
         if not normalized:
             raise ValueError("TIMEFRAME must be a non-empty candle interval (e.g., 5m)")
         return normalized
+
+    @field_validator(
+        "apex_rest_timeout_seconds",
+        "apex_rest_retries",
+        "apex_rest_retry_backoff_seconds",
+        "apex_rest_retry_backoff_max_seconds",
+        "apex_rest_retry_jitter_seconds",
+        "apex_positions_empty_stale_seconds",
+        "apex_orders_empty_stale_seconds",
+    )
+    @classmethod
+    def validate_non_negative(cls, value: float) -> float:
+        if value < 0:
+            raise ValueError("Apex REST settings must be non-negative")
+        return value
 
 
 @lru_cache()

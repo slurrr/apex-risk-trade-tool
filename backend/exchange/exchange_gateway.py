@@ -1,4 +1,5 @@
 import asyncio
+import random
 import time
 import uuid
 import threading
@@ -53,6 +54,24 @@ class ExchangeGateway:
         self.apex_client = ApexClient(settings, private_client=client)
         self._client: Any = self.apex_client.private_client
         self._public_client: Any = self.apex_client.public_client
+        self._rest_timeout_seconds = max(0.0, float(getattr(settings, "apex_rest_timeout_seconds", 10) or 0))
+        self._rest_max_retries = max(0, int(getattr(settings, "apex_rest_retries", 0) or 0))
+        self._rest_retry_backoff = max(0.0, float(getattr(settings, "apex_rest_retry_backoff_seconds", 0.5) or 0))
+        self._rest_retry_backoff_max = max(0.0, float(getattr(settings, "apex_rest_retry_backoff_max_seconds", 4.0) or 0))
+        self._rest_retry_jitter = max(0.0, float(getattr(settings, "apex_rest_retry_jitter_seconds", 0.2) or 0))
+        self._positions_empty_stale_seconds = max(
+            0.0, float(getattr(settings, "apex_positions_empty_stale_seconds", 12.0) or 0)
+        )
+        self._orders_empty_stale_seconds = max(
+            0.0, float(getattr(settings, "apex_orders_empty_stale_seconds", 12.0) or 0)
+        )
+        self._positions_empty_since: Optional[float] = None
+        self._orders_empty_since: Optional[float] = None
+        if self._rest_timeout_seconds > 0:
+            try:
+                self._client.timeout = self._rest_timeout_seconds
+            except Exception:
+                pass
         self._prime_client()
         self._ticker_cache: Dict[str, Dict[str, float]] = {}
         # logger.info(
@@ -110,6 +129,48 @@ class ExchangeGateway:
                     self._account_cache.setdefault("totalUnrealizedPnl", account.get("totalUnrealizedPnl"))
         except Exception as exc:
             logger.warning("prime_client get_account_v3 failed", extra={"error": str(exc)})
+
+    def _should_retry_rest(self, exc: Exception) -> bool:
+        if isinstance(exc, requests.exceptions.RequestException):
+            return True
+        msg = str(exc).lower()
+        return any(
+            phrase in msg
+            for phrase in (
+                "read timed out",
+                "connection aborted",
+                "connection reset",
+                "remote end closed connection",
+                "temporarily unavailable",
+                "timeout",
+            )
+        )
+
+    async def _call_private_rest(self, label: str, func, **kwargs) -> Any:
+        attempt = 0
+        while True:
+            try:
+                return await asyncio.to_thread(func, **kwargs)
+            except Exception as exc:
+                if not self._should_retry_rest(exc) or attempt >= self._rest_max_retries:
+                    raise
+                delay = self._rest_retry_backoff * (2**attempt)
+                if self._rest_retry_backoff_max > 0:
+                    delay = min(delay, self._rest_retry_backoff_max)
+                if self._rest_retry_jitter:
+                    delay += random.uniform(0.0, self._rest_retry_jitter)
+                attempt += 1
+                logger.warning(
+                    "rest_retrying",
+                    extra={
+                        "event": "rest_retrying",
+                        "label": label,
+                        "attempt": attempt,
+                        "delay": round(delay, 3),
+                        "error": str(exc),
+                    },
+                )
+                await asyncio.sleep(delay)
 
     # --- WebSocket helpers ---
     def attach_loop(self, loop: asyncio.AbstractEventLoop) -> None:
@@ -730,7 +791,7 @@ class ExchangeGateway:
             #     },
             # )
             try:
-                resp = await asyncio.to_thread(self._client.get_account_v3)
+                resp = await self._call_private_rest("get_account_v3", self._client.get_account_v3)
                 payload = self._unwrap_payload(resp)
                 payload_dict = payload if isinstance(payload, dict) else {}
                 account_candidates: list[dict[str, Any]] = []
@@ -904,7 +965,7 @@ class ExchangeGateway:
         if self._account_cache:
             return
         try:
-            acct = await asyncio.to_thread(self._client.get_account_v3)
+            acct = await self._call_private_rest("get_account_v3", self._client.get_account_v3)
             if isinstance(acct, dict):
                 payload = acct.get("result") or acct
                 self._account_cache.update(payload if isinstance(payload, dict) else {})
@@ -937,7 +998,7 @@ class ExchangeGateway:
             account_balance_fn = getattr(self._client, "get_account_balance_v3", None)
             if callable(account_balance_fn):
                 try:
-                    acct = await asyncio.to_thread(account_balance_fn)
+                    acct = await self._call_private_rest("get_account_balance_v3", account_balance_fn)
                     if acct and isinstance(acct, dict):
                         payload = acct.get("result") or acct.get("data") or acct
                         account = payload.get("account") if isinstance(payload, dict) else None
@@ -1026,7 +1087,7 @@ class ExchangeGateway:
                 except Exception as exc:
                     logger.warning("get_account_balance_v3 failed, falling back", extra={"error": str(exc)})
             # Fallback: legacy account endpoint
-            legacy = await asyncio.to_thread(self._client.get_account_v3)
+            legacy = await self._call_private_rest("get_account_v3", self._client.get_account_v3)
             if not legacy or not isinstance(legacy, dict):
                 raise ValueError("Empty account response")
             legacy_payload = legacy.get("result") or legacy
@@ -1063,22 +1124,35 @@ class ExchangeGateway:
             if self._ws_positions and not force_rest:
                 return list(self._ws_positions.values())
         try:
-            resp = await asyncio.to_thread(self._client.get_account_v3)
+            resp = await self._call_private_rest("get_account_v3", self._client.get_account_v3)
             payload = self._unwrap_payload(resp)
             if isinstance(payload, list):
                 payload = {"positions": payload}
             positions, has_key = self._extract_positions(payload if isinstance(payload, dict) else {})
             mapped = {self._normalize_symbol(p): p for p in positions if isinstance(p, dict)} if positions else {}
+            keep_cached = False
+            now = time.time()
             with self._lock:
                 if mapped:
                     self._ws_positions = mapped
+                    self._positions_empty_since = None
                 elif has_key:
-                    self._ws_positions = {}
-                    self._recalculate_total_upnl_locked()
+                    if self._ws_positions and self._positions_empty_stale_seconds > 0:
+                        if self._positions_empty_since is None:
+                            self._positions_empty_since = now
+                            keep_cached = True
+                        elif (now - self._positions_empty_since) < self._positions_empty_stale_seconds:
+                            keep_cached = True
+                        else:
+                            self._positions_empty_since = None
+                    if not keep_cached:
+                        self._ws_positions = {}
+                        self._recalculate_total_upnl_locked()
                 elif not force_rest and self._ws_positions:
                     return list(self._ws_positions.values())
                 else:
                     self._ws_positions = {}
+                    self._positions_empty_since = None
             if publish:
                 self._recompute_positions_pnl()
             if publish:
@@ -1097,7 +1171,7 @@ class ExchangeGateway:
             if self._ws_orders and not force_rest:
                 return list(self._ws_orders.values())
         try:
-            resp = await asyncio.to_thread(self._client.open_orders_v3)
+            resp = await self._call_private_rest("open_orders_v3", self._client.open_orders_v3)
             payload = self._unwrap_payload(resp)
             orders: Any = []
             if isinstance(payload, dict):
@@ -1131,13 +1205,28 @@ class ExchangeGateway:
             except Exception:
                 pass
             mapped = self._filter_and_map_orders(orders)
+            empty_snapshot = isinstance(orders_list, list) and len(orders_list) == 0
+            keep_cached = False
+            now = time.time()
             with self._lock:
                 if mapped:
                     self._ws_orders = mapped
+                    self._orders_empty_since = None
+                elif empty_snapshot and self._ws_orders and self._orders_empty_stale_seconds > 0:
+                    if self._orders_empty_since is None:
+                        self._orders_empty_since = now
+                        keep_cached = True
+                    elif (now - self._orders_empty_since) < self._orders_empty_stale_seconds:
+                        keep_cached = True
+                    else:
+                        self._orders_empty_since = None
+                    if not keep_cached:
+                        self._ws_orders = {}
                 elif not force_rest and self._ws_orders:
                     return list(self._ws_orders.values())
                 else:
                     self._ws_orders = {}
+                    self._orders_empty_since = None
             if publish:
                 self._publish_cached_orders()
                 self._last_order_event_ts = time.time()
@@ -1162,7 +1251,7 @@ class ExchangeGateway:
         Returns the parsed orders list (or empty).
         """
         try:
-            resp = await asyncio.to_thread(self._client.get_account_v3)
+            resp = await self._call_private_rest("get_account_v3", self._client.get_account_v3)
             payload = self._unwrap_payload(resp)
             orders: Any = []
             if isinstance(payload, dict):
@@ -1361,7 +1450,7 @@ class ExchangeGateway:
         errors: list[str] = []
         # ensure account/config set on client for signature
         try:
-            await asyncio.to_thread(self._client.get_account_v3)
+            await self._call_private_rest("get_account_v3", self._client.get_account_v3)
         except Exception:
             pass
         client_target = client_id or (order_id if not str(order_id).isdigit() else None)

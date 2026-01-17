@@ -66,6 +66,9 @@ class ApexClient:
                 "passphrase": settings.apex_passphrase,
             },
         )
+        rest_timeout = getattr(settings, "apex_rest_timeout_seconds", None)
+        if rest_timeout is not None:
+            client.timeout = rest_timeout
         # Avoid inheriting system proxy settings that can block testnet calls.
         session = client.client
         session.trust_env = False
