@@ -23,6 +23,7 @@ class Settings(BaseSettings):
         extra="ignore",
     )
     app_env: str = Field("development", env="APP_ENV")
+    active_venue: str = Field("apex", env="ACTIVE_VENUE")
     app_host: str = Field("127.0.0.1", env="APP_HOST")
     app_port: int = Field(8000, env="APP_PORT")
     log_level: str = Field("INFO", env="LOG_LEVEL")
@@ -37,6 +38,39 @@ class Settings(BaseSettings):
     apex_zk_l2key: str = Field(..., env="APEX_ZK_L2KEY")
     apex_network: str = Field("testnet", env="APEX_NETWORK")
     apex_http_endpoint: Optional[str] = Field(None, env="APEX_HTTP_ENDPOINT")
+    hyperliquid_http_endpoint: str = Field("https://api.hyperliquid.xyz", env="HYPERLIQUID_HTTP_ENDPOINT")
+    hyperliquid_min_notional_usdc: float = Field(10.0, env="HYPERLIQUID_MIN_NOTIONAL_USDC")
+    hl_user_address: Optional[str] = Field(None, env="HL_USER_ADDRESS")
+    hl_agent_private_key: Optional[str] = Field(None, env="HL_AGENT_PRIVATE_KEY")
+    hyperliquid_enable_ws: bool = Field(True, env="HYPERLIQUID_ENABLE_WS")
+    hyperliquid_reconcile_audit_interval_seconds: float = Field(
+        900.0,
+        env="HYPERLIQUID_RECONCILE_AUDIT_INTERVAL_SECONDS",
+    )
+    hyperliquid_reconcile_stale_stream_seconds: float = Field(
+        90.0,
+        env="HYPERLIQUID_RECONCILE_STALE_STREAM_SECONDS",
+    )
+    hyperliquid_reconcile_order_timeout_seconds: float = Field(
+        20.0,
+        env="HYPERLIQUID_RECONCILE_ORDER_TIMEOUT_SECONDS",
+    )
+    hyperliquid_reconcile_min_gap_seconds: float = Field(
+        5.0,
+        env="HYPERLIQUID_RECONCILE_MIN_GAP_SECONDS",
+    )
+    hyperliquid_reconcile_alert_window_seconds: float = Field(
+        300.0,
+        env="HYPERLIQUID_RECONCILE_ALERT_WINDOW_SECONDS",
+    )
+    hyperliquid_reconcile_alert_max_per_window: int = Field(
+        3,
+        env="HYPERLIQUID_RECONCILE_ALERT_MAX_PER_WINDOW",
+    )
+    hyperliquid_order_timeout_alert_max_per_window: int = Field(
+        3,
+        env="HYPERLIQUID_ORDER_TIMEOUT_ALERT_MAX_PER_WINDOW",
+    )
     apex_enable_ws: bool = Field(False, env="APEX_ENABLE_WS")
     apex_rest_timeout_seconds: int = Field(10, env="APEX_REST_TIMEOUT_SECONDS")
     apex_rest_retries: int = Field(2, env="APEX_REST_RETRIES")
@@ -72,6 +106,15 @@ class Settings(BaseSettings):
             raise ValueError(f"Unsupported APEX_NETWORK '{value}'. Use one of {sorted(allowed)}")
         return normalized
 
+    @field_validator("active_venue")
+    @classmethod
+    def validate_active_venue(cls, value: str) -> str:
+        normalized = (value or "apex").strip().lower()
+        allowed = {"apex", "hyperliquid"}
+        if normalized not in allowed:
+            raise ValueError(f"Unsupported ACTIVE_VENUE '{value}'. Use one of {sorted(allowed)}")
+        return normalized
+
     @field_validator("atr_period")
     @classmethod
     def validate_atr_period(cls, value: int) -> int:
@@ -102,6 +145,13 @@ class Settings(BaseSettings):
         "apex_rest_retry_jitter_seconds",
         "apex_positions_empty_stale_seconds",
         "apex_orders_empty_stale_seconds",
+        "hyperliquid_reconcile_audit_interval_seconds",
+        "hyperliquid_reconcile_stale_stream_seconds",
+        "hyperliquid_reconcile_order_timeout_seconds",
+        "hyperliquid_reconcile_min_gap_seconds",
+        "hyperliquid_reconcile_alert_window_seconds",
+        "hyperliquid_reconcile_alert_max_per_window",
+        "hyperliquid_order_timeout_alert_max_per_window",
     )
     @classmethod
     def validate_non_negative(cls, value: float) -> float:

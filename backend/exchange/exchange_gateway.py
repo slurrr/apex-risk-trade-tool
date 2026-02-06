@@ -11,7 +11,6 @@ import requests
 from backend.core.config import Settings
 from backend.core.logging import get_logger
 from backend.exchange.apex_client import ApexClient
-from apexomni.websocket_api import PRIVATE_WSS
 
 logger = get_logger(__name__)
 
@@ -19,8 +18,9 @@ logger = get_logger(__name__)
 class ExchangeGateway:
     """Wrapper around ApeX Omni SDK with cached configs and basic helpers."""
 
-    def __init__(self, settings: Settings, client: Optional[Any] = None) -> None:
+    def __init__(self, settings: Settings, client: Optional[Any] = None, public_client: Optional[Any] = None) -> None:
         self.settings = settings
+        self.venue = "apex"
         self._network = (getattr(settings, "apex_network", "testnet") or "testnet").lower()
         self._testnet = self._network in {"base", "base-sepolia", "testnet-base", "testnet"}
         self.apex_enable_ws = getattr(settings, "apex_enable_ws", False)
@@ -46,12 +46,13 @@ class ExchangeGateway:
         self._positions_refresh_task: Optional[asyncio.Task] = None
         self._account_refresh_task: Optional[asyncio.Task] = None
         self._account_refresh_interval: float = 15.0
-        self._price_cache: dict[str, dict[str, float]] = {}
+        self._price_cache: dict[str, dict[str, Any]] = {}
         self._last_order_event_ts: float = time.time()
         self._ws_snapshot_written: bool = False
         self._tpsl_client_ids: Dict[str, set[str]] = {}
         self._lock = threading.Lock()
-        self.apex_client = ApexClient(settings, private_client=client)
+        fallback_public = public_client if public_client is not None else (client if client is not None else None)
+        self.apex_client = ApexClient(settings, private_client=client, public_client=fallback_public)
         self._client: Any = self.apex_client.private_client
         self._public_client: Any = self.apex_client.public_client
         self._rest_timeout_seconds = max(0.0, float(getattr(settings, "apex_rest_timeout_seconds", 10) or 0))
@@ -191,6 +192,47 @@ class ExchangeGateway:
             self._ping_task = self._loop.create_task(self._ping_loop())
         if self._loop and (self._resubscribe_task is None or self._resubscribe_task.done()):
             self._resubscribe_task = self._loop.create_task(self._resubscribe_loop())
+
+    async def stop_streams(self) -> None:
+        """Stop WS streams and background tasks."""
+        self._ws_running = False
+        for task in (
+            self._reconcile_task,
+            self._ping_task,
+            self._resubscribe_task,
+            self._order_refresh_task,
+            self._positions_refresh_task,
+            self._account_refresh_task,
+        ):
+            if task and not task.done():
+                task.cancel()
+        self._reconcile_task = None
+        self._ping_task = None
+        self._resubscribe_task = None
+        self._order_refresh_task = None
+        self._positions_refresh_task = None
+        self._account_refresh_task = None
+        for ws_client in (self._ws_public, self._ws_private):
+            if not ws_client:
+                continue
+            try:
+                await asyncio.to_thread(ws_client.close)
+            except Exception:
+                continue
+        self._ws_public = None
+        self._ws_private = None
+
+    def clear_runtime_state(self) -> None:
+        """Clear runtime caches before/after venue switches."""
+        with self._lock:
+            self._ws_prices.clear()
+            self._ws_orders.clear()
+            self._ws_positions.clear()
+            self._ws_orders_raw = []
+            self._ws_orders_tpsl = []
+            self._ticker_cache.clear()
+            self._price_cache.clear()
+            self._subscribers.clear()
 
     def _start_public_stream(self) -> None:
         try:
@@ -416,6 +458,7 @@ class ExchangeGateway:
                 norm_symbol = self._normalize_symbol_value(symbol)
                 self._ws_prices[norm_symbol] = price_f
                 self._ticker_cache[norm_symbol] = {"price": price_f, "ts": time.time()}
+                self._price_cache[norm_symbol] = {"price": price_f, "ts": time.time(), "source": "ws_ticker"}
                 publish_positions = self._update_positions_pnl(norm_symbol, price_f)
                 if publish_positions:
                     self._recalculate_total_upnl_locked()
@@ -947,6 +990,87 @@ class ExchangeGateway:
             if price:
                 return float(price)
         raise ValueError(f"No ticker price for {symbol}")
+
+    async def fetch_klines(self, symbol: str, timeframe: str, limit: int = 200) -> list[Dict[str, Any]]:
+        """Venue-agnostic candle fetch used by ATR endpoints."""
+        return await asyncio.to_thread(self.apex_client.fetch_klines, symbol, timeframe, limit)
+
+    def _extract_reference_price(self, entry: Dict[str, Any]) -> Tuple[Optional[float], Optional[str]]:
+        mid_candidates = [
+            entry.get("midPrice"),
+            entry.get("mid"),
+            entry.get("mid_price"),
+        ]
+        for candidate in mid_candidates:
+            try:
+                if candidate is not None:
+                    return float(candidate), "mid"
+            except Exception:
+                continue
+
+        try:
+            bid = float(entry.get("bidPrice") or entry.get("bid") or entry.get("bestBid"))
+            ask = float(entry.get("askPrice") or entry.get("ask") or entry.get("bestAsk"))
+            if bid > 0 and ask > 0:
+                return (bid + ask) / 2.0, "mid"
+        except Exception:
+            pass
+
+        mark_candidates = [
+            entry.get("markPrice"),
+            entry.get("oraclePrice"),
+            entry.get("indexPrice"),
+        ]
+        for candidate in mark_candidates:
+            try:
+                if candidate is not None:
+                    return float(candidate), "mark"
+            except Exception:
+                continue
+
+        last_candidates = [
+            entry.get("lastPrice"),
+            entry.get("price"),
+            entry.get("last"),
+        ]
+        for candidate in last_candidates:
+            try:
+                if candidate is not None:
+                    return float(candidate), "last"
+            except Exception:
+                continue
+        return None, None
+
+    async def get_reference_price(self, symbol: str) -> Tuple[float, str]:
+        """
+        Resolve best-available reference price in this order: mid, mark/oracle, then last.
+        """
+        norm_symbol = self._normalize_symbol_value(symbol)
+        now = time.time()
+        cache_entry = self._price_cache.get(norm_symbol)
+        if cache_entry and now - cache_entry.get("ts", 0) < 10:
+            return float(cache_entry["price"]), str(cache_entry.get("source") or "cache")
+
+        ticker = await asyncio.to_thread(self._public_client.ticker_v3, symbol=symbol)
+        result = ticker.get("result") or ticker.get("data") or ticker
+        entries = result if isinstance(result, list) else [result]
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            price, source = self._extract_reference_price(entry)
+            if price is None:
+                continue
+            self._price_cache[norm_symbol] = {
+                "price": float(price),
+                "ts": now,
+                "source": source or "ticker",
+            }
+            return float(price), (source or "ticker")
+
+        # Final fallback keeps legacy behavior for Apex.
+        fallback = await self.get_symbol_last_price(symbol)
+        self._price_cache[norm_symbol] = {"price": float(fallback), "ts": now, "source": "fallback_last"}
+        return float(fallback), "fallback_last"
 
     async def ensure_configs_loaded(self) -> None:
         """Load configs if not already cached."""

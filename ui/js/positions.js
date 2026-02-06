@@ -564,6 +564,10 @@
     loadPositions();
     startStream();
 
+    window.addEventListener("venue:changed", () => {
+      loadPositions(true);
+    });
+
     window.setInterval(() => {
       const staleMs = 20000;
       if (!lastPositionsUpdate || Date.now() - lastPositionsUpdate > staleMs) {

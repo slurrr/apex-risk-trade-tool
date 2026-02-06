@@ -1,4 +1,3 @@
-import asyncio
 from typing import Any, List
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -64,8 +63,7 @@ async def atr_stop(
 
     limit = max(config.period * 3, config.period + 5)
     try:
-        candles = await asyncio.to_thread(
-            gateway.apex_client.fetch_klines,
+        candles = await gateway.fetch_klines(
             request.symbol,
             config.timeframe,
             limit,

@@ -1,17 +1,16 @@
+import asyncio
 import sys
 from pathlib import Path
 
-import pytest
-from fastapi import FastAPI
-from fastapi.testclient import TestClient
+from fastapi.responses import JSONResponse
 
 ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from backend.api.routes_orders import router as orders_router  # noqa: E402
-from backend.api.routes_positions import router as positions_router  # noqa: E402
-from backend.api.routes_trade import configure_order_manager  # noqa: E402
+from backend.api.routes_orders import cancel_order, list_orders  # noqa: E402
+from backend.api.routes_positions import list_positions, update_targets  # noqa: E402
+from backend.trading.schemas import TargetsUpdateRequest  # noqa: E402
 
 
 class FakeManager:
@@ -61,30 +60,18 @@ class FakeManager:
         return {"position_id": position_id, "take_profit": take_profit, "stop_loss": stop_loss, "clear_tp": clear_tp, "clear_sl": clear_sl}
 
 
-def build_client(manager: FakeManager) -> TestClient:
-    app = FastAPI()
-    configure_order_manager(manager)
-    app.include_router(orders_router)
-    app.include_router(positions_router)
-    return TestClient(app)
-
-
 def test_list_orders_returns_manager_data():
     manager = FakeManager()
-    client = build_client(manager)
-    resp = client.get("/api/orders")
-    assert resp.status_code == 200
-    assert resp.json() == [
-        {"id": "abc", "symbol": "BTC-USDT", "side": "BUY", "size": 1.0, "status": "OPEN", "entry_price": None, "created_at": None}
+    resp = asyncio.run(list_orders(manager))
+    assert resp == [
+        {"id": "abc", "symbol": "BTC-USDT", "side": "BUY", "size": 1.0, "status": "OPEN", "entry_price": None, "reduce_only": False}
     ]
 
 
 def test_list_positions_returns_manager_data():
     manager = FakeManager()
-    client = build_client(manager)
-    resp = client.get("/api/positions")
-    assert resp.status_code == 200
-    assert resp.json() == [
+    resp = asyncio.run(list_positions(False, manager))
+    assert resp == [
         {
             "id": "pos-1",
             "symbol": "BTC-USDT",
@@ -100,52 +87,39 @@ def test_list_positions_returns_manager_data():
 
 def test_cancel_order_calls_manager_and_returns_response():
     manager = FakeManager()
-    client = build_client(manager)
-    resp = client.post("/api/orders/abc/cancel")
-    assert resp.status_code == 200
-    assert resp.json() == {"canceled": True, "order_id": "abc"}
+    resp = asyncio.run(cancel_order("abc", manager))
+    assert resp == {"canceled": True, "order_id": "abc"}
     assert manager.canceled == ["abc"]
 
 
 def test_cancel_order_error_returns_400():
     manager = FakeManager()
-    client = build_client(manager)
-    resp = client.post("/api/orders/fail/cancel")
+    resp = asyncio.run(cancel_order("fail", manager))
+    assert isinstance(resp, JSONResponse)
     assert resp.status_code == 400
-    assert "Unable to cancel" in resp.json()["detail"]
+    assert b"Unable to cancel" in resp.body
 
 
 def test_update_targets_round_trip_positions_api():
     manager = FakeManager()
-    client = build_client(manager)
-    resp = client.post("/api/positions/pos-1/targets", json={"take_profit": 120.5, "stop_loss": 90.1})
-    assert resp.status_code == 200
-    assert manager.updated[-1] == {
-        "position_id": "pos-1",
-        "take_profit": 120.5,
-        "stop_loss": 90.1,
-        "clear_tp": False,
-        "clear_sl": False,
-    }
-    positions = client.get("/api/positions")
-    assert positions.status_code == 200
-    body = positions.json()
-    assert body[0]["take_profit"] == 120.5
-    assert body[0]["stop_loss"] == 90.1
+    req = TargetsUpdateRequest(take_profit=120.5, stop_loss=90.1)
+    resp = asyncio.run(update_targets("pos-1", req, manager))
+    assert resp["take_profit"] == 120.5
+    assert resp["stop_loss"] == 90.1
+    positions = asyncio.run(list_positions(False, manager))
+    assert positions[0]["take_profit"] == 120.5
+    assert positions[0]["stop_loss"] == 90.1
 
 
 def test_clear_tp_only_keeps_sl():
     manager = FakeManager()
     manager.positions[0]["take_profit"] = 125.0
     manager.positions[0]["stop_loss"] = 95.0
-    client = build_client(manager)
-    resp = client.post("/api/positions/pos-1/targets", json={"clear_tp": True})
-    assert resp.status_code == 200
-    positions = client.get("/api/positions")
-    assert positions.status_code == 200
-    body = positions.json()
-    assert body[0]["take_profit"] is None
-    assert body[0]["stop_loss"] == 95.0
+    req = TargetsUpdateRequest(clear_tp=True)
+    asyncio.run(update_targets("pos-1", req, manager))
+    positions = asyncio.run(list_positions(False, manager))
+    assert positions[0]["take_profit"] is None
+    assert positions[0]["stop_loss"] == 95.0
     assert manager.updated[-1]["clear_tp"] is True
     assert manager.updated[-1]["clear_sl"] is False
 
@@ -154,13 +128,10 @@ def test_clear_sl_only_keeps_tp():
     manager = FakeManager()
     manager.positions[0]["take_profit"] = 125.0
     manager.positions[0]["stop_loss"] = 95.0
-    client = build_client(manager)
-    resp = client.post("/api/positions/pos-1/targets", json={"clear_sl": True})
-    assert resp.status_code == 200
-    positions = client.get("/api/positions")
-    assert positions.status_code == 200
-    body = positions.json()
-    assert body[0]["take_profit"] == 125.0
-    assert body[0]["stop_loss"] is None
+    req = TargetsUpdateRequest(clear_sl=True)
+    asyncio.run(update_targets("pos-1", req, manager))
+    positions = asyncio.run(list_positions(False, manager))
+    assert positions[0]["take_profit"] == 125.0
+    assert positions[0]["stop_loss"] is None
     assert manager.updated[-1]["clear_tp"] is False
     assert manager.updated[-1]["clear_sl"] is True

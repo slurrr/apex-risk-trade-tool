@@ -45,6 +45,7 @@ class OrderManager:
         open_risk_cap_pct: Optional[float] = None,
         slippage_factor: float = 0.0,
         fee_buffer_pct: float = 0.0,
+        hyperliquid_min_notional_usdc: float = 10.0,
     ) -> None:
         self.gateway = gateway
         self.per_trade_risk_cap_pct = per_trade_risk_cap_pct
@@ -52,6 +53,7 @@ class OrderManager:
         self.open_risk_cap_pct = open_risk_cap_pct
         self.slippage_factor = slippage_factor or 0.0
         self.fee_buffer_pct = fee_buffer_pct or 0.0
+        self.hyperliquid_min_notional_usdc = max(0.0, float(hyperliquid_min_notional_usdc or 0.0))
         self.daily_realized_loss: float = 0.0
         self.open_risk_estimates: Dict[str, float] = {}
         self.open_orders: list[Dict[str, Any]] = []
@@ -62,6 +64,54 @@ class OrderManager:
         self._tpsl_targets_by_symbol: Dict[str, Dict[str, float]] = {}
         self._depth_summary_cache: Dict[tuple[str, int, int], tuple[float, Dict[str, Any]]] = {}
         self._depth_summary_cache_ttl = 1.5
+
+    async def _get_account_context(self) -> tuple[float, Optional[float]]:
+        equity = await self.gateway.get_account_equity()
+        available_margin: Optional[float] = None
+        summary_getter = getattr(self.gateway, "get_account_summary", None)
+        if callable(summary_getter):
+            try:
+                summary = await summary_getter()
+                if isinstance(summary, dict):
+                    available_margin = _coerce_float(summary.get("available_margin"))
+            except Exception:
+                available_margin = None
+        if available_margin is None:
+            available_margin = equity
+        return equity, available_margin
+
+    def _enforce_venue_margin_guard(
+        self,
+        *,
+        symbol: str,
+        sizing: risk_engine.PositionSizingResult,
+        available_margin: Optional[float],
+    ) -> None:
+        venue = (getattr(self.gateway, "venue", "") or "").lower()
+        if venue != "hyperliquid":
+            return
+        margin = float(available_margin or 0.0)
+        if margin <= 0:
+            raise risk_engine.PositionSizingError(
+                "Available margin is non-positive for Hyperliquid. Transfer collateral to your perp account."
+            )
+        symbol_info = self.gateway.get_symbol_info(symbol) or {}
+        max_leverage = _coerce_float(symbol_info.get("maxLeverage"))
+        if max_leverage is None or max_leverage <= 0:
+            max_leverage = 1.0
+        required_initial_margin = float(sizing.notional) / float(max_leverage)
+        if required_initial_margin > margin:
+            raise risk_engine.PositionSizingError(
+                f"Required initial margin {required_initial_margin:.6f} exceeds available margin "
+                f"{margin:.6f} on Hyperliquid (notional={float(sizing.notional):.6f}, "
+                f"max_leverage={float(max_leverage):.2f}x)."
+            )
+        min_notional = float(self.hyperliquid_min_notional_usdc or 0.0)
+        if min_notional > 0 and float(sizing.notional) < min_notional:
+            raise risk_engine.PositionSizingError(
+                f"Order notional {sizing.notional:.6f} is below Hyperliquid minimum "
+                f"{min_notional:.2f} USDC."
+            )
 
     def _estimate_position_risk(self, position: Dict[str, Any]) -> Optional[float]:
         entry = _coerce_float(position.get("entry_price") or position.get("entryPrice"))
@@ -77,6 +127,59 @@ class OrderManager:
             return None
         loss = abs(entry - stop) * abs(size)
         return loss if loss > 0 else None
+
+    def _verify_hyperliquid_grouped_submit(
+        self,
+        *,
+        payload: Dict[str, Any],
+        order_resp: Dict[str, Any],
+    ) -> list[str]:
+        """
+        Validate grouped HL order submission (entry + attached TP/SL legs).
+        Returns warning strings when TP/SL legs were not clearly accepted.
+        """
+        venue = (getattr(self.gateway, "venue", "") or "").lower()
+        order_requests = payload.get("order_requests")
+        if venue != "hyperliquid" or not isinstance(order_requests, list) or len(order_requests) <= 1:
+            return []
+
+        raw = order_resp.get("raw") if isinstance(order_resp, dict) else None
+        response = raw.get("response") if isinstance(raw, dict) else None
+        data = response.get("data") if isinstance(response, dict) else None
+        statuses = data.get("statuses") if isinstance(data, dict) else None
+        if not isinstance(statuses, list):
+            return ["Hyperliquid grouped submit did not return per-leg statuses; TP/SL acceptance is unconfirmed."]
+
+        expected_legs = len(order_requests)
+        if len(statuses) < expected_legs:
+            return [
+                f"Hyperliquid grouped submit returned {len(statuses)}/{expected_legs} leg statuses; "
+                "TP/SL acceptance may be incomplete."
+            ]
+
+        def _accepted(status: Any) -> bool:
+            if isinstance(status, str):
+                return status == "waitingForFill"
+            if isinstance(status, dict):
+                if status.get("error"):
+                    return False
+                for key in ("resting", "filled", "success"):
+                    if status.get(key):
+                        return True
+            return False
+
+        failed: list[str] = []
+        for idx, status in enumerate(statuses[:expected_legs], start=1):
+            if _accepted(status):
+                continue
+            failed.append(f"leg{idx}={status}")
+
+        if failed:
+            return [
+                "Hyperliquid grouped submit did not fully accept all attached TP/SL legs: "
+                + ", ".join(failed[:3])
+            ]
+        return []
 
     def _rebuild_open_risk_estimates(
         self,
@@ -127,6 +230,13 @@ class OrderManager:
         if reduce_only is None:
             reduce_only = order.get("reduce_only")
         return bool(reduce_only)
+
+    def _include_in_open_orders(self, order: Dict[str, Any]) -> bool:
+        """Hide venue-specific conditional TP/SL orders from open-orders UI feed."""
+        venue = (getattr(self.gateway, "venue", "") or "").lower()
+        if venue == "hyperliquid" and self._is_tpsl_order(order):
+            return False
+        return True
 
     def _merge_tpsl_map(self, new_map: Dict[str, Dict[str, Optional[float]]], *, replace: bool = False) -> None:
         """Merge TP/SL values into the existing map, optionally replacing missing symbols."""
@@ -253,7 +363,7 @@ class OrderManager:
     ) -> Tuple[risk_engine.PositionSizingResult, list[str]]:
         """Run sizing without placing an order."""
         await self.gateway.ensure_configs_loaded()
-        equity = await self.gateway.get_account_equity()
+        equity, available_margin = await self._get_account_context()
         symbol_info = self.gateway.get_symbol_info(symbol)
         if not symbol_info:
             raise risk_engine.PositionSizingError(f"Symbol config unavailable for {symbol}; refresh configs and retry.")
@@ -266,6 +376,11 @@ class OrderManager:
             symbol_config=symbol_info,
             slippage_factor=self.slippage_factor,
             fee_buffer_pct=self.fee_buffer_pct,
+        )
+        self._enforce_venue_margin_guard(
+            symbol=symbol,
+            sizing=result,
+            available_margin=available_margin,
         )
         # logger.info(
         #     "preview_trade",
@@ -295,7 +410,7 @@ class OrderManager:
     ) -> Dict[str, Any]:
         """Re-run sizing and place order when safe."""
         await self.gateway.ensure_configs_loaded()
-        equity = await self.gateway.get_account_equity()
+        equity, available_margin = await self._get_account_context()
         symbol_info = self.gateway.get_symbol_info(symbol)
         if not symbol_info:
             raise risk_engine.PositionSizingError(f"Symbol config unavailable for {symbol}; refresh configs and retry.")
@@ -314,6 +429,11 @@ class OrderManager:
             symbol_config=symbol_info,
             slippage_factor=self.slippage_factor,
             fee_buffer_pct=self.fee_buffer_pct,
+        )
+        self._enforce_venue_margin_guard(
+            symbol=symbol,
+            sizing=sizing,
+            available_margin=available_margin,
         )
 
         if self.daily_loss_cap_pct is not None:
@@ -360,6 +480,12 @@ class OrderManager:
         if not exchange_order_id:
             raw = order_resp.get("raw")
             raise risk_engine.PositionSizingError(f"Order placement failed: {raw}")
+        warnings.extend(
+            self._verify_hyperliquid_grouped_submit(
+                payload=payload,
+                order_resp=order_resp,
+            )
+        )
 
         self.open_risk_estimates[exchange_order_id] = sizing.estimated_loss
 
@@ -392,6 +518,8 @@ class OrderManager:
         raw_orders = await self.gateway.get_open_orders()
         normalized: list[Dict[str, Any]] = []
         for order in raw_orders:
+            if not self._include_in_open_orders(order):
+                continue
             norm = self._normalize_order(order)
             oid = norm.get("id")
             cid = norm.get("client_id")
@@ -454,6 +582,12 @@ class OrderManager:
     async def get_account_summary(self) -> Dict[str, Any]:
         """Return account metrics for UI header."""
         return await self.gateway.get_account_summary()
+
+    async def get_stream_health(self) -> Dict[str, Any]:
+        """Return exchange stream/reconcile health metrics for diagnostics."""
+        getter = getattr(self.gateway, "get_stream_health_snapshot", None)
+        payload = getter() if callable(getter) else {}
+        return {"venue": (getattr(self.gateway, "venue", "unknown") or "unknown"), **(payload or {})}
 
     async def list_positions(self) -> list[Dict[str, Any]]:
         """Return open positions from gateway and update cache, merging TP/SL from open orders when available."""
@@ -970,7 +1104,7 @@ class OrderManager:
         return norm
 
     async def get_symbol_price(self, symbol: str) -> Dict[str, Any]:
-        price = await self.gateway.get_symbol_last_price(symbol)
+        price, _source = await self.gateway.get_reference_price(symbol)
         return {"symbol": symbol, "price": price}
 
     async def get_depth_summary(

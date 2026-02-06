@@ -627,6 +627,143 @@ html[data-theme="light"] .liquidity-chip.is-active {
   color: var(--muted);
 }
 
+.venue-switch-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.75rem;
+}
+
+.venue-switch-btn {
+  border: 1px solid transparent;
+  border-radius: 10px;
+  padding: 0;
+  background: var(--panel-strong);
+  cursor: pointer;
+  height: 84px;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease, transform 0.05s ease, opacity 0.15s ease, filter 0.15s ease;
+}
+
+.venue-switch-btn img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+#venue-btn-apex img {
+  object-fit: cover;
+}
+
+#venue-btn-hyperliquid {
+  padding: 0.5rem;
+}
+
+#venue-btn-hyperliquid img {
+  width: calc(100% - 12px);
+  height: calc(100% - 12px);
+  object-fit: contain;
+}
+
+.venue-switch-btn:not(.is-active) {
+  opacity: 0.32;
+  filter: saturate(0.28) brightness(0.68);
+}
+
+.venue-switch-btn:not(.is-active):hover {
+  opacity: 0.94;
+  filter: saturate(0.96) brightness(0.98);
+}
+
+html[data-theme="light"] .venue-switch-btn:not(.is-active) {
+  opacity: 0.42;
+  filter: saturate(0.42) brightness(0.78);
+}
+
+html[data-theme="light"] .venue-switch-btn:not(.is-active):hover {
+  opacity: 0.96;
+  filter: saturate(1) brightness(1);
+}
+
+.venue-switch-btn.is-active {
+  opacity: 1;
+  filter: none;
+  border-width: 2px;
+  border-color: rgba(255, 255, 255, 0.28);
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.22);
+}
+
+#venue-btn-hyperliquid.is-active {
+  border-color: rgba(79, 214, 180, 0.18);
+  box-shadow: 0 0 18px rgba(79, 214, 180, 0.16), 0 0 36px rgba(79, 214, 180, 0.08);
+}
+
+#venue-btn-apex.is-active {
+  border-color: rgba(236, 188, 67, 0.20);
+  box-shadow: 0 0 18px rgba(236, 188, 67, 0.17), 0 0 36px rgba(236, 188, 67, 0.09);
+}
+
+.venue-switch-btn:disabled {
+  opacity: 0.75;
+  cursor: wait;
+}
+
+.venue-switch-btn:active {
+  transform: translateY(1px);
+}
+
+.venue-switch-status {
+  margin-top: 0.6rem;
+}
+
+.stream-health-panel {
+  border-style: dashed;
+}
+
+.stream-health-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.75rem;
+}
+
+.stream-health-grid .summary-item {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--panel-strong);
+  padding: 0.65rem;
+}
+
+.stream-health-grid .summary-item + .summary-item::before {
+  display: none;
+}
+
+.stream-health-grid .value {
+  font-size: 1rem;
+}
+
+.stream-health-status {
+  margin-top: 0.75rem;
+  margin-bottom: 0.5rem;
+}
+
+.stream-health-raw {
+  margin: 0;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 0.75rem;
+  background: var(--panel-strong);
+  color: var(--text);
+  font-size: 0.8rem;
+  line-height: 1.35;
+  max-height: 240px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
 .theme-toggle {
   position: absolute;
   top: 1rem;
@@ -887,6 +1024,12 @@ html[data-theme="light"] .liquidity-chip.is-active {
 
 @media (max-width: 768px) {
   .account-summary {
+    grid-template-columns: 1fr;
+  }
+  .venue-switch-grid {
+    grid-template-columns: 1fr;
+  }
+  .stream-health-grid {
     grid-template-columns: 1fr;
   }
   .trade-grid {

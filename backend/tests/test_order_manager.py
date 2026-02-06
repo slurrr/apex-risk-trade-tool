@@ -13,16 +13,20 @@ from backend.trading.order_manager import OrderManager  # noqa: E402
 
 
 class FakeGateway:
-    def __init__(self, equity: float = 1000.0, orders=None, positions=None) -> None:
+    def __init__(self, equity: float = 1000.0, orders=None, positions=None, venue: str = "apex") -> None:
         self.symbols = {"BTC-USDT": {"tickSize": 0.5, "stepSize": 0.1, "minOrderSize": 0.5, "maxOrderSize": 100.0, "maxLeverage": 5}}
         self._equity = equity
         self.placed = []
         self._orders = orders or []
         self._positions = positions or []
+        self.venue = venue
         self.ensure_configs_loaded_called = False
 
     async def get_account_equity(self) -> float:
         return self._equity
+
+    async def get_account_summary(self):
+        return {"available_margin": self._equity, "total_equity": self._equity, "total_upnl": 0.0}
 
     def get_symbol_info(self, symbol: str):
         return self.symbols.get(symbol)
@@ -54,6 +58,9 @@ class FakeGateway:
 
     async def update_targets(self, **kwargs):
         return {"results": [{"payload": kwargs}]}
+
+    async def get_reference_price(self, symbol: str):
+        return 101.25, "mid"
 
 def test_execute_trade_happy_path():
     gateway = FakeGateway()
@@ -369,3 +376,208 @@ def test_reconcile_tpsl_single_cancel_clears_only_that_target():
     assert enriched[0]["stop_loss"] == 90.0
     assert manager.position_targets["BTC-USDT"]["stop_loss"] == 90.0
     assert "take_profit" not in manager.position_targets["BTC-USDT"]
+
+
+def test_get_symbol_price_uses_reference_price():
+    gateway = FakeGateway()
+    manager = OrderManager(gateway)
+    payload = asyncio.run(manager.get_symbol_price("BTC-USDT"))
+    assert payload == {"symbol": "BTC-USDT", "price": 101.25}
+
+
+def test_preview_trade_rejects_hyperliquid_min_notional():
+    gateway = FakeGateway(venue="hyperliquid")
+    manager = OrderManager(gateway, hyperliquid_min_notional_usdc=10.0)
+    with pytest.raises(PositionSizingError, match="below Hyperliquid minimum"):
+        asyncio.run(
+            manager.preview_trade(
+                symbol="BTC-USDT",
+                entry_price=5.0,
+                stop_price=4.5,
+                risk_pct=0.05,
+            )
+        )
+
+
+def test_execute_trade_rejects_hyperliquid_min_notional():
+    gateway = FakeGateway(venue="hyperliquid")
+    manager = OrderManager(gateway, hyperliquid_min_notional_usdc=10.0)
+    with pytest.raises(PositionSizingError, match="below Hyperliquid minimum"):
+        asyncio.run(
+            manager.execute_trade(
+                symbol="BTC-USDT",
+                entry_price=5.0,
+                stop_price=4.5,
+                risk_pct=0.05,
+            )
+        )
+    assert gateway.placed == []
+
+
+def test_execute_trade_hl_grouped_submit_warning_on_partial_leg_reject():
+    class _Gateway(FakeGateway):
+        def __init__(self):
+            super().__init__(venue="hyperliquid")
+
+        async def build_order_payload(self, **kwargs):
+            payload = {
+                "coin": "BTC",
+                "is_buy": True,
+                "price": kwargs["entry_price"],
+                "size": kwargs["size"],
+                "order_requests": [{}, {}, {}],
+                "grouping": "normalTpsl",
+            }
+            return payload, None
+
+        async def place_order(self, payload):
+            self.placed.append(payload)
+            return {
+                "exchange_order_id": "order-123",
+                "raw": {
+                    "response": {
+                        "data": {
+                            "statuses": [
+                                {"resting": {"oid": 1}},
+                                "waitingForFill",
+                                {"error": "bad trigger"},
+                            ]
+                        }
+                    }
+                },
+            }
+
+    gateway = _Gateway()
+    manager = OrderManager(gateway)
+    result = asyncio.run(
+        manager.execute_trade(
+            symbol="BTC-USDT",
+            entry_price=100,
+            stop_price=95,
+            risk_pct=1,
+            tp=110,
+        )
+    )
+    assert result["executed"] is True
+    assert any("did not fully accept all attached TP/SL legs" in w for w in result["warnings"])
+
+
+def test_execute_trade_hl_grouped_submit_no_warning_when_all_legs_accepted():
+    class _Gateway(FakeGateway):
+        def __init__(self):
+            super().__init__(venue="hyperliquid")
+
+        async def build_order_payload(self, **kwargs):
+            payload = {
+                "coin": "BTC",
+                "is_buy": True,
+                "price": kwargs["entry_price"],
+                "size": kwargs["size"],
+                "order_requests": [{}, {}, {}],
+                "grouping": "normalTpsl",
+            }
+            return payload, None
+
+        async def place_order(self, payload):
+            self.placed.append(payload)
+            return {
+                "exchange_order_id": "order-123",
+                "raw": {
+                    "response": {
+                        "data": {
+                            "statuses": [
+                                {"resting": {"oid": 1}},
+                                "waitingForFill",
+                                "waitingForFill",
+                            ]
+                        }
+                    }
+                },
+            }
+
+    gateway = _Gateway()
+    manager = OrderManager(gateway)
+    result = asyncio.run(
+        manager.execute_trade(
+            symbol="BTC-USDT",
+            entry_price=100,
+            stop_price=95,
+            risk_pct=1,
+            tp=110,
+        )
+    )
+    assert result["executed"] is True
+    assert not any("attached TP/SL legs" in w for w in result["warnings"])
+
+
+def test_list_orders_hyperliquid_hides_tpsl_orders():
+    gateway = FakeGateway(
+        venue="hyperliquid",
+        orders=[
+            {
+                "orderId": "entry-1",
+                "symbol": "BTC-USDT",
+                "side": "BUY",
+                "size": "0.01",
+                "status": "OPEN",
+                "type": "LIMIT",
+                "reduceOnly": False,
+            },
+            {
+                "orderId": "sl-1",
+                "symbol": "BTC-USDT",
+                "side": "SELL",
+                "size": "0.01",
+                "status": "OPEN",
+                "type": "STOP_MARKET",
+                "reduceOnly": True,
+                "isPositionTpsl": True,
+            },
+        ],
+    )
+    manager = OrderManager(gateway)
+    orders = asyncio.run(manager.list_orders())
+    assert len(orders) == 1
+    assert orders[0]["id"] == "entry-1"
+
+
+def test_preview_trade_hyperliquid_margin_guard_uses_leverage():
+    class _Gateway(FakeGateway):
+        async def get_account_summary(self):
+            # Small free margin, but leverage should permit larger notional.
+            return {"available_margin": 100.0, "total_equity": self._equity, "total_upnl": 0.0}
+
+    gateway = _Gateway(equity=1000.0, venue="hyperliquid")
+    gateway.symbols["BTC-USDT"]["maxLeverage"] = 20
+    manager = OrderManager(gateway, hyperliquid_min_notional_usdc=10.0)
+
+    result, _warnings = asyncio.run(
+        manager.preview_trade(
+            symbol="BTC-USDT",
+            entry_price=100.0,
+            stop_price=95.0,
+            risk_pct=1.0,
+        )
+    )
+    # notional ~= 200, required initial margin ~= 10 at 20x leverage
+    assert result.notional > 100.0
+
+
+def test_preview_trade_hyperliquid_margin_guard_blocks_when_initial_margin_too_high():
+    class _Gateway(FakeGateway):
+        async def get_account_summary(self):
+            return {"available_margin": 50.0, "total_equity": self._equity, "total_upnl": 0.0}
+
+    gateway = _Gateway(equity=1000.0, venue="hyperliquid")
+    gateway.symbols["BTC-USDT"]["maxLeverage"] = 2
+    manager = OrderManager(gateway, hyperliquid_min_notional_usdc=10.0)
+
+    with pytest.raises(PositionSizingError, match="Required initial margin"):
+        asyncio.run(
+            manager.preview_trade(
+                symbol="BTC-USDT",
+                entry_price=100.0,
+                stop_price=95.0,
+                risk_pct=1.0,
+            )
+        )

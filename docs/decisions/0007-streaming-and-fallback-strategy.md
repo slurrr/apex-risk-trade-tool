@@ -1,4 +1,4 @@
-# Decision Record: Streaming Strategy & REST Fallback (Hyperliquid)
+# Decision Record: Streaming Strategy (WS-First) (Hyperliquid)
 
 **ID**: 0007-streaming-and-fallback-strategy  
 **Date**: 2026-02-06  
@@ -7,34 +7,34 @@
 
 ## Context
 
-The app’s UI uses `/ws/stream` for live updates (orders, positions, account). ApeX support already uses WS feeds with REST fallback.
+The app’s UI uses `/ws/stream` for live updates (orders, positions, account).
 
 Hyperliquid parity requires:
 - live-enough updates for a single operator
 - robust behavior under WS disconnects
 - correct TP/SL reconciliation signals
 
-We must decide what is “authoritative” (WS vs REST) and how to converge state.
+We must decide what is “authoritative” for Hyperliquid streaming during initial parity rollout.
 
 ## Decision
 
-- Hyperliquid will support WS streaming in Phase 5, but correctness must not depend solely on WS.
+- Hyperliquid will use WS streaming as the primary and authoritative source for live monitor state in Phase 5.
 - Source-of-truth policy:
-  - WS is used to keep caches “hot” and drive UI updates quickly.
-  - REST snapshots are used as the authoritative fallback for reconciliation, especially after disconnects or on-demand resync.
+  - WS topics feed caches and UI updates directly.
+  - No automatic REST reconciliation fallback is required in the initial Hyperliquid rollout.
 - Reconnect policy:
   - on WS disconnect, attempt reconnect with backoff
-  - on reconnect, resubscribe and then trigger a REST snapshot refresh to reconcile state
+  - on reconnect, resubscribe to required topics and continue normal event processing
 - Event normalization:
   - HL events will be mapped into the same message types the UI expects: `account`, `orders`, `orders_raw` (or equivalent), `positions`.
-- Minimum fallback guarantee:
-  - if WS is disabled/unavailable, periodic REST refresh (or manual refresh endpoints) still provides correct orders/positions/account state.
+- Runtime assumption:
+  - if WS is unavailable, monitoring quality degrades until WS is restored.
 
 ## Options Considered
 
 ### Option A — WS-only, no REST reconcile (chosen)
 - Pros: lower REST load; simple update flow.
-- Cons: incorrect under disconnects; poor reliability; not acceptable for trading ops.
+- Cons: temporary blind spots during outages until reconnect succeeds.
 
 ### Option B — REST polling only (no WS)
 - Pros: simplest correctness story.
@@ -46,7 +46,6 @@ We must decide what is “authoritative” (WS vs REST) and how to converge stat
 
 ## Consequences
 
-- Need explicit resync hooks after reconnects and on suspicious gaps.
 - Need to define the minimal HL WS topic set for:
   - account updates (or periodic account refresh)
   - order updates/fills
@@ -57,9 +56,8 @@ We must decide what is “authoritative” (WS vs REST) and how to converge stat
 
 - Manual:
   - start with WS enabled; verify UI updates live
-  - simulate WS disconnect; verify UI continues to work with REST refresh and resync after reconnect
+  - simulate WS disconnect; verify reconnect backoff/resubscribe and recovery when stream returns
 - Integration:
-  - log WS reconnect events and ensure a REST reconciliation is triggered
+  - log WS reconnect/resubscribe events and message flow recovery
 - Regression:
   - switching venues stops old streams and prevents cross-venue event leakage
-
