@@ -79,6 +79,15 @@ class Settings(BaseSettings):
     apex_rest_retry_jitter_seconds: float = Field(0.2, env="APEX_REST_RETRY_JITTER_SECONDS")
     apex_positions_empty_stale_seconds: float = Field(12.0, env="APEX_POSITIONS_EMPTY_STALE_SECONDS")
     apex_orders_empty_stale_seconds: float = Field(12.0, env="APEX_ORDERS_EMPTY_STALE_SECONDS")
+    apex_reconcile_audit_interval_seconds: float = Field(900.0, env="APEX_RECONCILE_AUDIT_INTERVAL_SECONDS")
+    apex_reconcile_stale_stream_seconds: float = Field(90.0, env="APEX_RECONCILE_STALE_STREAM_SECONDS")
+    apex_reconcile_min_gap_seconds: float = Field(5.0, env="APEX_RECONCILE_MIN_GAP_SECONDS")
+    apex_reconcile_alert_window_seconds: float = Field(300.0, env="APEX_RECONCILE_ALERT_WINDOW_SECONDS")
+    apex_reconcile_alert_max_per_window: int = Field(3, env="APEX_RECONCILE_ALERT_MAX_PER_WINDOW")
+    apex_poll_orders_interval_seconds: float = Field(5.0, env="APEX_POLL_ORDERS_INTERVAL_SECONDS")
+    apex_poll_positions_interval_seconds: float = Field(5.0, env="APEX_POLL_POSITIONS_INTERVAL_SECONDS")
+    apex_poll_account_interval_seconds: float = Field(15.0, env="APEX_POLL_ACCOUNT_INTERVAL_SECONDS")
+    apex_local_hint_ttl_seconds: float = Field(20.0, env="APEX_LOCAL_HINT_TTL_SECONDS")
     slippage_factor: float = Field(0.0, env="SLIPPAGE_FACTOR")
     fee_buffer_pct: float = Field(0.0, env="FEE_BUFFER_PCT")
     atr_timeframe: str = Field(
@@ -145,6 +154,15 @@ class Settings(BaseSettings):
         "apex_rest_retry_jitter_seconds",
         "apex_positions_empty_stale_seconds",
         "apex_orders_empty_stale_seconds",
+        "apex_reconcile_audit_interval_seconds",
+        "apex_reconcile_stale_stream_seconds",
+        "apex_reconcile_min_gap_seconds",
+        "apex_reconcile_alert_window_seconds",
+        "apex_reconcile_alert_max_per_window",
+        "apex_poll_orders_interval_seconds",
+        "apex_poll_positions_interval_seconds",
+        "apex_poll_account_interval_seconds",
+        "apex_local_hint_ttl_seconds",
         "hyperliquid_reconcile_audit_interval_seconds",
         "hyperliquid_reconcile_stale_stream_seconds",
         "hyperliquid_reconcile_order_timeout_seconds",
@@ -156,7 +174,7 @@ class Settings(BaseSettings):
     @classmethod
     def validate_non_negative(cls, value: float) -> float:
         if value < 0:
-            raise ValueError("Apex REST settings must be non-negative")
+            raise ValueError("Timing and retry settings must be non-negative")
         return value
 
 

@@ -43,6 +43,20 @@ Backend + static UI for previewing, executing, and monitoring ApeX trades with r
   - Hidden by default and enabled only when `localStorage.dev_stream_health = "1"` in browser devtools.
   - Polls `/api/stream/health` every 15s and supports manual refresh.
 
+## ApeX Stability Controls
+- ApeX reconcile is reason-based (not tight-loop polling) with anti-storm min-gap:
+  - `APEX_RECONCILE_AUDIT_INTERVAL_SECONDS` (default `900`)
+  - `APEX_RECONCILE_STALE_STREAM_SECONDS` (default `90`)
+  - `APEX_RECONCILE_MIN_GAP_SECONDS` (default `5`)
+  - `APEX_RECONCILE_ALERT_WINDOW_SECONDS` (default `300`)
+  - `APEX_RECONCILE_ALERT_MAX_PER_WINDOW` (default `3`)
+- When `APEX_ENABLE_WS=false`, ApeX runs in degraded mode and `/ws/stream` is fed by periodic REST polling:
+  - `APEX_POLL_ORDERS_INTERVAL_SECONDS` (default `5`)
+  - `APEX_POLL_POSITIONS_INTERVAL_SECONDS` (default `5`)
+  - `APEX_POLL_ACCOUNT_INTERVAL_SECONDS` (default `15`)
+- ApeX TP/SL local hints now expire if not confirmed by authoritative stream/cache:
+  - `APEX_LOCAL_HINT_TTL_SECONDS` (default `20`)
+
 ## Notes
 - Network is validated and defaults to testnet; unexpected networks log a warning on startup.
 - UI/assets contain no secrets; keep API keys only in local `.env`.

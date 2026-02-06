@@ -183,6 +183,12 @@ async def stream_updates(
                 except Exception:
                     pass
                 if refresh_needed and is_apex_gateway:
+                    flap_recorder = getattr(gateway, "record_tpsl_flap_suspected", None)
+                    if callable(flap_recorder):
+                        try:
+                            flap_recorder()
+                        except Exception:
+                            pass
                     await _force_tpsl_refresh()
                 # logger.info(
                 #     "ws_orders_raw_tpsl_map_built",

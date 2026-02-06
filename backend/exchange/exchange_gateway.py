@@ -3,6 +3,7 @@ import random
 import time
 import uuid
 import threading
+from collections import defaultdict, deque
 from decimal import Decimal, ROUND_DOWN
 from typing import Any, Dict, Optional, Tuple, List, Any as AnyType
 
@@ -44,12 +45,65 @@ class ExchangeGateway:
         self._resubscribe_task: Optional[asyncio.Task] = None
         self._order_refresh_task: Optional[asyncio.Task] = None
         self._positions_refresh_task: Optional[asyncio.Task] = None
+        self._orders_poll_task: Optional[asyncio.Task] = None
+        self._positions_poll_task: Optional[asyncio.Task] = None
         self._account_refresh_task: Optional[asyncio.Task] = None
         self._account_refresh_interval: float = 15.0
+        self._orders_poll_interval_seconds = max(
+            1.0,
+            float(getattr(settings, "apex_poll_orders_interval_seconds", 5.0) or 5.0),
+        )
+        self._positions_poll_interval_seconds = max(
+            1.0,
+            float(getattr(settings, "apex_poll_positions_interval_seconds", 5.0) or 5.0),
+        )
+        self._account_poll_interval_seconds = max(
+            1.0,
+            float(getattr(settings, "apex_poll_account_interval_seconds", 15.0) or 15.0),
+        )
         self._price_cache: dict[str, dict[str, Any]] = {}
         self._last_order_event_ts: float = time.time()
+        self._last_private_ws_event_ts: float = 0.0
         self._ws_snapshot_written: bool = False
         self._tpsl_client_ids: Dict[str, set[str]] = {}
+        self._reconcile_audit_interval = max(
+            0.0,
+            float(getattr(settings, "apex_reconcile_audit_interval_seconds", 900.0) or 0.0),
+        )
+        self._reconcile_stale_stream_seconds = max(
+            0.0,
+            float(getattr(settings, "apex_reconcile_stale_stream_seconds", 90.0) or 0.0),
+        )
+        self._reconcile_min_gap_seconds = max(
+            0.0,
+            float(getattr(settings, "apex_reconcile_min_gap_seconds", 5.0) or 0.0),
+        )
+        self._reconcile_alert_window_seconds = max(
+            0.0,
+            float(getattr(settings, "apex_reconcile_alert_window_seconds", 300.0) or 0.0),
+        )
+        self._reconcile_alert_max_per_window = max(
+            1,
+            int(getattr(settings, "apex_reconcile_alert_max_per_window", 3) or 1),
+        )
+        self._reconcile_lock = asyncio.Lock()
+        self._reconcile_count = 0
+        self._last_reconcile_ts = 0.0
+        self._last_reconcile_reason: Optional[str] = None
+        self._last_reconcile_error: Optional[str] = None
+        self._reconcile_reason_counts: dict[str, int] = {}
+        self._reconcile_reason_events: dict[str, deque[float]] = defaultdict(deque)
+        self._fallback_reason_events: dict[str, deque[float]] = defaultdict(deque)
+        self._last_alert_by_key: dict[str, float] = {}
+        self._alert_min_interval_seconds = 60.0
+        self._fallback_rest_orders_used_count = 0
+        self._fallback_rest_positions_used_count = 0
+        self._empty_snapshot_protected_count = 0
+        self._tpsl_flap_suspected_count = 0
+        self._degraded_mode_warning_emitted = False
+        self._stream_started_at = 0.0
+        self._suspicious_orders_empty_pending = False
+        self._suspicious_positions_empty_pending = False
         self._lock = threading.Lock()
         fallback_public = public_client if public_client is not None else (client if client is not None else None)
         self.apex_client = ApexClient(settings, private_client=client, public_client=fallback_public)
@@ -184,6 +238,9 @@ class ExchangeGateway:
         if not self.apex_enable_ws or self._ws_running:
             return
         self._ws_running = True
+        self._stream_started_at = time.time()
+        if self._last_reconcile_ts <= 0:
+            self._last_reconcile_ts = self._stream_started_at
         await asyncio.to_thread(self._start_public_stream)
         await asyncio.to_thread(self._start_private_stream)
         if self._loop and (self._reconcile_task is None or self._reconcile_task.done()):
@@ -202,6 +259,8 @@ class ExchangeGateway:
             self._resubscribe_task,
             self._order_refresh_task,
             self._positions_refresh_task,
+            self._orders_poll_task,
+            self._positions_poll_task,
             self._account_refresh_task,
         ):
             if task and not task.done():
@@ -211,6 +270,8 @@ class ExchangeGateway:
         self._resubscribe_task = None
         self._order_refresh_task = None
         self._positions_refresh_task = None
+        self._orders_poll_task = None
+        self._positions_poll_task = None
         self._account_refresh_task = None
         for ws_client in (self._ws_public, self._ws_private):
             if not ws_client:
@@ -233,6 +294,10 @@ class ExchangeGateway:
             self._ticker_cache.clear()
             self._price_cache.clear()
             self._subscribers.clear()
+            self._last_private_ws_event_ts = 0.0
+            self._last_order_event_ts = time.time()
+            self._suspicious_orders_empty_pending = False
+            self._suspicious_positions_empty_pending = False
 
     def _start_public_stream(self) -> None:
         try:
@@ -319,14 +384,53 @@ class ExchangeGateway:
             return
         if self._account_refresh_task is None or self._account_refresh_task.done():
             self._account_refresh_task = self._loop.create_task(self._account_refresh_loop())
+        if not self.apex_enable_ws:
+            if not self._degraded_mode_warning_emitted:
+                self._degraded_mode_warning_emitted = True
+                logger.warning(
+                    "apex_ws_disabled_degraded_mode",
+                    extra={
+                        "event": "apex_ws_disabled_degraded_mode",
+                        "poll_orders_interval_seconds": self._orders_poll_interval_seconds,
+                        "poll_positions_interval_seconds": self._positions_poll_interval_seconds,
+                        "poll_account_interval_seconds": self._account_poll_interval_seconds,
+                    },
+                )
+            if self._orders_poll_task is None or self._orders_poll_task.done():
+                self._orders_poll_task = self._loop.create_task(self._orders_poll_loop())
+            if self._positions_poll_task is None or self._positions_poll_task.done():
+                self._positions_poll_task = self._loop.create_task(self._positions_poll_loop())
 
     async def _account_refresh_loop(self) -> None:
         """Periodically refresh account summary so UI receives live updates."""
-        interval = max(5.0, float(self._account_refresh_interval or 15.0))
+        default_interval = self._account_poll_interval_seconds if not self.apex_enable_ws else 15.0
+        interval = max(1.0, float(self._account_refresh_interval or default_interval))
         while True:
             try:
                 await asyncio.sleep(interval)
                 await self.get_account_equity()
+            except asyncio.CancelledError:
+                break
+            except Exception:
+                continue
+
+    async def _orders_poll_loop(self) -> None:
+        interval = max(1.0, float(self._orders_poll_interval_seconds or 5.0))
+        while True:
+            try:
+                await asyncio.sleep(interval)
+                await self.get_open_orders(force_rest=True, publish=True)
+            except asyncio.CancelledError:
+                break
+            except Exception:
+                continue
+
+    async def _positions_poll_loop(self) -> None:
+        interval = max(1.0, float(self._positions_poll_interval_seconds or 5.0))
+        while True:
+            try:
+                await asyncio.sleep(interval)
+                await self.get_open_positions(force_rest=True, publish=True)
             except asyncio.CancelledError:
                 break
             except Exception:
@@ -475,6 +579,9 @@ class ExchangeGateway:
             payload = message.get("contents") or message.get("data") or message
         if not isinstance(payload, dict):
             return
+        now = time.time()
+        self._last_private_ws_event_ts = now
+        self._last_order_event_ts = now
         accounts = payload.get("accounts") or payload.get("account") or payload.get("contractAccounts") or []
         positions, has_positions_key = self._extract_positions(payload)
         orders_raw = payload.get("orders") or payload.get("orderList") or []
@@ -1243,10 +1350,161 @@ class ExchangeGateway:
             logger.exception("failed to fetch account equity", extra={"error": str(exc)})
             raise
 
+    def _record_window_event(self, bucket: dict[str, deque[float]], key: str, ts: Optional[float] = None) -> int:
+        now = ts if ts is not None else time.time()
+        window = self._reconcile_alert_window_seconds
+        q = bucket[key]
+        q.append(now)
+        if window > 0:
+            while q and (now - q[0]) > window:
+                q.popleft()
+        return len(q)
+
+    def _maybe_alert_rate(self, *, key: str, event: str, reason: str, count: int, threshold: int) -> None:
+        if count < threshold:
+            return
+        now = time.time()
+        last = self._last_alert_by_key.get(key, 0.0)
+        if (now - last) < self._alert_min_interval_seconds:
+            return
+        self._last_alert_by_key[key] = now
+        logger.warning(
+            event,
+            extra={
+                "event": event,
+                "venue": "apex",
+                "reason": reason,
+                "count": count,
+                "window_seconds": self._reconcile_alert_window_seconds,
+                "threshold": threshold,
+            },
+        )
+
+    def _record_fallback_usage(self, reason: str) -> None:
+        count = self._record_window_event(self._fallback_reason_events, reason)
+        self._maybe_alert_rate(
+            key=f"apex_fallback:{reason}",
+            event="apex_fallback_rest_used_frequently",
+            reason=reason,
+            count=count,
+            threshold=3,
+        )
+
+    def _record_reconcile_reason_event(self, reason: str) -> None:
+        count = self._record_window_event(self._reconcile_reason_events, reason)
+        self._maybe_alert_rate(
+            key=f"apex_reconcile:{reason}",
+            event="apex_reconcile_frequent",
+            reason=reason,
+            count=count,
+            threshold=max(1, self._reconcile_alert_max_per_window),
+        )
+
+    def _stream_has_open_state(self) -> bool:
+        return bool(self._ws_orders or self._ws_positions or self._ws_orders_raw)
+
+    def record_tpsl_flap_suspected(self) -> None:
+        self._tpsl_flap_suspected_count += 1
+
+    def record_tpsl_hint_unconfirmed(self) -> None:
+        self._reconcile_reason_counts["hint_unconfirmed"] = self._reconcile_reason_counts.get("hint_unconfirmed", 0) + 1
+
+    def get_stream_health_snapshot(self) -> dict[str, Any]:
+        now = time.time()
+        last_private_age = (now - self._last_private_ws_event_ts) if self._last_private_ws_event_ts else None
+        last_reconcile_age = (now - self._last_reconcile_ts) if self._last_reconcile_ts else None
+        tpsl_symbols = len(
+            {
+                self._normalize_symbol_value(o.get("symbol") or o.get("market"))
+                for o in (self._ws_orders_tpsl or [])
+                if isinstance(o, dict)
+            }
+        )
+        payload = {
+            "ws_alive": bool(self.apex_enable_ws and self._ws_running),
+            "last_private_ws_event_age_seconds": last_private_age,
+            "reconcile_count": int(self._reconcile_count),
+            "last_reconcile_age_seconds": last_reconcile_age,
+            "last_reconcile_reason": self._last_reconcile_reason,
+            "last_reconcile_error": self._last_reconcile_error,
+            "pending_submitted_orders": 0,
+            "oldest_pending_order_age_seconds": None,
+            "reconcile_reason_counts": dict(self._reconcile_reason_counts),
+            "fallback_rest_orders_used_count": int(self._fallback_rest_orders_used_count),
+            "fallback_rest_positions_used_count": int(self._fallback_rest_positions_used_count),
+            "empty_snapshot_protected_count": int(self._empty_snapshot_protected_count),
+            "tpsl_symbols_tracked": tpsl_symbols,
+            "tpsl_flap_suspected_count": int(self._tpsl_flap_suspected_count),
+        }
+        if not self.apex_enable_ws:
+            payload["poll_orders_interval_seconds"] = self._orders_poll_interval_seconds
+            payload["poll_positions_interval_seconds"] = self._positions_poll_interval_seconds
+            payload["poll_account_interval_seconds"] = self._account_poll_interval_seconds
+        return payload
+
+    def _collect_reconcile_reasons(self) -> list[str]:
+        reasons: list[str] = []
+        now = time.time()
+        if self._reconcile_audit_interval > 0 and (now - self._last_reconcile_ts) >= self._reconcile_audit_interval:
+            reasons.append("periodic_audit")
+        if self._reconcile_stale_stream_seconds > 0 and self._stream_has_open_state():
+            reference = self._last_private_ws_event_ts or self._stream_started_at
+            if reference > 0 and (now - reference) >= self._reconcile_stale_stream_seconds:
+                reasons.append("ws_stale")
+        if self._suspicious_orders_empty_pending:
+            reasons.append("orders_empty_suspicious")
+        if self._suspicious_positions_empty_pending:
+            reasons.append("positions_empty_suspicious")
+        return reasons
+
+    async def _audit_reconcile(self, *, reason: str, force: bool = False) -> bool:
+        if not self.apex_enable_ws:
+            return False
+        if self._reconcile_lock.locked():
+            return False
+        now = time.time()
+        if not force and self._reconcile_min_gap_seconds > 0 and (now - self._last_reconcile_ts) < self._reconcile_min_gap_seconds:
+            return False
+        async with self._reconcile_lock:
+            started = time.time()
+            try:
+                await self.get_open_orders(force_rest=True, publish=True)
+                await self.get_open_positions(force_rest=True, publish=True)
+                finished = time.time()
+                self._last_reconcile_ts = finished
+                self._last_reconcile_reason = reason
+                self._last_reconcile_error = None
+                self._reconcile_count += 1
+                self._reconcile_reason_counts[reason] = self._reconcile_reason_counts.get(reason, 0) + 1
+                self._record_reconcile_reason_event(reason)
+                self._suspicious_orders_empty_pending = False
+                self._suspicious_positions_empty_pending = False
+                logger.info(
+                    "apex_reconcile_completed",
+                    extra={
+                        "event": "apex_reconcile_completed",
+                        "venue": "apex",
+                        "reason": reason,
+                        "duration_ms": round((finished - started) * 1000, 2),
+                        "orders_count": len(self._ws_orders),
+                        "positions_count": len(self._ws_positions),
+                    },
+                )
+                return True
+            except Exception as exc:
+                self._last_reconcile_error = str(exc)
+                logger.warning(
+                    "apex_reconcile_failed",
+                    extra={"event": "apex_reconcile_failed", "venue": "apex", "reason": reason, "error": str(exc)},
+                )
+                return False
+
     async def get_open_positions(self, *, force_rest: bool = False, publish: bool = False) -> list[Dict[str, Any]]:
         with self._lock:
             if self._ws_positions and not force_rest:
                 return list(self._ws_positions.values())
+        self._fallback_rest_positions_used_count += 1
+        self._record_fallback_usage("positions")
         try:
             resp = await self._call_private_rest("get_account_v3", self._client.get_account_v3)
             payload = self._unwrap_payload(resp)
@@ -1260,15 +1518,21 @@ class ExchangeGateway:
                 if mapped:
                     self._ws_positions = mapped
                     self._positions_empty_since = None
+                    self._suspicious_positions_empty_pending = False
                 elif has_key:
                     if self._ws_positions and self._positions_empty_stale_seconds > 0:
                         if self._positions_empty_since is None:
                             self._positions_empty_since = now
                             keep_cached = True
+                            self._suspicious_positions_empty_pending = True
+                            self._empty_snapshot_protected_count += 1
                         elif (now - self._positions_empty_since) < self._positions_empty_stale_seconds:
                             keep_cached = True
+                            self._suspicious_positions_empty_pending = True
+                            self._empty_snapshot_protected_count += 1
                         else:
                             self._positions_empty_since = None
+                            self._suspicious_positions_empty_pending = False
                     if not keep_cached:
                         self._ws_positions = {}
                         self._recalculate_total_upnl_locked()
@@ -1294,6 +1558,8 @@ class ExchangeGateway:
         with self._lock:
             if self._ws_orders and not force_rest:
                 return list(self._ws_orders.values())
+        self._fallback_rest_orders_used_count += 1
+        self._record_fallback_usage("orders")
         try:
             resp = await self._call_private_rest("open_orders_v3", self._client.open_orders_v3)
             payload = self._unwrap_payload(resp)
@@ -1336,14 +1602,20 @@ class ExchangeGateway:
                 if mapped:
                     self._ws_orders = mapped
                     self._orders_empty_since = None
+                    self._suspicious_orders_empty_pending = False
                 elif empty_snapshot and self._ws_orders and self._orders_empty_stale_seconds > 0:
                     if self._orders_empty_since is None:
                         self._orders_empty_since = now
                         keep_cached = True
+                        self._suspicious_orders_empty_pending = True
+                        self._empty_snapshot_protected_count += 1
                     elif (now - self._orders_empty_since) < self._orders_empty_stale_seconds:
                         keep_cached = True
+                        self._suspicious_orders_empty_pending = True
+                        self._empty_snapshot_protected_count += 1
                     else:
                         self._orders_empty_since = None
+                        self._suspicious_orders_empty_pending = False
                     if not keep_cached:
                         self._ws_orders = {}
                 elif not force_rest and self._ws_orders:
@@ -1374,6 +1646,7 @@ class ExchangeGateway:
         Fetch account snapshot via REST (get_account_v3) to refresh TP/SL orders when WS hasn't delivered yet.
         Returns the parsed orders list (or empty).
         """
+        self._record_fallback_usage("account_orders")
         try:
             resp = await self._call_private_rest("get_account_v3", self._client.get_account_v3)
             payload = self._unwrap_payload(resp)
@@ -1412,12 +1685,16 @@ class ExchangeGateway:
             return []
 
     async def _reconcile_orders_loop(self) -> None:
-        """Periodic reconciliation to keep open orders in sync when WS deltas are missed."""
+        """Reason-driven reconcile loop (verification, not primary state source)."""
         while self._ws_running and self.apex_enable_ws:
             try:
-                await asyncio.sleep(3)
-                await self.get_open_orders(force_rest=True, publish=True)
-                await self.get_open_positions(force_rest=True, publish=True)
+                await asyncio.sleep(5)
+                for reason in self._collect_reconcile_reasons():
+                    await self._audit_reconcile(reason=reason)
+                    # enforce one reconcile attempt per cycle to avoid bursts
+                    break
+            except asyncio.CancelledError:
+                break
             except Exception:
                 continue
 
@@ -1464,7 +1741,7 @@ class ExchangeGateway:
                 continue
 
     async def _resubscribe_loop(self) -> None:
-        """Resubscribe to private topics if no order events received for a while."""
+        """Resubscribe private stream when idle and trigger reconnect reconcile."""
         while self._ws_running and self.apex_enable_ws:
             try:
                 await asyncio.sleep(30)
@@ -1472,9 +1749,13 @@ class ExchangeGateway:
                 if idle > 60 and self._ws_private:
                     try:
                         self._ws_private.account_info_stream_v3(self._handle_account_stream)
+                        self._last_private_ws_event_ts = time.time()
+                        await self._audit_reconcile(reason="ws_reconnect", force=False)
                         # logger.info("ws_resubscribe", extra={"event": "ws_resubscribe", "topic": "ws_zk_accounts_v3"})
                     except Exception as exc:  # pragma: no cover
                         logger.warning("ws_resubscribe_failed", extra={"error": str(exc)})
+            except asyncio.CancelledError:
+                break
             except Exception:
                 continue
 

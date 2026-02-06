@@ -51,6 +51,10 @@ class FakeSettings:
     apex_api_secret = "secret"
     apex_passphrase = "passphrase"
     apex_http_endpoint = None
+    apex_enable_ws = False
+    apex_poll_orders_interval_seconds = 5.0
+    apex_poll_positions_interval_seconds = 5.0
+    apex_poll_account_interval_seconds = 15.0
 
 
 class FakeClient:
@@ -185,6 +189,30 @@ def test_get_reference_price_prefers_mid_then_caches():
     cached_price, cached_source = run(gateway.get_reference_price("BTC-USDT"))
     assert cached_price == 100.0
     assert cached_source in {"mid", "cache"}
+
+
+def test_apex_stream_health_snapshot_has_parity_fields():
+    gateway = make_apex_gateway(FakeClient())
+    snapshot = gateway.get_stream_health_snapshot()
+    assert snapshot["ws_alive"] is False
+    assert "reconcile_count" in snapshot
+    assert "last_reconcile_reason" in snapshot
+    assert "reconcile_reason_counts" in snapshot
+    assert snapshot["pending_submitted_orders"] == 0
+    assert snapshot["fallback_rest_orders_used_count"] >= 0
+    assert snapshot["fallback_rest_positions_used_count"] >= 0
+    assert snapshot["poll_orders_interval_seconds"] == 5.0
+    assert snapshot["poll_positions_interval_seconds"] == 5.0
+    assert snapshot["poll_account_interval_seconds"] == 15.0
+
+
+def test_apex_stream_health_fallback_counters_increment_on_rest_reads():
+    gateway = make_apex_gateway(FakeClient())
+    run(gateway.get_open_orders(force_rest=True))
+    run(gateway.get_open_positions(force_rest=True))
+    snapshot = gateway.get_stream_health_snapshot()
+    assert snapshot["fallback_rest_orders_used_count"] >= 1
+    assert snapshot["fallback_rest_positions_used_count"] >= 1
 
 
 class FakeHyperliquidGateway(HyperliquidGateway):

@@ -21,6 +21,7 @@ class FakeGateway:
         self._positions = positions or []
         self.venue = venue
         self.ensure_configs_loaded_called = False
+        self.hint_unconfirmed_count = 0
 
     async def get_account_equity(self) -> float:
         return self._equity
@@ -61,6 +62,9 @@ class FakeGateway:
 
     async def get_reference_price(self, symbol: str):
         return 101.25, "mid"
+
+    def record_tpsl_hint_unconfirmed(self):
+        self.hint_unconfirmed_count += 1
 
 def test_execute_trade_happy_path():
     gateway = FakeGateway()
@@ -541,6 +545,58 @@ def test_list_orders_hyperliquid_hides_tpsl_orders():
     assert orders[0]["id"] == "entry-1"
 
 
+def test_list_orders_apex_hides_tpsl_orders():
+    gateway = FakeGateway(
+        venue="apex",
+        orders=[
+            {
+                "orderId": "entry-1",
+                "symbol": "BTC-USDT",
+                "side": "BUY",
+                "size": "0.01",
+                "status": "OPEN",
+                "type": "LIMIT",
+                "reduceOnly": False,
+            },
+            {
+                "orderId": "sl-1",
+                "symbol": "BTC-USDT",
+                "side": "SELL",
+                "size": "0.01",
+                "status": "OPEN",
+                "type": "STOP_MARKET",
+                "reduceOnly": True,
+                "isPositionTpsl": True,
+            },
+        ],
+    )
+    manager = OrderManager(gateway)
+    orders = asyncio.run(manager.list_orders())
+    assert len(orders) == 1
+    assert orders[0]["id"] == "entry-1"
+
+
+def test_list_positions_apex_backfills_tpsl_without_manual_refresh():
+    gateway = FakeGateway(
+        venue="apex",
+        positions=[
+            {"positionId": "pos-1", "symbol": "BTC-USDT", "positionSide": "LONG", "size": "1", "entryPrice": "100"},
+        ],
+        orders=[
+            {
+                "symbol": "BTC-USDT",
+                "type": "STOP_MARKET",
+                "isPositionTpsl": True,
+                "triggerPrice": "90",
+                "status": "UNTRIGGERED",
+            }
+        ],
+    )
+    manager = OrderManager(gateway)
+    positions = asyncio.run(manager.list_positions())
+    assert positions[0]["stop_loss"] == 90.0
+
+
 def test_preview_trade_hyperliquid_margin_guard_uses_leverage():
     class _Gateway(FakeGateway):
         async def get_account_summary(self):
@@ -581,3 +637,67 @@ def test_preview_trade_hyperliquid_margin_guard_blocks_when_initial_margin_too_h
                 risk_pct=1.0,
             )
         )
+
+
+def test_tpsl_local_hint_takes_precedence_then_expires_to_ws_value():
+    gateway = FakeGateway()
+    manager = OrderManager(gateway)
+    manager._tpsl_hint_ttl_seconds = 0.01
+    manager._tpsl_targets_by_symbol["BTC-USDT"] = {"take_profit": 120.0}
+    manager._set_local_tpsl_hint(symbol="BTC-USDT", take_profit=125.0)
+
+    pos = manager._normalize_position(
+        {
+            "symbol": "BTC-USDT",
+            "positionSide": "LONG",
+            "size": "1",
+            "entryPrice": "100",
+        }
+    )
+    assert pos["take_profit"] == 125.0
+
+    # Expire the hint and ensure we fall back to WS/cache value.
+    manager._tpsl_local_hints["BTC-USDT"]["take_profit_observed_at"] = 0.0
+    pos_after_expiry = manager._normalize_position(
+        {
+            "symbol": "BTC-USDT",
+            "positionSide": "LONG",
+            "size": "1",
+            "entryPrice": "100",
+        }
+    )
+    assert pos_after_expiry["take_profit"] == 120.0
+    assert gateway.hint_unconfirmed_count >= 1
+
+
+def test_tpsl_ws_reconcile_contradiction_overrides_fresh_local_hint_immediately():
+    gateway = FakeGateway()
+    manager = OrderManager(gateway)
+    manager._tpsl_hint_ttl_seconds = 20.0
+    manager._tpsl_targets_by_symbol["BTC-USDT"] = {"take_profit": 120.0}
+    manager._set_local_tpsl_hint(symbol="BTC-USDT", take_profit=125.0)
+
+    # Explicit TP reconcile payload contradicts the local hint.
+    manager._reconcile_tpsl(
+        [
+            {
+                "symbol": "BTC-USDT",
+                "type": "TAKE_PROFIT_MARKET",
+                "isPositionTpsl": True,
+                "triggerPrice": "120",
+                "status": "UNTRIGGERED",
+            }
+        ]
+    )
+
+    pos = manager._normalize_position(
+        {
+            "symbol": "BTC-USDT",
+            "positionSide": "LONG",
+            "size": "1",
+            "entryPrice": "100",
+        }
+    )
+    assert pos["take_profit"] == 120.0
+    hint = manager._tpsl_local_hints.get("BTC-USDT", {})
+    assert "take_profit" not in hint

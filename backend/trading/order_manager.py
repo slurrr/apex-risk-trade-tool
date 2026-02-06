@@ -62,8 +62,16 @@ class OrderManager:
         self.pending_order_prices_client: Dict[str, float] = {}
         self.position_targets: Dict[str, Dict[str, float]] = {}
         self._tpsl_targets_by_symbol: Dict[str, Dict[str, float]] = {}
+        self._tpsl_local_hints: Dict[str, Dict[str, Any]] = {}
+        settings = getattr(gateway, "settings", None)
+        self._tpsl_hint_ttl_seconds = max(
+            0.0,
+            float(getattr(settings, "apex_local_hint_ttl_seconds", 20.0) or 20.0),
+        )
         self._depth_summary_cache: Dict[tuple[str, int, int], tuple[float, Dict[str, Any]]] = {}
         self._depth_summary_cache_ttl = 1.5
+        self._apex_tpsl_backfill_last_ts = 0.0
+        self._apex_tpsl_backfill_min_gap_seconds = 5.0
 
     async def _get_account_context(self) -> tuple[float, Optional[float]]:
         equity = await self.gateway.get_account_equity()
@@ -216,6 +224,72 @@ class OrderManager:
                 return f"{sym[:-len(quote)]}-{quote}"
         return sym
 
+    def _set_local_tpsl_hint(
+        self,
+        *,
+        symbol: str,
+        take_profit: Optional[float] = None,
+        stop_loss: Optional[float] = None,
+        clear_tp: bool = False,
+        clear_sl: bool = False,
+    ) -> None:
+        sym_key = self._normalize_symbol_value(symbol)
+        if not sym_key:
+            return
+        now = time.time()
+        hint = self._tpsl_local_hints.setdefault(sym_key, {})
+        if take_profit is not None:
+            hint["take_profit"] = float(take_profit)
+            hint["take_profit_observed_at"] = now
+        if stop_loss is not None:
+            hint["stop_loss"] = float(stop_loss)
+            hint["stop_loss_observed_at"] = now
+        if clear_tp:
+            hint["take_profit"] = None
+            hint["take_profit_observed_at"] = now
+        if clear_sl:
+            hint["stop_loss"] = None
+            hint["stop_loss_observed_at"] = now
+        if not hint:
+            self._tpsl_local_hints.pop(sym_key, None)
+
+    def _resolve_tpsl_value(
+        self,
+        *,
+        symbol: str,
+        kind: str,
+        ws_or_cache_value: Optional[float],
+    ) -> Optional[float]:
+        """
+        Resolve TP/SL display precedence:
+        local_hint (fresh) > ws/cache, with immediate WS contradiction override.
+        """
+        sym_key = self._normalize_symbol_value(symbol)
+        hint = self._tpsl_local_hints.get(sym_key, {})
+        hint_val = hint.get(kind)
+        hint_ts = hint.get(f"{kind}_observed_at")
+        if hint_ts is None:
+            return ws_or_cache_value
+        try:
+            age = max(0.0, time.time() - float(hint_ts))
+        except Exception:
+            age = self._tpsl_hint_ttl_seconds + 1.0
+        # Fresh hint wins.
+        if age <= self._tpsl_hint_ttl_seconds:
+            return ws_or_cache_value if hint_val is None else hint_val
+        # Hint expired; drop it and surface WS/cache value.
+        hint.pop(kind, None)
+        hint.pop(f"{kind}_observed_at", None)
+        if not hint:
+            self._tpsl_local_hints.pop(sym_key, None)
+        recorder = getattr(self.gateway, "record_tpsl_hint_unconfirmed", None)
+        if callable(recorder):
+            try:
+                recorder()
+            except Exception:
+                pass
+        return ws_or_cache_value
+
     @staticmethod
     def _is_tpsl_order(order: Dict[str, Any]) -> bool:
         """Detect TP/SL reduce-only orders even when isPositionTpsl flag is missing."""
@@ -233,8 +307,7 @@ class OrderManager:
 
     def _include_in_open_orders(self, order: Dict[str, Any]) -> bool:
         """Hide venue-specific conditional TP/SL orders from open-orders UI feed."""
-        venue = (getattr(self.gateway, "venue", "") or "").lower()
-        if venue == "hyperliquid" and self._is_tpsl_order(order):
+        if self._is_tpsl_order(order):
             return False
         return True
 
@@ -305,11 +378,32 @@ class OrderManager:
                             self.position_targets[sym_key] = hints
                         else:
                             self.position_targets.pop(sym_key, None)
+                        self._set_local_tpsl_hint(
+                            symbol=sym_key,
+                            clear_tp=order_type.startswith("TAKE_PROFIT"),
+                            clear_sl=order_type.startswith("STOP"),
+                        )
                     needs_refresh = True
                     return needs_refresh
 
         active_map = self._extract_tpsl_from_orders(raw_orders)
         has_active = bool(active_map)
+        if active_map:
+            # Explicit stream payload contradiction overrides fresh local hints immediately.
+            for sym_key, values in active_map.items():
+                hint = self._tpsl_local_hints.get(sym_key)
+                if not hint:
+                    continue
+                tp_val = values.get("take_profit")
+                if tp_val is not None and hint.get("take_profit") is not None and float(hint["take_profit"]) != float(tp_val):
+                    hint.pop("take_profit", None)
+                    hint.pop("take_profit_observed_at", None)
+                sl_val = values.get("stop_loss")
+                if sl_val is not None and hint.get("stop_loss") is not None and float(hint["stop_loss"]) != float(sl_val):
+                    hint.pop("stop_loss", None)
+                    hint.pop("stop_loss_observed_at", None)
+                if not hint:
+                    self._tpsl_local_hints.pop(sym_key, None)
 
         # Handle batches that carry only canceled TP/SL orders (no active updates).
         removed_symbol = False
@@ -342,6 +436,11 @@ class OrderManager:
                     self.position_targets[sym_key] = hints
                 else:
                     self.position_targets.pop(sym_key, None)
+                self._set_local_tpsl_hint(
+                    symbol=sym_key,
+                    clear_tp=order_type.startswith("TAKE_PROFIT"),
+                    clear_sl=order_type.startswith("STOP"),
+                )
                 removed_symbol = True
         if active_map:
             # Merge without clearing missing keys; cancels are handled above, so merging keeps surviving targets intact.
@@ -595,6 +694,31 @@ class OrderManager:
         if not positions_raw:
             positions_raw = await self.gateway.get_open_positions(force_rest=True, publish=True)
         self.positions = await self._enrich_positions(positions_raw, tpsl_map=self._tpsl_targets_by_symbol)
+
+        # ApeX: if positions exist but TP/SL map is missing, do a bounded account-orders backfill once
+        # to avoid "blank until hard refresh" on initial load.
+        venue = (getattr(self.gateway, "venue", "") or "").lower()
+        if venue == "apex" and self.positions:
+            needs_backfill = False
+            for pos in self.positions:
+                symbol = self._normalize_symbol_value(pos.get("symbol"))
+                entry = self._tpsl_targets_by_symbol.get(symbol, {})
+                if entry.get("take_profit") is None and entry.get("stop_loss") is None:
+                    needs_backfill = True
+                    break
+            now = time.time()
+            if needs_backfill and (now - self._apex_tpsl_backfill_last_ts) >= self._apex_tpsl_backfill_min_gap_seconds:
+                self._apex_tpsl_backfill_last_ts = now
+                try:
+                    snapshot = self.gateway.get_account_orders_snapshot()
+                    if not snapshot:
+                        snapshot = await self.gateway.refresh_account_orders_from_rest()
+                    if snapshot:
+                        self._reconcile_tpsl(snapshot)
+                        self.positions = await self._enrich_positions(positions_raw, tpsl_map=self._tpsl_targets_by_symbol)
+                except Exception:
+                    pass
+
         self._rebuild_open_risk_estimates(open_orders=self.open_orders, positions=self.positions)
         return self.positions
 
@@ -773,6 +897,11 @@ class OrderManager:
                         self.position_targets[symbol_key] = hints
                     else:
                         self.position_targets.pop(symbol_key, None)
+                self._set_local_tpsl_hint(
+                    symbol=symbol_key,
+                    clear_tp=clear_tp,
+                    clear_sl=clear_sl,
+                )
 
         if take_profit is not None or stop_loss is not None:
             resp = await self.gateway.update_targets(
@@ -804,6 +933,11 @@ class OrderManager:
                     map_entry["take_profit"] = take_profit
                 if stop_loss is not None:
                     map_entry["stop_loss"] = stop_loss
+                self._set_local_tpsl_hint(
+                    symbol=symbol_key,
+                    take_profit=take_profit,
+                    stop_loss=stop_loss,
+                )
 
         return response
 
@@ -1100,6 +1234,17 @@ class OrderManager:
                 norm["take_profit"] = hint.get("take_profit")
             if norm.get("stop_loss") is None and "stop_loss" in hint:
                 norm["stop_loss"] = hint.get("stop_loss")
+
+        norm["take_profit"] = self._resolve_tpsl_value(
+            symbol=sym_key,
+            kind="take_profit",
+            ws_or_cache_value=norm.get("take_profit"),
+        )
+        norm["stop_loss"] = self._resolve_tpsl_value(
+            symbol=sym_key,
+            kind="stop_loss",
+            ws_or_cache_value=norm.get("stop_loss"),
+        )
 
         return norm
 

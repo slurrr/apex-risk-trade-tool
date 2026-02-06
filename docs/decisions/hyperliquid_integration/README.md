@@ -6,7 +6,7 @@ This folder contains formal decision records for the multi-venue Hyperliquid int
 
 - Any non-trivial architectural / behavioral choice that affects correctness, safety, or parity must have a decision record here.
 - A decision record should be created **before** (or in the same PR as) the first implementation that depends on it.
-- Use the template in `docs/decisions/0000-template.md`.
+- Use the template in `docs/decisions/hyperliquid_integration/0000-template.md`.
 
 ## Suggested Decisions (pre-code candidates)
 
