@@ -55,6 +55,9 @@ class FakeGateway:
     async def update_targets(self, **kwargs):
         return {"results": [{"payload": kwargs}]}
 
+    async def get_reference_price(self, symbol: str):
+        return 101.25, "mid"
+
 def test_execute_trade_happy_path():
     gateway = FakeGateway()
     manager = OrderManager(gateway)
@@ -369,3 +372,10 @@ def test_reconcile_tpsl_single_cancel_clears_only_that_target():
     assert enriched[0]["stop_loss"] == 90.0
     assert manager.position_targets["BTC-USDT"]["stop_loss"] == 90.0
     assert "take_profit" not in manager.position_targets["BTC-USDT"]
+
+
+def test_get_symbol_price_uses_reference_price():
+    gateway = FakeGateway()
+    manager = OrderManager(gateway)
+    payload = asyncio.run(manager.get_symbol_price("BTC-USDT"))
+    assert payload == {"symbol": "BTC-USDT", "price": 101.25}

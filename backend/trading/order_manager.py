@@ -970,7 +970,7 @@ class OrderManager:
         return norm
 
     async def get_symbol_price(self, symbol: str) -> Dict[str, Any]:
-        price = await self.gateway.get_symbol_last_price(symbol)
+        price, _source = await self.gateway.get_reference_price(symbol)
         return {"symbol": symbol, "price": price}
 
     async def get_depth_summary(

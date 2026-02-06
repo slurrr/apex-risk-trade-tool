@@ -23,6 +23,7 @@ class Settings(BaseSettings):
         extra="ignore",
     )
     app_env: str = Field("development", env="APP_ENV")
+    active_venue: str = Field("apex", env="ACTIVE_VENUE")
     app_host: str = Field("127.0.0.1", env="APP_HOST")
     app_port: int = Field(8000, env="APP_PORT")
     log_level: str = Field("INFO", env="LOG_LEVEL")
@@ -37,6 +38,10 @@ class Settings(BaseSettings):
     apex_zk_l2key: str = Field(..., env="APEX_ZK_L2KEY")
     apex_network: str = Field("testnet", env="APEX_NETWORK")
     apex_http_endpoint: Optional[str] = Field(None, env="APEX_HTTP_ENDPOINT")
+    hyperliquid_http_endpoint: str = Field("https://api.hyperliquid.xyz", env="HYPERLIQUID_HTTP_ENDPOINT")
+    hl_user_address: Optional[str] = Field(None, env="HL_USER_ADDRESS")
+    hl_agent_private_key: Optional[str] = Field(None, env="HL_AGENT_PRIVATE_KEY")
+    hyperliquid_enable_ws: bool = Field(True, env="HYPERLIQUID_ENABLE_WS")
     apex_enable_ws: bool = Field(False, env="APEX_ENABLE_WS")
     apex_rest_timeout_seconds: int = Field(10, env="APEX_REST_TIMEOUT_SECONDS")
     apex_rest_retries: int = Field(2, env="APEX_REST_RETRIES")
@@ -70,6 +75,15 @@ class Settings(BaseSettings):
         allowed = {"testnet", "base", "base-sepolia", "testnet-base", "mainnet"}
         if normalized not in allowed:
             raise ValueError(f"Unsupported APEX_NETWORK '{value}'. Use one of {sorted(allowed)}")
+        return normalized
+
+    @field_validator("active_venue")
+    @classmethod
+    def validate_active_venue(cls, value: str) -> str:
+        normalized = (value or "apex").strip().lower()
+        allowed = {"apex", "hyperliquid"}
+        if normalized not in allowed:
+            raise ValueError(f"Unsupported ACTIVE_VENUE '{value}'. Use one of {sorted(allowed)}")
         return normalized
 
     @field_validator("atr_period")

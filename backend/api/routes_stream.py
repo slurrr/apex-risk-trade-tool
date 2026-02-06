@@ -18,15 +18,19 @@ async def stream_updates(
     await websocket.accept()
     gateway = manager.gateway
     queue = gateway.register_subscriber()
+    is_apex_gateway = (getattr(gateway, "venue", "apex") or "").lower() == "apex"
     tpsl_refresh_lock = asyncio.Lock()
     pending_tpsl_refresh = False
 
     async def _force_tpsl_refresh():
         nonlocal pending_tpsl_refresh
+        if not is_apex_gateway:
+            return
         async with tpsl_refresh_lock:
             if pending_tpsl_refresh:
                 return
             pending_tpsl_refresh = True
+
         async def _run():
             nonlocal pending_tpsl_refresh
             try:
@@ -48,36 +52,8 @@ async def stream_updates(
                 )
             finally:
                 pending_tpsl_refresh = False
-        asyncio.create_task(_run())
 
-    def _extract_tpsl_from_orders(payload: list[dict]) -> dict[str, dict[str, float]]:
-        """Build a symbol->tp/sl map from any STOP/TAKE_PROFIT orders in the payload (no reduceOnly requirement)."""
-        result: dict[str, dict[str, float]] = {}
-        for o in payload or []:
-            if not isinstance(o, dict):
-                continue
-            sym = o.get("symbol") or o.get("market")
-            if not sym:
-                continue
-            otype = (o.get("type") or "").upper()
-            if "STOP" not in otype and "TAKE_PROFIT" not in otype:
-                continue
-            status = str(o.get("status") or o.get("orderStatus") or "").lower()
-            if any(key in status for key in ("cancel", "filled", "triggered")):
-                continue
-            trig = o.get("triggerPrice") or o.get("price")
-            try:
-                trig_val = float(trig) if trig is not None else None
-            except Exception:
-                trig_val = trig
-            if trig_val is None:
-                continue
-            entry = result.setdefault(sym, {})
-            if "TAKE_PROFIT" in otype:
-                entry["take_profit"] = trig_val
-            if "STOP" in otype:
-                entry["stop_loss"] = trig_val
-        return result
+        asyncio.create_task(_run())
 
     # send initial snapshots so UI renders quickly
     try:
@@ -152,7 +128,7 @@ async def stream_updates(
                     await websocket.send_json({"type": "positions", "payload": positions})
                 except Exception:
                     pass
-                if refresh_needed:
+                if refresh_needed and is_apex_gateway:
                     await _force_tpsl_refresh()
                 # logger.info(
                 #     "ws_orders_raw_tpsl_map_built",

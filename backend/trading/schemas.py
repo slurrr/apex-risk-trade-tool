@@ -130,6 +130,14 @@ class ErrorResponse(BaseModel):
     context: Optional[dict] = None
 
 
+class VenueStateResponse(BaseModel):
+    active_venue: Literal["apex", "hyperliquid"]
+
+
+class VenueSwitchRequest(BaseModel):
+    active_venue: Literal["apex", "hyperliquid"]
+
+
 class AtrStopRequest(BaseModel):
     symbol: str = Field(..., pattern=r"^[A-Z0-9]+-[A-Z0-9]+$")
     side: Literal["long", "short"]

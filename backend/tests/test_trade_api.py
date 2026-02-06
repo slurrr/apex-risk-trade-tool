@@ -10,6 +10,8 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from backend.api.routes_trade import configure_order_manager, router  # noqa: E402
+from backend.api.routes_risk import configure_gateway as configure_risk_gateway, router as risk_router  # noqa: E402
+from backend.api.routes_venue import configure_venue_controller, router as venue_router  # noqa: E402
 from backend.risk.risk_engine import PositionSizingResult  # noqa: E402
 
 
@@ -113,3 +115,75 @@ def test_trade_preview_validation_error():
     resp = client.post("/api/trade", json=payload)
     assert resp.status_code == 400
     assert "Stop price equals entry price" in resp.json()["detail"]
+
+
+class FakeAtrSettings:
+    atr_timeframe = "15m"
+    atr_period = 3
+    atr_multiplier = 1.5
+
+
+class FakeRiskGateway:
+    def __init__(self) -> None:
+        self.calls = []
+
+    async def fetch_klines(self, symbol: str, timeframe: str, limit: int):
+        self.calls.append((symbol, timeframe, limit))
+        return [
+            {"open_time": 1, "open": 100, "high": 103, "low": 99, "close": 102},
+            {"open_time": 2, "open": 102, "high": 104, "low": 100, "close": 103},
+            {"open_time": 3, "open": 103, "high": 105, "low": 101, "close": 104},
+            {"open_time": 4, "open": 104, "high": 106, "low": 102, "close": 105},
+        ]
+
+
+def test_atr_stop_uses_gateway_fetch_klines(monkeypatch):
+    app = FastAPI()
+    gateway = FakeRiskGateway()
+    configure_risk_gateway(gateway)
+    app.include_router(risk_router)
+    monkeypatch.setattr("backend.api.routes_risk.get_settings", lambda: FakeAtrSettings())
+
+    client = TestClient(app)
+    resp = client.post(
+        "/risk/atr-stop",
+        json={"symbol": "BTC-USDT", "side": "long", "entry_price": 100.0},
+    )
+    assert resp.status_code == 200
+    assert gateway.calls
+    assert gateway.calls[0][0] == "BTC-USDT"
+    assert gateway.calls[0][1] == "15m"
+
+
+class FakeVenueController:
+    def __init__(self) -> None:
+        self.active_venue = "apex"
+
+    async def switch_venue(self, requested: str) -> str:
+        target = (requested or "").strip().lower()
+        if target not in {"apex", "hyperliquid"}:
+            raise ValueError(f"Unsupported venue '{requested}'.")
+        self.active_venue = target
+        return self.active_venue
+
+
+def test_get_venue_state():
+    app = FastAPI()
+    configure_venue_controller(FakeVenueController())
+    app.include_router(venue_router)
+    client = TestClient(app)
+    resp = client.get("/api/venue")
+    assert resp.status_code == 200
+    assert resp.json() == {"active_venue": "apex"}
+
+
+def test_set_venue_state():
+    app = FastAPI()
+    ctrl = FakeVenueController()
+    configure_venue_controller(ctrl)
+    app.include_router(venue_router)
+    client = TestClient(app)
+    resp = client.post("/api/venue", json={"active_venue": "hyperliquid"})
+    assert resp.status_code == 200
+    assert resp.json() == {"active_venue": "hyperliquid"}
+    assert ctrl.active_venue == "hyperliquid"
