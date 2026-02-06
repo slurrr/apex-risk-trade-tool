@@ -1,4 +1,5 @@
 import asyncio
+import json
 import logging
 from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect
 
@@ -7,6 +8,16 @@ from backend.trading.order_manager import OrderManager
 
 router = APIRouter(tags=["stream"])
 logger = logging.getLogger(__name__)
+
+
+@router.get("/api/stream/health")
+async def stream_health(manager: OrderManager = Depends(get_order_manager)) -> dict:
+    """Expose stream/reconcile health metrics for diagnostics and alerting."""
+    try:
+        return await manager.get_stream_health()
+    except Exception as exc:
+        logger.warning("stream_health_failed", extra={"event": "stream_health_failed", "error": str(exc)})
+        return {"venue": (getattr(manager.gateway, "venue", "unknown") or "unknown"), "error": str(exc)}
 
 
 @router.websocket("/ws/stream")
@@ -21,6 +32,34 @@ async def stream_updates(
     is_apex_gateway = (getattr(gateway, "venue", "apex") or "").lower() == "apex"
     tpsl_refresh_lock = asyncio.Lock()
     pending_tpsl_refresh = False
+    last_sent_by_type: dict[str, str] = {}
+
+    async def _send_event(event_type: str, payload):
+        """
+        Best-effort de-duplication: skip sending identical consecutive payloads
+        for the same event type to reduce WS spam during bursty updates.
+        """
+        try:
+            snapshot = json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str)
+        except Exception:
+            snapshot = ""
+        if snapshot and last_sent_by_type.get(event_type) == snapshot:
+            return
+        if snapshot:
+            last_sent_by_type[event_type] = snapshot
+        await websocket.send_json({"type": event_type, "payload": payload})
+
+    async def _emit_positions_from_cache() -> None:
+        cached_positions = list(getattr(gateway, "_ws_positions", {}).values())
+        if not cached_positions:
+            return
+        normalized_positions = []
+        for pos in cached_positions:
+            norm = manager._normalize_position(pos, tpsl_map=manager._tpsl_targets_by_symbol)
+            if norm:
+                normalized_positions.append(norm)
+        if normalized_positions:
+            await _send_event("positions", normalized_positions)
 
     async def _force_tpsl_refresh():
         nonlocal pending_tpsl_refresh
@@ -67,7 +106,7 @@ async def stream_updates(
         # push initial positions using whatever map we have
         try:
             initial_positions = await manager.list_positions()
-            await websocket.send_json({"type": "positions", "payload": initial_positions})
+            await _send_event("positions", initial_positions)
         except Exception:
             pass
 
@@ -78,8 +117,9 @@ async def stream_updates(
                 norm = manager._normalize_position(pos, tpsl_map=manager._tpsl_targets_by_symbol)
                 if norm:
                     initial_positions.append(norm)
-        await websocket.send_json({"type": "orders", "payload": initial_orders})
-        await websocket.send_json({"type": "positions", "payload": initial_positions})
+        await _send_event("orders", initial_orders)
+        if initial_positions:
+            await _send_event("positions", initial_positions)
     except Exception:
         # snapshots are best-effort; continue streaming
         pass
@@ -124,8 +164,7 @@ async def stream_updates(
                 except Exception:
                     refresh_needed = False
                 try:
-                    positions = await manager.list_positions()
-                    await websocket.send_json({"type": "positions", "payload": positions})
+                    await _emit_positions_from_cache()
                 except Exception:
                     pass
                 if refresh_needed and is_apex_gateway:
@@ -139,27 +178,6 @@ async def stream_updates(
                 #         "position_tpsl": position_tpsl_count,
                 #     },
                 # )
-                # push normalized positions using updated TP/SL map
-                try:
-                    cached_positions = list(getattr(gateway, "_ws_positions", {}).values())
-                    normalized_positions = []
-                    for pos in cached_positions:
-                        norm = manager._normalize_position(pos, tpsl_map=manager._tpsl_targets_by_symbol)
-                        if norm:
-                            normalized_positions.append(norm)
-                    await websocket.send_json({"type": "positions", "payload": normalized_positions})
-                except Exception:
-                    pass
-                try:
-                    cached_positions = list(getattr(gateway, "_ws_positions", {}).values())
-                    normalized_positions = []
-                    for pos in cached_positions:
-                        norm = manager._normalize_position(pos, tpsl_map=manager._tpsl_targets_by_symbol)
-                        if norm:
-                            normalized_positions.append(norm)
-                    await websocket.send_json({"type": "positions", "payload": normalized_positions})
-                except Exception:
-                    pass
             elif event.get("type") == "orders":
                 # Forward orders event without touching TP/SL map (no TP/SL data here)
                 normalized = []
@@ -173,7 +191,7 @@ async def stream_updates(
             elif event.get("type") == "account":
                 msg = {"type": "account", "payload": event.get("payload")}
             try:
-                await websocket.send_json(msg)
+                await _send_event(msg.get("type"), msg.get("payload"))
             except WebSocketDisconnect:
                 # logger.info("ws_disconnect", extra={"event": "ws_disconnect"})
                 break

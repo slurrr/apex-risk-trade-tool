@@ -27,6 +27,13 @@ def create_app() -> FastAPI:
         base_url=settings.hyperliquid_http_endpoint,
         user_address=settings.hl_user_address,
         agent_private_key=settings.hl_agent_private_key,
+        reconcile_audit_interval_seconds=settings.hyperliquid_reconcile_audit_interval_seconds,
+        reconcile_stale_stream_seconds=settings.hyperliquid_reconcile_stale_stream_seconds,
+        reconcile_order_timeout_seconds=settings.hyperliquid_reconcile_order_timeout_seconds,
+        reconcile_min_gap_seconds=settings.hyperliquid_reconcile_min_gap_seconds,
+        reconcile_alert_window_seconds=settings.hyperliquid_reconcile_alert_window_seconds,
+        reconcile_alert_max_per_window=settings.hyperliquid_reconcile_alert_max_per_window,
+        order_timeout_alert_max_per_window=settings.hyperliquid_order_timeout_alert_max_per_window,
     )
     apex_order_manager = OrderManager(
         apex_gateway,
@@ -35,6 +42,7 @@ def create_app() -> FastAPI:
         open_risk_cap_pct=settings.open_risk_cap_pct,
         slippage_factor=settings.slippage_factor,
         fee_buffer_pct=settings.fee_buffer_pct,
+        hyperliquid_min_notional_usdc=settings.hyperliquid_min_notional_usdc,
     )
     hyperliquid_order_manager = OrderManager(
         hyperliquid_gateway,
@@ -43,6 +51,7 @@ def create_app() -> FastAPI:
         open_risk_cap_pct=settings.open_risk_cap_pct,
         slippage_factor=settings.slippage_factor,
         fee_buffer_pct=settings.fee_buffer_pct,
+        hyperliquid_min_notional_usdc=settings.hyperliquid_min_notional_usdc,
     )
 
     def apply_active(order_manager: OrderManager, gateway) -> None:

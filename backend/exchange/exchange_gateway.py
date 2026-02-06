@@ -11,7 +11,6 @@ import requests
 from backend.core.config import Settings
 from backend.core.logging import get_logger
 from backend.exchange.apex_client import ApexClient
-from apexomni.websocket_api import PRIVATE_WSS
 
 logger = get_logger(__name__)
 
@@ -19,7 +18,7 @@ logger = get_logger(__name__)
 class ExchangeGateway:
     """Wrapper around ApeX Omni SDK with cached configs and basic helpers."""
 
-    def __init__(self, settings: Settings, client: Optional[Any] = None) -> None:
+    def __init__(self, settings: Settings, client: Optional[Any] = None, public_client: Optional[Any] = None) -> None:
         self.settings = settings
         self.venue = "apex"
         self._network = (getattr(settings, "apex_network", "testnet") or "testnet").lower()
@@ -52,7 +51,8 @@ class ExchangeGateway:
         self._ws_snapshot_written: bool = False
         self._tpsl_client_ids: Dict[str, set[str]] = {}
         self._lock = threading.Lock()
-        self.apex_client = ApexClient(settings, private_client=client)
+        fallback_public = public_client if public_client is not None else (client if client is not None else None)
+        self.apex_client = ApexClient(settings, private_client=client, public_client=fallback_public)
         self._client: Any = self.apex_client.private_client
         self._public_client: Any = self.apex_client.public_client
         self._rest_timeout_seconds = max(0.0, float(getattr(settings, "apex_rest_timeout_seconds", 10) or 0))

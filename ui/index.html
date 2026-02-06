@@ -125,6 +125,44 @@
       </div>
     </section>
 
+    <section id="stream-health-panel" class="card stream-health-panel hidden">
+      <div class="section-header">
+        <div>
+          <h2>Stream Health (Dev)</h2>
+          <p class="muted">Enable with <code>localStorage.dev_stream_health = "1"</code></p>
+        </div>
+        <button id="stream-health-refresh" type="button" class="btn ghost">Refresh</button>
+      </div>
+      <div class="stream-health-grid">
+        <div class="summary-item">
+          <div class="label">Venue</div>
+          <div class="value" id="stream-health-venue">--</div>
+        </div>
+        <div class="summary-item">
+          <div class="label">WS Alive</div>
+          <div class="value" id="stream-health-ws-alive">--</div>
+        </div>
+        <div class="summary-item">
+          <div class="label">Last WS Event Age</div>
+          <div class="value" id="stream-health-ws-age">--</div>
+        </div>
+        <div class="summary-item">
+          <div class="label">Reconcile Count</div>
+          <div class="value" id="stream-health-reconcile-count">--</div>
+        </div>
+        <div class="summary-item">
+          <div class="label">Last Reconcile Reason</div>
+          <div class="value" id="stream-health-reconcile-reason">--</div>
+        </div>
+        <div class="summary-item">
+          <div class="label">Pending Submitted</div>
+          <div class="value" id="stream-health-pending">--</div>
+        </div>
+      </div>
+      <div class="stream-health-status muted" id="stream-health-status">Waiting for first poll...</div>
+      <pre class="stream-health-raw" id="stream-health-raw"></pre>
+    </section>
+
     <section id="orders-section" class="card">
       <div class="section-header">
         <h2>Open Orders</h2>

@@ -22,6 +22,10 @@ Hyperliquid likely represents TP/SL using trigger orders, potentially as separat
 ## Decision
 
 - TP/SL will be represented internally as **at most one active TP and one active SL per symbol** on Hyperliquid.
+- For new entries submitted from `POST /api/trade` with `tp` and `stop_price`, Hyperliquid will use a **single grouped submit**:
+  - `bulk_orders(..., grouping="normalTpsl")`
+  - entry limit leg + TP trigger leg + SL trigger leg are sent atomically in one exchange action.
+- Post-submit verification inspects per-leg statuses from Hyperliquid and surfaces warnings when any attached TP/SL leg is not clearly accepted.
 - When updating targets:
   - if setting a TP: cancel existing TP trigger (if any), then place a new TP trigger
   - if setting an SL: cancel existing SL trigger (if any), then place a new SL trigger
@@ -49,16 +53,21 @@ Hyperliquid likely represents TP/SL using trigger orders, potentially as separat
 
 ## Consequences
 
+- Entry safety improves for delayed fills: TP/SL does not depend on a later API call or app uptime when attached on trade submit.
 - The backend must reliably identify HL TP vs SL trigger orders (by type/fields) to cancel the correct one.
 - There is a short window where local targets may not yet be confirmed by venue; UI should surface this as “pending” if needed (optional).
+- Current behavior does not actively rebalance TP/SL sizes on partial fills at the app layer. We currently rely on exchange-side grouped semantics and venue state reconciliation.
+- Future enhancement candidate: add fill-driven TP/SL rebalance logic (cancel/replace targets to exact filled size deltas when required by strategy).
 
 ## Validation Plan
 
 - Unit tests:
+  - grouped entry submit with TP/SL uses `normalTpsl`
+  - grouped submit warnings are emitted when a TP/SL leg is rejected
   - “clear TP” does not cancel SL and vice versa
   - reconciliation rebuilds map correctly from an orders snapshot
 - Manual:
+  - submit one `POST /api/trade` with `tp` and confirm three open orders appear (entry + TP + SL) from the single request
   - set TP then set SL, confirm both display
   - clear TP only, confirm SL remains
   - confirm after refresh/resync the targets persist correctly
-

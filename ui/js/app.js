@@ -7,8 +7,11 @@
   const ATR_TIMEFRAME_STORAGE_KEY = "atr_timeframe_override";
   const ATR_TIMEFRAME_DEFAULT = "15m";
   const ATR_TIMEFRAMES = ["3m", "15m", "1h", "4h"];
+  const DEV_STREAM_HEALTH_STORAGE_KEY = "dev_stream_health";
+  const STREAM_HEALTH_POLL_INTERVAL_MS = 15000;
   let manualTheme = null;
   let mediaQuery;
+  let streamHealthTimerId = null;
   const state = {
     symbols: [],
     symbolIndex: new Map(),
@@ -393,6 +396,71 @@
     }, 10000);
   }
 
+  function isDevStreamHealthEnabled() {
+    try {
+      if (!window.localStorage) return false;
+      return window.localStorage.getItem(DEV_STREAM_HEALTH_STORAGE_KEY) === "1";
+    } catch (err) {
+      return false;
+    }
+  }
+
+  function setTextContent(id, value) {
+    const el = document.getElementById(id);
+    if (el) {
+      el.textContent = value;
+    }
+  }
+
+  function formatSeconds(value) {
+    const num = Number(value);
+    if (!Number.isFinite(num)) return "--";
+    return `${num.toFixed(1)}s`;
+  }
+
+  function renderStreamHealth(payload) {
+    if (!payload || typeof payload !== "object") return;
+    setTextContent("stream-health-venue", `${payload.venue || "--"}`);
+    setTextContent("stream-health-ws-alive", payload.ws_alive ? "YES" : "NO");
+    setTextContent("stream-health-ws-age", formatSeconds(payload.last_private_ws_event_age_seconds));
+    setTextContent("stream-health-reconcile-count", `${payload.reconcile_count ?? "--"}`);
+    setTextContent("stream-health-reconcile-reason", `${payload.last_reconcile_reason || "--"}`);
+    setTextContent("stream-health-pending", `${payload.pending_submitted_orders ?? "--"}`);
+    setTextContent("stream-health-raw", JSON.stringify(payload, null, 2));
+  }
+
+  async function loadStreamHealth() {
+    try {
+      const payload = await fetchJson(`${API_BASE}/api/stream/health`);
+      renderStreamHealth(payload);
+      setTextContent("stream-health-status", `Updated ${new Date().toLocaleTimeString()}`);
+    } catch (err) {
+      const message = err?.message || "Request failed";
+      setTextContent("stream-health-status", `Failed: ${message}`);
+    }
+  }
+
+  function initStreamHealthDiagnostics() {
+    const panel = document.getElementById("stream-health-panel");
+    if (!panel) return;
+    if (!isDevStreamHealthEnabled()) {
+      panel.classList.add("hidden");
+      return;
+    }
+    panel.classList.remove("hidden");
+    const refreshBtn = document.getElementById("stream-health-refresh");
+    if (refreshBtn) {
+      refreshBtn.addEventListener("click", () => {
+        loadStreamHealth();
+      });
+    }
+    if (streamHealthTimerId) {
+      window.clearInterval(streamHealthTimerId);
+    }
+    loadStreamHealth();
+    streamHealthTimerId = window.setInterval(loadStreamHealth, STREAM_HEALTH_POLL_INTERVAL_MS);
+  }
+
   async function loadSymbols() {
     try {
       const data = await fetchJson(`${API_BASE}/api/symbols`);
@@ -693,5 +761,6 @@
     loadSymbols();
     loadAccountSummary();
     startAccountSummaryHeartbeat();
+    initStreamHealthDiagnostics();
   });
 })();

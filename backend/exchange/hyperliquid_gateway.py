@@ -1,5 +1,7 @@
 import asyncio
 import time
+from collections import defaultdict, deque
+from decimal import Decimal, ROUND_HALF_UP
 from typing import Any, Dict, Optional
 
 from eth_account import Account
@@ -39,6 +41,13 @@ class HyperliquidGateway:
         base_url: str = "https://api.hyperliquid.xyz",
         user_address: Optional[str] = None,
         agent_private_key: Optional[str] = None,
+        reconcile_audit_interval_seconds: float = 900.0,
+        reconcile_stale_stream_seconds: float = 90.0,
+        reconcile_order_timeout_seconds: float = 20.0,
+        reconcile_min_gap_seconds: float = 5.0,
+        reconcile_alert_window_seconds: float = 300.0,
+        reconcile_alert_max_per_window: int = 3,
+        order_timeout_alert_max_per_window: int = 3,
         info_client: Optional[Any] = None,
         exchange_client: Optional[Any] = None,
         ws_info_client: Optional[Any] = None,
@@ -58,6 +67,27 @@ class HyperliquidGateway:
         self._ws_monitor_task: Optional[asyncio.Task] = None
         self._account_refresh_task: Optional[asyncio.Task] = None
         self._account_refresh_interval = 15.0
+        self._reconcile_audit_interval = max(0.0, float(reconcile_audit_interval_seconds or 0.0))
+        self._reconcile_stale_stream_seconds = max(0.0, float(reconcile_stale_stream_seconds or 0.0))
+        self._reconcile_order_timeout_seconds = max(0.0, float(reconcile_order_timeout_seconds or 0.0))
+        self._reconcile_min_gap_seconds = max(0.0, float(reconcile_min_gap_seconds or 0.0))
+        self._reconcile_alert_window_seconds = max(0.0, float(reconcile_alert_window_seconds or 0.0))
+        self._reconcile_alert_max_per_window = max(1, int(reconcile_alert_max_per_window or 1))
+        self._order_timeout_alert_max_per_window = max(1, int(order_timeout_alert_max_per_window or 1))
+        self._alert_min_interval_seconds = 60.0
+        self._reconcile_lock = asyncio.Lock()
+        self._reconcile_count = 0
+        self._reconcile_reason_counts: dict[str, int] = {}
+        self._reconcile_reason_events: dict[str, deque[float]] = defaultdict(deque)
+        self._order_timeout_symbol_events: dict[str, deque[float]] = defaultdict(deque)
+        self._last_alert_by_key: dict[str, float] = {}
+        self._last_reconcile_ts = 0.0
+        self._last_reconcile_reason: Optional[str] = None
+        self._last_reconcile_error: Optional[str] = None
+        self._stream_started_at = 0.0
+        self._last_private_ws_event_ts = 0.0
+        self._last_ws_reconnect_ts = 0.0
+        self._pending_submitted_orders: dict[str, dict[str, Any]] = {}
         self._ws_orders: dict[str, dict[str, Any]] = {}
         self._ws_orders_raw: list[dict[str, Any]] = []
         self._ws_positions: dict[str, dict[str, Any]] = {}
@@ -117,6 +147,61 @@ class HyperliquidGateway:
         Canonicalize to an 8-decimal string and parse back before submit.
         """
         return float(f"{float(value):.8f}")
+
+    def _lookup_asset(self, coin: str) -> Optional[int]:
+        exchange = self._exchange
+        info = getattr(exchange, "info", None) if exchange is not None else None
+        if info is None:
+            return None
+        try:
+            mapper = getattr(info, "name_to_asset", None)
+            if callable(mapper):
+                return int(mapper(coin))
+        except Exception:
+            pass
+        try:
+            asset = info.coin_to_asset.get(coin)
+            return int(asset) if asset is not None else None
+        except Exception:
+            return None
+
+    def _normalize_limit_price(self, coin: str, value: Any) -> float:
+        """
+        Match Hyperliquid price validity:
+        - 5 significant figures
+        - decimal precision derived from szDecimals (perp: 6, spot: 8)
+        - explicit divisibility against derived dynamic tick step
+        """
+        px = float(value or 0)
+        if px <= 0:
+            return self._wire_safe_float(px)
+        asset = self._lookup_asset(coin)
+        exchange = self._exchange
+        info = getattr(exchange, "info", None) if exchange is not None else None
+        if info is None or asset is None:
+            return self._wire_safe_float(round(float(f"{px:.5g}"), 6))
+        try:
+            is_spot = int(asset) >= 10_000
+            max_decimals = 8 if is_spot else 6
+            sz_decimals = int(info.asset_to_sz_decimals.get(asset, 0))
+            decimals_limit = max(0, max_decimals - sz_decimals)
+
+            # SDK-compatible first-pass normalization.
+            base = float(round(float(f"{px:.5g}"), decimals_limit))
+
+            # Enforce exact divisibility against dynamic 5-sig-fig step + decimal floor.
+            abs_base = abs(base)
+            exponent = int(Decimal(str(abs_base)).adjusted())
+            sig_step = Decimal(10) ** (exponent - 4)
+            decimal_step = Decimal(10) ** (-decimals_limit)
+            step = sig_step if sig_step > decimal_step else decimal_step
+            quantized = (
+                (Decimal(str(base)) / step).quantize(Decimal("1"), rounding=ROUND_HALF_UP) * step
+            )
+            normalized = quantized.quantize(Decimal(10) ** (-decimals_limit), rounding=ROUND_HALF_UP)
+            return self._wire_safe_float(float(normalized))
+        except Exception:
+            return self._wire_safe_float(px)
 
     @classmethod
     def _is_terminal_status(cls, status: Any) -> bool:
@@ -224,6 +309,243 @@ class HyperliquidGateway:
         except Exception:
             return
 
+    @staticmethod
+    def _extract_statuses(response: Any) -> list[dict[str, Any]]:
+        if not isinstance(response, dict):
+            return []
+        payload = response.get("response") or response
+        data = payload.get("data") if isinstance(payload, dict) else None
+        statuses = data.get("statuses") if isinstance(data, dict) else None
+        return statuses if isinstance(statuses, list) else []
+
+    @classmethod
+    def _extract_oids(cls, response: Any) -> list[str]:
+        statuses = cls._extract_statuses(response)
+        out: list[str] = []
+        for status in statuses:
+            if not isinstance(status, dict):
+                continue
+            for field in ("resting", "filled"):
+                item = status.get(field)
+                if not isinstance(item, dict):
+                    continue
+                oid = item.get("oid") or item.get("orderId")
+                if oid is not None:
+                    out.append(str(oid))
+        return out
+
+    def _track_submitted_order_ids(
+        self,
+        response: Any,
+        *,
+        fallback_coin: Optional[str] = None,
+        request_coins: Optional[list[Optional[str]]] = None,
+    ) -> None:
+        now = time.time()
+        statuses = self._extract_statuses(response)
+        if statuses:
+            for idx, status in enumerate(statuses):
+                if not isinstance(status, dict):
+                    continue
+                oid = None
+                for field in ("resting", "filled"):
+                    item = status.get(field)
+                    if not isinstance(item, dict):
+                        continue
+                    candidate = item.get("oid") or item.get("orderId")
+                    if candidate is not None:
+                        oid = str(candidate)
+                        break
+                if oid is None:
+                    continue
+                coin = fallback_coin
+                if request_coins and idx < len(request_coins):
+                    coin = request_coins[idx] or coin
+                self._pending_submitted_orders[oid] = {"ts": now, "coin": coin}
+        else:
+            for oid in self._extract_oids(response):
+                self._pending_submitted_orders[str(oid)] = {"ts": now, "coin": fallback_coin}
+
+    def _clear_pending_order_id(self, order_id: Any) -> None:
+        if order_id is None:
+            return
+        self._pending_submitted_orders.pop(str(order_id), None)
+
+    def _pending_timeout_symbols(self, now: Optional[float] = None) -> list[str]:
+        ts = now if now is not None else time.time()
+        if self._reconcile_order_timeout_seconds <= 0:
+            return []
+        symbols: set[str] = set()
+        for item in self._pending_submitted_orders.values():
+            created_at = float(item.get("ts") or 0.0)
+            if created_at <= 0:
+                continue
+            if ts - created_at < self._reconcile_order_timeout_seconds:
+                continue
+            coin = str(item.get("coin") or "").upper().strip()
+            if coin:
+                symbols.add(self._symbol_from_coin(coin))
+        return sorted(symbols)
+
+    def _stream_has_open_state(self) -> bool:
+        return bool(self._ws_orders or self._ws_positions or self._pending_submitted_orders)
+
+    def _record_reconcile_reason_event(
+        self,
+        *,
+        reason: str,
+        ts: Optional[float] = None,
+        timeout_symbols: Optional[list[str]] = None,
+    ) -> None:
+        now = ts if ts is not None else time.time()
+        window = self._reconcile_alert_window_seconds
+        if window <= 0:
+            return
+
+        reason_events = self._reconcile_reason_events[reason]
+        reason_events.append(now)
+        while reason_events and (now - reason_events[0]) > window:
+            reason_events.popleft()
+
+        def _maybe_alert(key: str, message: str, *, threshold: int, count: int) -> None:
+            if count < threshold:
+                return
+            last = self._last_alert_by_key.get(key, 0.0)
+            if now - last < self._alert_min_interval_seconds:
+                return
+            self._last_alert_by_key[key] = now
+            logger.warning(
+                message,
+                extra={
+                    "event": message,
+                    "reason": reason,
+                    "count": count,
+                    "window_seconds": window,
+                    "threshold": threshold,
+                },
+            )
+
+        if reason == "ws_stale":
+            _maybe_alert(
+                "ws_stale",
+                "hl_reconcile_alert_ws_stale",
+                threshold=self._reconcile_alert_max_per_window,
+                count=len(reason_events),
+            )
+            return
+
+        if reason == "order_lifecycle_timeout":
+            _maybe_alert(
+                "order_timeout",
+                "hl_reconcile_alert_order_timeout",
+                threshold=self._reconcile_alert_max_per_window,
+                count=len(reason_events),
+            )
+            for symbol in timeout_symbols or []:
+                symbol_events = self._order_timeout_symbol_events[symbol]
+                symbol_events.append(now)
+                while symbol_events and (now - symbol_events[0]) > window:
+                    symbol_events.popleft()
+                _maybe_alert(
+                    f"order_timeout:{symbol}",
+                    "hl_reconcile_alert_order_timeout_symbol",
+                    threshold=self._order_timeout_alert_max_per_window,
+                    count=len(symbol_events),
+                )
+
+    def get_stream_health_snapshot(self) -> dict[str, Any]:
+        now = time.time()
+        last_private_age = (now - self._last_private_ws_event_ts) if self._last_private_ws_event_ts else None
+        last_reconcile_age = (now - self._last_reconcile_ts) if self._last_reconcile_ts else None
+        oldest_pending_age = None
+        if self._pending_submitted_orders:
+            oldest_pending = min(float(item.get("ts") or 0.0) for item in self._pending_submitted_orders.values())
+            if oldest_pending > 0:
+                oldest_pending_age = max(0.0, now - oldest_pending)
+        return {
+            "ws_alive": bool(self._ws_alive()),
+            "last_private_ws_event_age_seconds": last_private_age,
+            "reconcile_count": int(self._reconcile_count),
+            "last_reconcile_age_seconds": last_reconcile_age,
+            "last_reconcile_reason": self._last_reconcile_reason,
+            "last_reconcile_error": self._last_reconcile_error,
+            "pending_submitted_orders": len(self._pending_submitted_orders),
+            "oldest_pending_order_age_seconds": oldest_pending_age,
+            "reconcile_reason_counts": dict(self._reconcile_reason_counts),
+        }
+
+    def _collect_reconcile_reasons(self, now: Optional[float] = None) -> list[str]:
+        ts = now if now is not None else time.time()
+        reasons: list[str] = []
+        if (
+            self._reconcile_audit_interval > 0
+            and ts - self._last_reconcile_ts >= self._reconcile_audit_interval
+        ):
+            reasons.append("periodic_audit")
+        if self._reconcile_stale_stream_seconds > 0 and self._stream_has_open_state():
+            reference = self._last_private_ws_event_ts or self._stream_started_at
+            if reference > 0 and ts - reference >= self._reconcile_stale_stream_seconds:
+                reasons.append("ws_stale")
+        if self._reconcile_order_timeout_seconds > 0 and self._pending_submitted_orders:
+            oldest_pending = min(float(item.get("ts") or 0.0) for item in self._pending_submitted_orders.values())
+            if ts - oldest_pending >= self._reconcile_order_timeout_seconds:
+                reasons.append("order_lifecycle_timeout")
+        return reasons
+
+    async def _audit_reconcile(self, *, reason: str, force: bool = False) -> bool:
+        if not self._user_address:
+            return False
+        if self._reconcile_lock.locked():
+            return False
+        now = time.time()
+        if not force and self._reconcile_min_gap_seconds > 0 and (now - self._last_reconcile_ts) < self._reconcile_min_gap_seconds:
+            return False
+        async with self._reconcile_lock:
+            started = time.time()
+            prev_orders = list(self._ws_orders.values())
+            prev_positions = list(self._ws_positions.values())
+            try:
+                orders = await self.get_open_orders(force_rest=True, publish=False)
+                positions = await self.get_open_positions(force_rest=True, publish=False)
+                if orders != prev_orders:
+                    self._publish_event({"type": "orders", "payload": list(orders)})
+                    self._publish_event({"type": "orders_raw", "payload": list(orders)})
+                if positions != prev_positions:
+                    self._publish_event({"type": "positions", "payload": list(positions)})
+                self._last_reconcile_ts = time.time()
+                self._last_reconcile_reason = reason
+                self._last_reconcile_error = None
+                self._reconcile_count += 1
+                self._reconcile_reason_counts[reason] = self._reconcile_reason_counts.get(reason, 0) + 1
+                timeout_symbols = self._pending_timeout_symbols(now=self._last_reconcile_ts) if reason == "order_lifecycle_timeout" else []
+                self._record_reconcile_reason_event(
+                    reason=reason,
+                    ts=self._last_reconcile_ts,
+                    timeout_symbols=timeout_symbols,
+                )
+                elapsed_ms = round((self._last_reconcile_ts - started) * 1000, 2)
+                snapshot = self.get_stream_health_snapshot()
+                logger.info(
+                    "hl_reconcile_completed",
+                    extra={
+                        "event": "hl_reconcile_completed",
+                        "reason": reason,
+                        "duration_ms": elapsed_ms,
+                        "orders_count": len(orders),
+                        "positions_count": len(positions),
+                        "last_private_ws_event_age_seconds": snapshot.get("last_private_ws_event_age_seconds"),
+                        "pending_submitted_orders": snapshot.get("pending_submitted_orders"),
+                    },
+                )
+                return True
+            except Exception as exc:
+                self._last_reconcile_error = str(exc)
+                logger.warning(
+                    "hl_reconcile_failed",
+                    extra={"event": "hl_reconcile_failed", "reason": reason, "error": str(exc)},
+                )
+                return False
+
     async def load_configs(self) -> None:
         try:
             meta = await asyncio.to_thread(self._info.meta)
@@ -327,6 +649,9 @@ class HyperliquidGateway:
         if self._ws_running:
             return
         self._ws_running = True
+        self._stream_started_at = time.time()
+        if self._last_reconcile_ts <= 0:
+            self._last_reconcile_ts = self._stream_started_at
         await self._subscribe_streams()
         if self._loop and (self._ws_monitor_task is None or self._ws_monitor_task.done()):
             self._ws_monitor_task = self._loop.create_task(self._ws_monitor_loop())
@@ -361,6 +686,7 @@ class HyperliquidGateway:
                     break
                 if self._ws_info is None:
                     await self._subscribe_streams()
+                    await self._audit_reconcile(reason="ws_reconnect")
                     continue
                 if not self._ws_alive():
                     info = self._ws_info
@@ -372,6 +698,11 @@ class HyperliquidGateway:
                             pass
                     self._ws_info = None
                     await self._subscribe_streams()
+                    self._last_ws_reconnect_ts = time.time()
+                    await self._audit_reconcile(reason="ws_reconnect")
+                    continue
+                for reason in self._collect_reconcile_reasons():
+                    await self._audit_reconcile(reason=reason)
             except asyncio.CancelledError:
                 break
             except Exception:
@@ -422,6 +753,9 @@ class HyperliquidGateway:
         self._ws_orders.clear()
         self._ws_orders_raw = []
         self._ws_positions.clear()
+        self._pending_submitted_orders.clear()
+        self._last_private_ws_event_ts = 0.0
+        self._last_ws_reconnect_ts = 0.0
 
     def register_subscriber(self) -> asyncio.Queue:
         q: asyncio.Queue = asyncio.Queue()
@@ -439,9 +773,11 @@ class HyperliquidGateway:
             self._on_ws_all_mids(ws_msg)
             return
         if channel == "orderupdates":
+            self._last_private_ws_event_ts = time.time()
             self._on_ws_order_updates(ws_msg)
             return
         if channel == "user":
+            self._last_private_ws_event_ts = time.time()
             self._schedule_coro(self._seed_stream_state)
 
     def _on_ws_all_mids(self, ws_msg: dict[str, Any]) -> None:
@@ -474,6 +810,7 @@ class HyperliquidGateway:
             oid = str(parsed.get("orderId") or "")
             if not oid:
                 continue
+            self._clear_pending_order_id(oid)
             if self._is_terminal_status(parsed.get("status")):
                 if oid in self._ws_orders:
                     self._ws_orders.pop(oid, None)
@@ -495,7 +832,7 @@ class HyperliquidGateway:
         coin = self._coin_from_symbol(symbol)
         return self._configs.get(self._symbol_from_coin(coin))
 
-    async def get_account_summary(self) -> Dict[str, float]:
+    async def get_account_summary(self) -> Dict[str, Any]:
         user = self._require_user_address()
         payload = await asyncio.to_thread(self._info.user_state, user)
         if not isinstance(payload, dict):
@@ -514,6 +851,7 @@ class HyperliquidGateway:
             "total_equity": _f(account_value),
             "total_upnl": _f(total_upnl),
             "available_margin": _f(withdrawable),
+            "stream_health": self.get_stream_health_snapshot(),
         }
 
     async def get_account_equity(self) -> float:
@@ -678,31 +1016,85 @@ class HyperliquidGateway:
         asset = self._coin_to_asset.get(coin)
         if asset is None:
             raise ValueError(f"Unknown Hyperliquid asset for symbol {symbol}.")
+        normalized_price = self._normalize_limit_price(coin, entry_price)
+        is_buy = side in {"BUY", "LONG"}
         payload = {
             "coin": coin,
             "asset": int(asset),
-            "is_buy": side in {"BUY", "LONG"},
-            "price": float(entry_price),
+            "is_buy": is_buy,
+            "price": normalized_price,
             "size": float(size),
             "reduce_only": reduce_only,
             "tif": "Gtc",
         }
-        warning = None
-        if tp is not None or stop is not None:
-            warning = "Hyperliquid TP/SL attach-on-entry is not implemented yet; submit targets separately."
+        entry_request = {
+            "coin": coin,
+            "is_buy": bool(is_buy),
+            "sz": self._wire_safe_float(size),
+            "limit_px": normalized_price,
+            "order_type": {"limit": {"tif": str(payload.get("tif") or "Gtc")}},
+            "reduce_only": bool(reduce_only),
+        }
+        order_requests = [entry_request]
+        grouping = "na"
+        warnings: list[str] = []
+        if abs(float(entry_price) - normalized_price) > 0:
+            warnings.append(f"Entry price adjusted to valid tick: {normalized_price}")
+        close_is_buy = not is_buy
+        if tp is not None:
+            safe_tp = self._normalize_limit_price(coin, tp)
+            order_requests.append(
+                {
+                    "coin": coin,
+                    "is_buy": bool(close_is_buy),
+                    "sz": self._wire_safe_float(size),
+                    "limit_px": safe_tp,
+                    "order_type": {"trigger": {"isMarket": True, "triggerPx": safe_tp, "tpsl": "tp"}},
+                    "reduce_only": True,
+                }
+            )
+        if stop is not None:
+            safe_sl = self._normalize_limit_price(coin, stop)
+            order_requests.append(
+                {
+                    "coin": coin,
+                    "is_buy": bool(close_is_buy),
+                    "sz": self._wire_safe_float(size),
+                    "limit_px": safe_sl,
+                    "order_type": {"trigger": {"isMarket": True, "triggerPx": safe_sl, "tpsl": "sl"}},
+                    "reduce_only": True,
+                }
+            )
+        if len(order_requests) > 1:
+            grouping = "normalTpsl"
+            payload["order_requests"] = order_requests
+            payload["grouping"] = grouping
+        warning = "; ".join(warnings) if warnings else None
         return payload, warning
 
     async def place_order(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         exchange = self._require_exchange()
-        resp = await asyncio.to_thread(
-            exchange.order,
-            payload["coin"],
-            bool(payload["is_buy"]),
-            self._wire_safe_float(payload["size"]),
-            self._wire_safe_float(payload["price"]),
-            {"limit": {"tif": str(payload.get("tif") or "Gtc")}},
-            bool(payload.get("reduce_only", False)),
-        )
+        order_requests = payload.get("order_requests")
+        if isinstance(order_requests, list) and order_requests:
+            request_coins = [str(req.get("coin") or "").upper() if isinstance(req, dict) else None for req in order_requests]
+            resp = await asyncio.to_thread(
+                exchange.bulk_orders,
+                order_requests,
+                None,
+                str(payload.get("grouping") or "na"),
+            )
+            self._track_submitted_order_ids(resp, request_coins=request_coins)
+        else:
+            resp = await asyncio.to_thread(
+                exchange.order,
+                payload["coin"],
+                bool(payload["is_buy"]),
+                self._wire_safe_float(payload["size"]),
+                self._wire_safe_float(payload["price"]),
+                {"limit": {"tif": str(payload.get("tif") or "Gtc")}},
+                bool(payload.get("reduce_only", False)),
+            )
+            self._track_submitted_order_ids(resp, fallback_coin=str(payload.get("coin") or "").upper())
         oid = self._extract_oid(resp)
         if oid is None:
             return {"exchange_order_id": None, "raw": resp}
@@ -719,6 +1111,7 @@ class HyperliquidGateway:
             raise ValueError(f"Order {order_id} not found.")
         coin = self._coin_from_symbol(str(target.get("symbol") or ""))
         resp = await asyncio.to_thread(exchange.cancel, coin, oid)
+        self._clear_pending_order_id(order_id)
         return {"canceled": True, "order_id": str(order_id), "raw": resp}
 
     async def place_close_order(
@@ -738,8 +1131,9 @@ class HyperliquidGateway:
         close_type_norm = (close_type or "").lower()
         if close_type_norm == "market":
             safe_size = self._wire_safe_float(size)
-            safe_price = self._wire_safe_float(limit_price) if limit_price is not None else None
+            safe_price = self._normalize_limit_price(coin, limit_price) if limit_price is not None else None
             resp = await asyncio.to_thread(exchange.market_close, coin, safe_size, safe_price)
+            self._track_submitted_order_ids(resp, fallback_coin=coin)
             return {"exchange_order_id": str(self._extract_oid(resp) or ""), "client_id": None, "raw": resp}
         if limit_price is None or limit_price <= 0:
             raise ValueError("Limit close requires a valid limit_price.")
@@ -748,10 +1142,11 @@ class HyperliquidGateway:
             coin,
             bool(is_buy),
             self._wire_safe_float(size),
-            self._wire_safe_float(limit_price),
+            self._normalize_limit_price(coin, limit_price),
             {"limit": {"tif": "Gtc"}},
             True,
         )
+        self._track_submitted_order_ids(resp, fallback_coin=coin)
         return {"exchange_order_id": str(self._extract_oid(resp) or ""), "client_id": None, "raw": resp}
 
     async def cancel_tpsl_orders(
@@ -783,6 +1178,7 @@ class HyperliquidGateway:
             oid = int(str(oid_raw))
             try:
                 await asyncio.to_thread(exchange.cancel, order_coin, oid)
+                self._clear_pending_order_id(oid)
                 canceled.append(str(oid))
             except Exception as exc:
                 errors.append({"order_id": str(oid), "error": str(exc)})
@@ -825,7 +1221,7 @@ class HyperliquidGateway:
             requested.append(("sl", float(stop_loss)))
 
         for kind, trigger_px in requested:
-            safe_trigger = self._wire_safe_float(trigger_px)
+            safe_trigger = self._normalize_limit_price(coin, trigger_px)
             order_type = {"trigger": {"isMarket": True, "triggerPx": safe_trigger, "tpsl": kind}}
             resp = await asyncio.to_thread(
                 exchange.order,
@@ -836,6 +1232,7 @@ class HyperliquidGateway:
                 order_type,
                 True,
             )
+            self._track_submitted_order_ids(resp, fallback_coin=coin)
             placements.append(
                 {
                     "kind": kind,
@@ -853,25 +1250,9 @@ class HyperliquidGateway:
         return self._exchange
 
     def _extract_oid(self, response: Any) -> Optional[int]:
-        if not isinstance(response, dict):
-            return None
-        payload = response.get("response") or response
-        data = payload.get("data") if isinstance(payload, dict) else None
-        statuses = data.get("statuses") if isinstance(data, dict) else None
-        if not isinstance(statuses, list):
-            return None
-        for status in statuses:
-            if not isinstance(status, dict):
+        for oid in self._extract_oids(response):
+            try:
+                return int(oid)
+            except Exception:
                 continue
-            resting = status.get("resting") or {}
-            filled = status.get("filled") or {}
-            for obj in (resting, filled):
-                if not isinstance(obj, dict):
-                    continue
-                oid = obj.get("oid") or obj.get("orderId")
-                if oid is not None:
-                    try:
-                        return int(oid)
-                    except Exception:
-                        continue
         return None

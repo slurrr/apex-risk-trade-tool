@@ -627,6 +627,51 @@ html[data-theme="light"] .liquidity-chip.is-active {
   color: var(--muted);
 }
 
+.stream-health-panel {
+  border-style: dashed;
+}
+
+.stream-health-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.75rem;
+}
+
+.stream-health-grid .summary-item {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--panel-strong);
+  padding: 0.65rem;
+}
+
+.stream-health-grid .summary-item + .summary-item::before {
+  display: none;
+}
+
+.stream-health-grid .value {
+  font-size: 1rem;
+}
+
+.stream-health-status {
+  margin-top: 0.75rem;
+  margin-bottom: 0.5rem;
+}
+
+.stream-health-raw {
+  margin: 0;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 0.75rem;
+  background: var(--panel-strong);
+  color: var(--text);
+  font-size: 0.8rem;
+  line-height: 1.35;
+  max-height: 240px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
 .theme-toggle {
   position: absolute;
   top: 1rem;
@@ -887,6 +932,9 @@ html[data-theme="light"] .liquidity-chip.is-active {
 
 @media (max-width: 768px) {
   .account-summary {
+    grid-template-columns: 1fr;
+  }
+  .stream-health-grid {
     grid-template-columns: 1fr;
   }
   .trade-grid {

@@ -24,6 +24,25 @@ Backend + static UI for previewing, executing, and monitoring ApeX trades with r
 - The UI includes an ATR timeframe selector (3m/15m/1h/4h); the selection persists in localStorage and is sent as an optional `timeframe` override to `/risk/atr-stop`.
 - After editing any of the above values, restart the FastAPI service (or your process manager) so the new configuration is loaded by `backend/core/config.py`.
 
+## Hyperliquid TP/SL Behavior
+- When venue is `hyperliquid`, `POST /api/trade` can submit entry + TP/SL atomically (single grouped exchange action) when `tp` and `stop_price` are provided.
+- The backend uses grouped `bulk_orders` (`normalTpsl`) so TP/SL does not depend on a later `/positions/{id}/targets` call for initial protection.
+- `/api/positions/{position_id}/targets` is still used for post-entry edits (change/clear TP or SL).
+- Hyperliquid minimum notional guard is configurable via `HYPERLIQUID_MIN_NOTIONAL_USDC` (default: `10`).
+- Hyperliquid reconcile is WS-first with low-frequency audits and signal-based checks:
+  - Periodic audit: `HYPERLIQUID_RECONCILE_AUDIT_INTERVAL_SECONDS` (default `900`).
+  - Stale private WS threshold: `HYPERLIQUID_RECONCILE_STALE_STREAM_SECONDS` (default `90`).
+  - Submitted-order lifecycle timeout: `HYPERLIQUID_RECONCILE_ORDER_TIMEOUT_SECONDS` (default `20`).
+  - Minimum gap between reconciles: `HYPERLIQUID_RECONCILE_MIN_GAP_SECONDS` (default `5`).
+  - Alerting window and thresholds:
+    - `HYPERLIQUID_RECONCILE_ALERT_WINDOW_SECONDS` (default `300`)
+    - `HYPERLIQUID_RECONCILE_ALERT_MAX_PER_WINDOW` (default `3`)
+    - `HYPERLIQUID_ORDER_TIMEOUT_ALERT_MAX_PER_WINDOW` (default `3`)
+- Stream health endpoint: `GET /api/stream/health` (includes reconcile counters/reasons and WS freshness).
+- Dev UI diagnostics panel:
+  - Hidden by default and enabled only when `localStorage.dev_stream_health = "1"` in browser devtools.
+  - Polls `/api/stream/health` every 15s and supports manual refresh.
+
 ## Notes
 - Network is validated and defaults to testnet; unexpected networks log a warning on startup.
 - UI/assets contain no secrets; keep API keys only in local `.env`.
