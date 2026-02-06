@@ -135,5 +135,9 @@
 
     loadOrders();
     startStream();
+
+    window.addEventListener("venue:changed", () => {
+      loadOrders();
+    });
   });
 })();

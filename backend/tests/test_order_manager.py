@@ -510,6 +510,37 @@ def test_execute_trade_hl_grouped_submit_no_warning_when_all_legs_accepted():
     assert not any("attached TP/SL legs" in w for w in result["warnings"])
 
 
+def test_list_orders_hyperliquid_hides_tpsl_orders():
+    gateway = FakeGateway(
+        venue="hyperliquid",
+        orders=[
+            {
+                "orderId": "entry-1",
+                "symbol": "BTC-USDT",
+                "side": "BUY",
+                "size": "0.01",
+                "status": "OPEN",
+                "type": "LIMIT",
+                "reduceOnly": False,
+            },
+            {
+                "orderId": "sl-1",
+                "symbol": "BTC-USDT",
+                "side": "SELL",
+                "size": "0.01",
+                "status": "OPEN",
+                "type": "STOP_MARKET",
+                "reduceOnly": True,
+                "isPositionTpsl": True,
+            },
+        ],
+    )
+    manager = OrderManager(gateway)
+    orders = asyncio.run(manager.list_orders())
+    assert len(orders) == 1
+    assert orders[0]["id"] == "entry-1"
+
+
 def test_preview_trade_hyperliquid_margin_guard_uses_leverage():
     class _Gateway(FakeGateway):
         async def get_account_summary(self):

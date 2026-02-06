@@ -61,6 +61,21 @@ async def stream_updates(
         if normalized_positions:
             await _send_event("positions", normalized_positions)
 
+    def _normalize_orders_for_ui(orders_payload) -> list[dict]:
+        normalized: list[dict] = []
+        for order in orders_payload or []:
+            if not isinstance(order, dict):
+                continue
+            include_fn = getattr(manager, "_include_in_open_orders", None)
+            if callable(include_fn) and not include_fn(order):
+                continue
+            norm = manager._normalize_order(order)
+            if norm and not norm.get("id"):
+                norm["id"] = order.get("_cache_id") or order.get("clientOrderId") or order.get("orderId") or order.get("order_id")
+            if norm:
+                normalized.append(norm)
+        return normalized
+
     async def _force_tpsl_refresh():
         nonlocal pending_tpsl_refresh
         if not is_apex_gateway:
@@ -117,7 +132,7 @@ async def stream_updates(
                 norm = manager._normalize_position(pos, tpsl_map=manager._tpsl_targets_by_symbol)
                 if norm:
                     initial_positions.append(norm)
-        await _send_event("orders", initial_orders)
+        await _send_event("orders", _normalize_orders_for_ui(initial_orders))
         if initial_positions:
             await _send_event("positions", initial_positions)
     except Exception:
@@ -180,14 +195,7 @@ async def stream_updates(
                 # )
             elif event.get("type") == "orders":
                 # Forward orders event without touching TP/SL map (no TP/SL data here)
-                normalized = []
-                for o in event.get("payload") or []:
-                    norm = manager._normalize_order(o)
-                    if norm and not norm.get("id"):
-                        norm["id"] = o.get("_cache_id") or o.get("clientOrderId") or o.get("orderId") or o.get("order_id")
-                    if norm:
-                        normalized.append(norm)
-                msg = {"type": "orders", "payload": normalized}
+                msg = {"type": "orders", "payload": _normalize_orders_for_ui(event.get("payload"))}
             elif event.get("type") == "account":
                 msg = {"type": "account", "payload": event.get("payload")}
             try:

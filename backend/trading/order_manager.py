@@ -231,6 +231,13 @@ class OrderManager:
             reduce_only = order.get("reduce_only")
         return bool(reduce_only)
 
+    def _include_in_open_orders(self, order: Dict[str, Any]) -> bool:
+        """Hide venue-specific conditional TP/SL orders from open-orders UI feed."""
+        venue = (getattr(self.gateway, "venue", "") or "").lower()
+        if venue == "hyperliquid" and self._is_tpsl_order(order):
+            return False
+        return True
+
     def _merge_tpsl_map(self, new_map: Dict[str, Dict[str, Optional[float]]], *, replace: bool = False) -> None:
         """Merge TP/SL values into the existing map, optionally replacing missing symbols."""
         if replace:
@@ -511,6 +518,8 @@ class OrderManager:
         raw_orders = await self.gateway.get_open_orders()
         normalized: list[Dict[str, Any]] = []
         for order in raw_orders:
+            if not self._include_in_open_orders(order):
+                continue
             norm = self._normalize_order(order)
             oid = norm.get("id")
             cid = norm.get("client_id")

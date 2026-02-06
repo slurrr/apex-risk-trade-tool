@@ -37,6 +37,24 @@
       </div>
     </header>
 
+    <section id="venue-switch-card" class="card venue-switch-card">
+      <div class="venue-switch-grid">
+        <button type="button" class="venue-switch-btn" id="venue-btn-hyperliquid" data-venue="hyperliquid" aria-pressed="false">
+          <img
+            id="venue-banner-hl"
+            src="/assets/hype_banner.svg"
+            data-dark-src="/assets/hype_banner.svg"
+            data-light-src="/assets/hype_banner_light.svg"
+            alt="Hyperliquid"
+          />
+        </button>
+        <button type="button" class="venue-switch-btn" id="venue-btn-apex" data-venue="apex" aria-pressed="false">
+          <img src="/assets/apex_banner.svg" alt="ApeX" />
+        </button>
+      </div>
+      <div class="muted venue-switch-status hidden" id="venue-switch-status" aria-live="polite"></div>
+    </section>
+
     <section id="trade-form" class="card">
       <div class="section-header">
         <div>

@@ -7,11 +7,16 @@
   const ATR_TIMEFRAME_STORAGE_KEY = "atr_timeframe_override";
   const ATR_TIMEFRAME_DEFAULT = "15m";
   const ATR_TIMEFRAMES = ["3m", "15m", "1h", "4h"];
+  const SUPPORTED_VENUES = ["hyperliquid", "apex"];
+  const VENUE_SYNC_INTERVAL_MS = 5000;
   const DEV_STREAM_HEALTH_STORAGE_KEY = "dev_stream_health";
   const STREAM_HEALTH_POLL_INTERVAL_MS = 15000;
   let manualTheme = null;
   let mediaQuery;
   let streamHealthTimerId = null;
+  let venueSyncTimerId = null;
+  let venueSyncInFlight = false;
+  let venueSwitchInProgress = false;
   const state = {
     symbols: [],
     symbolIndex: new Map(),
@@ -20,6 +25,7 @@
     activeTickSize: null,
     activePriceDecimals: DEFAULT_PRICE_DECIMALS,
     lastAccountUpdate: 0,
+    activeVenue: null,
   };
   let sideToggleControl = null;
 
@@ -118,8 +124,20 @@
       toggleBtn.dataset.icon = isDark ? "☾" : "☼";
       toggleBtn.dataset.theme = theme;
     }
+    updateVenueBannersForTheme(theme);
     if (options.persist) {
       persistTheme(theme);
+    }
+  }
+
+  function updateVenueBannersForTheme(theme) {
+    const hlBanner = document.getElementById("venue-banner-hl");
+    if (!hlBanner) return;
+    const darkSrc = hlBanner.getAttribute("data-dark-src");
+    const lightSrc = hlBanner.getAttribute("data-light-src");
+    const nextSrc = theme === "light" ? lightSrc : darkSrc;
+    if (nextSrc) {
+      hlBanner.setAttribute("src", nextSrc);
     }
   }
 
@@ -394,6 +412,134 @@
         loadAccountSummary();
       }
     }, 10000);
+  }
+
+  function normalizeVenue(value) {
+    const clean = (value || "").toString().trim().toLowerCase();
+    return SUPPORTED_VENUES.includes(clean) ? clean : null;
+  }
+
+  function setVenueSwitchState({ activeVenue = null, switching = false, status = "" } = {}) {
+    const statusEl = document.getElementById("venue-switch-status");
+    const buttons = Array.from(document.querySelectorAll(".venue-switch-btn"));
+    buttons.forEach((btn) => {
+      const venue = normalizeVenue(btn.dataset.venue);
+      const isActive = Boolean(activeVenue && venue === activeVenue);
+      btn.classList.toggle("is-active", isActive);
+      btn.setAttribute("aria-pressed", String(isActive));
+      btn.disabled = switching;
+    });
+    if (statusEl) {
+      if (switching && status) {
+        statusEl.textContent = status;
+        statusEl.classList.remove("hidden");
+      } else {
+        statusEl.textContent = "";
+        statusEl.classList.add("hidden");
+      }
+    }
+  }
+
+  async function loadActiveVenue(options = {}) {
+    const { propagateChange = true } = options;
+    const panel = document.getElementById("venue-switch-card");
+    if (!panel) return null;
+    if (venueSwitchInProgress || venueSyncInFlight) {
+      return state.activeVenue;
+    }
+    venueSyncInFlight = true;
+    try {
+      const payload = await fetchJson(`${API_BASE}/api/venue`);
+      const activeVenue = normalizeVenue(payload?.active_venue);
+      const previousVenue = state.activeVenue;
+      state.activeVenue = activeVenue;
+      setVenueSwitchState({ activeVenue });
+      if (
+        propagateChange &&
+        previousVenue &&
+        activeVenue &&
+        previousVenue !== activeVenue
+      ) {
+        loadSymbols();
+        loadAccountSummary();
+        window.dispatchEvent(
+          new CustomEvent("venue:changed", { detail: { active_venue: activeVenue } })
+        );
+      }
+      return activeVenue;
+    } catch (err) {
+      setVenueSwitchState({ activeVenue: state.activeVenue });
+      return null;
+    } finally {
+      venueSyncInFlight = false;
+    }
+  }
+
+  async function setActiveVenue(nextVenue) {
+    const normalized = normalizeVenue(nextVenue);
+    if (!normalized || normalized === state.activeVenue) {
+      return;
+    }
+    setVenueSwitchState({
+      activeVenue: state.activeVenue,
+      switching: true,
+      status: `Switching to ${normalized}...`,
+    });
+    venueSwitchInProgress = true;
+    try {
+      const resp = await fetch(`${API_BASE}/api/venue`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ active_venue: normalized }),
+      });
+      const payload = await resp.json();
+      if (!resp.ok) {
+        throw new Error(payload?.detail || "Venue switch failed");
+      }
+      const activeVenue = normalizeVenue(payload?.active_venue);
+      state.activeVenue = activeVenue;
+      setVenueSwitchState({ activeVenue });
+      loadSymbols();
+      loadAccountSummary();
+      window.dispatchEvent(
+        new CustomEvent("venue:changed", { detail: { active_venue: activeVenue } })
+      );
+    } catch (err) {
+      setVenueSwitchState({ activeVenue: state.activeVenue });
+    } finally {
+      venueSwitchInProgress = false;
+    }
+  }
+
+  function startVenueSyncLoop() {
+    if (venueSyncTimerId) {
+      window.clearInterval(venueSyncTimerId);
+    }
+    venueSyncTimerId = window.setInterval(() => {
+      loadActiveVenue();
+    }, VENUE_SYNC_INTERVAL_MS);
+    document.addEventListener("visibilitychange", () => {
+      if (document.visibilityState === "visible") {
+        loadActiveVenue();
+      }
+    });
+    window.addEventListener("focus", () => {
+      loadActiveVenue();
+    });
+  }
+
+  function initVenueSwitcher() {
+    const panel = document.getElementById("venue-switch-card");
+    if (!panel) return;
+    const buttons = Array.from(panel.querySelectorAll(".venue-switch-btn"));
+    buttons.forEach((btn) => {
+      btn.addEventListener("click", () => {
+        setActiveVenue(btn.dataset.venue);
+      });
+    });
+    setVenueSwitchState({ activeVenue: state.activeVenue });
+    loadActiveVenue({ propagateChange: false });
+    startVenueSyncLoop();
   }
 
   function isDevStreamHealthEnabled() {
@@ -754,6 +900,7 @@
 
   document.addEventListener("DOMContentLoaded", () => {
     initThemeListener();
+    initVenueSwitcher();
     initAtrTimeframeSelector();
     initSideToggle();
     attachSymbolDropdown();
