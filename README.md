@@ -56,6 +56,8 @@ Backend + static UI for previewing, executing, and monitoring ApeX trades with r
   - `APEX_POLL_ACCOUNT_INTERVAL_SECONDS` (default `15`)
 - ApeX TP/SL local hints now expire if not confirmed by authoritative stream/cache:
   - `APEX_LOCAL_HINT_TTL_SECONDS` (default `20`)
+- ApeX symbol price auto-populate is WS-first and only falls back to REST when stale/missing:
+  - `APEX_WS_PRICE_STALE_SECONDS` (default `30`)
 
 ## Notes
 - Network is validated and defaults to testnet; unexpected networks log a warning on startup.

@@ -28,6 +28,7 @@ class ExchangeGateway:
         self._configs_cache: Dict[str, Any] = {}
         self._account_cache: Dict[str, Any] = {}
         self._ws_prices: Dict[str, float] = {}
+        self._ws_price_ts: Dict[str, float] = {}
         self._ws_orders: Dict[str, Dict[str, Any]] = {}
         self._ws_positions: Dict[str, Dict[str, Any]] = {}
         self._ws_orders_raw: list[Dict[str, Any]] = []
@@ -63,7 +64,11 @@ class ExchangeGateway:
         )
         self._price_cache: dict[str, dict[str, Any]] = {}
         self._last_order_event_ts: float = time.time()
+        self._last_public_ws_event_ts: float = 0.0
         self._last_private_ws_event_ts: float = 0.0
+        self._last_pnl_recomputed_ts: float = 0.0
+        self._last_upnl_source: Optional[str] = None
+        self._last_upnl_updated_ts: float = 0.0
         self._ws_snapshot_written: bool = False
         self._tpsl_client_ids: Dict[str, set[str]] = {}
         self._reconcile_audit_interval = max(
@@ -119,6 +124,10 @@ class ExchangeGateway:
         )
         self._orders_empty_stale_seconds = max(
             0.0, float(getattr(settings, "apex_orders_empty_stale_seconds", 12.0) or 0)
+        )
+        self._ws_price_stale_seconds = max(
+            0.0,
+            float(getattr(settings, "apex_ws_price_stale_seconds", 30.0) or 0),
         )
         self._positions_empty_since: Optional[float] = None
         self._orders_empty_since: Optional[float] = None
@@ -287,6 +296,7 @@ class ExchangeGateway:
         """Clear runtime caches before/after venue switches."""
         with self._lock:
             self._ws_prices.clear()
+            self._ws_price_ts.clear()
             self._ws_orders.clear()
             self._ws_positions.clear()
             self._ws_orders_raw = []
@@ -295,6 +305,7 @@ class ExchangeGateway:
             self._price_cache.clear()
             self._subscribers.clear()
             self._last_private_ws_event_ts = 0.0
+            self._last_public_ws_event_ts = 0.0
             self._last_order_event_ts = time.time()
             self._suspicious_orders_empty_pending = False
             self._suspicious_positions_empty_pending = False
@@ -526,6 +537,8 @@ class ExchangeGateway:
 
     # --- WebSocket callbacks and helpers ---
     def _handle_ticker(self, message: Dict[str, Any]) -> None:
+        now_ts = time.time()
+        self._last_public_ws_event_ts = now_ts
         data = message.get("data") if isinstance(message, dict) else None
         # Flatten possible update wrapper
         entries: list[AnyType] = []
@@ -561,8 +574,9 @@ class ExchangeGateway:
             with self._lock:
                 norm_symbol = self._normalize_symbol_value(symbol)
                 self._ws_prices[norm_symbol] = price_f
-                self._ticker_cache[norm_symbol] = {"price": price_f, "ts": time.time()}
-                self._price_cache[norm_symbol] = {"price": price_f, "ts": time.time(), "source": "ws_ticker"}
+                self._ws_price_ts[norm_symbol] = now_ts
+                self._ticker_cache[norm_symbol] = {"price": price_f, "ts": now_ts}
+                self._price_cache[norm_symbol] = {"price": price_f, "ts": now_ts, "source": "ws_ticker"}
                 publish_positions = self._update_positions_pnl(norm_symbol, price_f)
                 if publish_positions:
                     self._recalculate_total_upnl_locked()
@@ -637,6 +651,8 @@ class ExchangeGateway:
             self._account_cache["availableBalance"] = available_balance_stream
         if total_upnl_stream is not None:
             self._account_cache["totalUnrealizedPnl"] = total_upnl_stream
+            self._last_upnl_source = "ws_account_stream"
+            self._last_upnl_updated_ts = time.time()
         if total_upnl_stream is not None or total_equity_stream is not None or available_balance_stream is not None:
             summary_changed = True
         if summary_changed:
@@ -816,7 +832,21 @@ class ExchangeGateway:
             except Exception:
                 continue
         self._account_cache["totalUnrealizedPnl"] = total
+        self._last_pnl_recomputed_ts = time.time()
+        self._last_upnl_source = "ws"
+        self._last_upnl_updated_ts = self._last_pnl_recomputed_ts
         return total
+
+    def _ws_pnl_is_fresh(self, *, now: Optional[float] = None) -> bool:
+        ts_now = now if now is not None else time.time()
+        if not self.apex_enable_ws:
+            return False
+        if self._last_public_ws_event_ts <= 0 or self._last_pnl_recomputed_ts <= 0:
+            return False
+        ws_age = ts_now - self._last_public_ws_event_ts
+        pnl_age = ts_now - self._last_pnl_recomputed_ts
+        freshness = max(5.0, float(self._ws_price_stale_seconds or 0.0))
+        return ws_age <= freshness and pnl_age <= freshness
 
     def _filter_and_map_orders(self, orders: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
         mapped: Dict[str, Dict[str, Any]] = {}
@@ -1150,29 +1180,57 @@ class ExchangeGateway:
 
     async def get_reference_price(self, symbol: str) -> Tuple[float, str]:
         """
-        Resolve best-available reference price in this order: mid, mark/oracle, then last.
+        WS-first reference price:
+        1) fresh WS ticker for symbol
+        2) REST ticker_v3 (mid/mark/last)
+        3) legacy fallback last price
         """
         norm_symbol = self._normalize_symbol_value(symbol)
         now = time.time()
-        cache_entry = self._price_cache.get(norm_symbol)
-        if cache_entry and now - cache_entry.get("ts", 0) < 10:
-            return float(cache_entry["price"]), str(cache_entry.get("source") or "cache")
 
-        ticker = await asyncio.to_thread(self._public_client.ticker_v3, symbol=symbol)
-        result = ticker.get("result") or ticker.get("data") or ticker
-        entries = result if isinstance(result, list) else [result]
-        for entry in entries:
-            if not isinstance(entry, dict):
-                continue
-            price, source = self._extract_reference_price(entry)
-            if price is None:
-                continue
-            self._price_cache[norm_symbol] = {
-                "price": float(price),
-                "ts": now,
-                "source": source or "ticker",
-            }
-            return float(price), (source or "ticker")
+        # Prefer live WS symbol price indefinitely, only forcing REST when stale.
+        ws_price: Optional[float] = None
+        ws_ts: Optional[float] = None
+        with self._lock:
+            cached_ws = self._ws_prices.get(norm_symbol)
+            if cached_ws is not None:
+                ws_price = float(cached_ws)
+                ws_ts = float(self._ws_price_ts.get(norm_symbol) or 0.0)
+        if ws_price is not None:
+            if ws_ts and self._ws_price_stale_seconds > 0 and (now - ws_ts) > self._ws_price_stale_seconds:
+                # Stale stream value: attempt REST refresh below.
+                pass
+            else:
+                self._price_cache[norm_symbol] = {"price": ws_price, "ts": now, "source": "ws_ticker"}
+                return ws_price, "ws_ticker"
+
+        # Short-lived non-WS cache fallback keeps UI responsive during transient REST blips.
+        cache_entry = self._price_cache.get(norm_symbol)
+        if cache_entry:
+            cache_source = str(cache_entry.get("source") or "cache")
+            if cache_source != "ws_ticker" and (now - float(cache_entry.get("ts") or 0.0)) < 10:
+                return float(cache_entry["price"]), cache_source
+
+        try:
+            ticker = await asyncio.to_thread(self._public_client.ticker_v3, symbol=symbol)
+            result = ticker.get("result") or ticker.get("data") or ticker
+            entries = result if isinstance(result, list) else [result]
+            for entry in entries:
+                if not isinstance(entry, dict):
+                    continue
+                price, source = self._extract_reference_price(entry)
+                if price is None:
+                    continue
+                self._price_cache[norm_symbol] = {
+                    "price": float(price),
+                    "ts": now,
+                    "source": source or "ticker",
+                }
+                return float(price), (source or "ticker")
+        except Exception:
+            # If REST fails and we still have a WS value, return it as stale fallback.
+            if ws_price is not None:
+                return ws_price, "ws_ticker_stale"
 
         # Final fallback keeps legacy behavior for Apex.
         fallback = await self.get_symbol_last_price(symbol)
@@ -1277,10 +1335,12 @@ class ExchangeGateway:
                             account_equity = available_balance
                         if account_equity is not None:
                             existing_upnl = self._account_cache.get("totalUnrealizedPnl")
+                            ws_override = False
                             if total_upnl is None:
                                 total_upnl = existing_upnl
-                            elif self.apex_enable_ws and existing_upnl is not None:
+                            elif self._ws_pnl_is_fresh(now=time.time()) and existing_upnl is not None:
                                 total_upnl = existing_upnl
+                                ws_override = True
                             self._account_cache.update(
                                 {
                                     "totalEquityValue": account_equity,
@@ -1288,6 +1348,9 @@ class ExchangeGateway:
                                     "totalUnrealizedPnl": total_upnl,
                                 }
                             )
+                            if total_upnl is not None:
+                                self._last_upnl_source = "ws" if ws_override else "rest_account_balance"
+                                self._last_upnl_updated_ts = time.time()
                             self._publish_account_summary_event()
                             return float(account_equity)
                         wallets = (account or {}).get("contractWallets") or payload.get("contractWallets") or []
@@ -1301,10 +1364,12 @@ class ExchangeGateway:
                                 price = await self._get_usdt_price(token)
                                 equity_usdt += bal * price
                             existing_upnl = self._account_cache.get("totalUnrealizedPnl")
+                            ws_override = False
                             if total_upnl is None:
                                 total_upnl = existing_upnl
-                            elif self.apex_enable_ws and existing_upnl is not None:
+                            elif self._ws_pnl_is_fresh(now=time.time()) and existing_upnl is not None:
                                 total_upnl = existing_upnl
+                                ws_override = True
                             self._account_cache.update(
                                 {
                                     "totalEquityValue": equity_usdt,
@@ -1312,6 +1377,9 @@ class ExchangeGateway:
                                     "totalUnrealizedPnl": total_upnl,
                                 }
                             )
+                            if total_upnl is not None:
+                                self._last_upnl_source = "ws" if ws_override else "rest_account_balance"
+                                self._last_upnl_updated_ts = time.time()
                             self._publish_account_summary_event()
                             return equity_usdt
                         raise ValueError("totalEquityValue not present in account balance response")
@@ -1329,9 +1397,14 @@ class ExchangeGateway:
                 legacy_upnl = legacy_account.get("totalUnrealizedPnl")
                 if legacy_upnl is not None:
                     existing_upnl = self._account_cache.get("totalUnrealizedPnl")
-                    if self.apex_enable_ws and existing_upnl is not None:
+                    ws_override = False
+                    if self._ws_pnl_is_fresh(now=time.time()) and existing_upnl is not None:
                         legacy_upnl = existing_upnl
+                        ws_override = True
                     self._account_cache["totalUnrealizedPnl"] = legacy_upnl
+                    if legacy_upnl is not None:
+                        self._last_upnl_source = "ws" if ws_override else "rest_account_legacy"
+                        self._last_upnl_updated_ts = time.time()
                 self._publish_account_summary_event()
                 return float(legacy_account["totalEquity"])
             wallets = legacy_payload.get("contractWallets") or []
@@ -1411,6 +1484,7 @@ class ExchangeGateway:
 
     def get_stream_health_snapshot(self) -> dict[str, Any]:
         now = time.time()
+        last_public_age = (now - self._last_public_ws_event_ts) if self._last_public_ws_event_ts else None
         last_private_age = (now - self._last_private_ws_event_ts) if self._last_private_ws_event_ts else None
         last_reconcile_age = (now - self._last_reconcile_ts) if self._last_reconcile_ts else None
         tpsl_symbols = len(
@@ -1422,6 +1496,7 @@ class ExchangeGateway:
         )
         payload = {
             "ws_alive": bool(self.apex_enable_ws and self._ws_running),
+            "last_public_ws_event_age_seconds": last_public_age,
             "last_private_ws_event_age_seconds": last_private_age,
             "reconcile_count": int(self._reconcile_count),
             "last_reconcile_age_seconds": last_reconcile_age,
@@ -1435,6 +1510,8 @@ class ExchangeGateway:
             "empty_snapshot_protected_count": int(self._empty_snapshot_protected_count),
             "tpsl_symbols_tracked": tpsl_symbols,
             "tpsl_flap_suspected_count": int(self._tpsl_flap_suspected_count),
+            "upnl_source": self._last_upnl_source,
+            "upnl_age_seconds": (now - self._last_upnl_updated_ts) if self._last_upnl_updated_ts else None,
         }
         if not self.apex_enable_ws:
             payload["poll_orders_interval_seconds"] = self._orders_poll_interval_seconds
@@ -1772,6 +1849,10 @@ class ExchangeGateway:
                 or resp.get("orderId")
                 or resp.get("orderID")
             )
+            # After submit, force a short delayed REST refresh so UI order tables update
+            # even when private WS order updates are delayed or missing.
+            if self._loop and (self._order_refresh_task is None or self._order_refresh_task.done()):
+                self._order_refresh_task = self._loop.create_task(self._delayed_refresh())
             client_id = payload.get("clientId") or payload.get("client_id")
             return {"exchange_order_id": order_id, "client_id": client_id, "raw": resp}
         except Exception as exc:
@@ -2191,6 +2272,8 @@ class ExchangeGateway:
                 "size": size_fmt,
                 "triggerPrice": self._format_with_step(trigger_price, tick) if trigger_price is not None else None,
                 "price": self._format_with_step(trigger_price, tick) if trigger_price is not None else None,
+                # Explicitly request mark-based trigger evaluation for Apex conditional TP/SL.
+                "triggerPriceType": "MARKET",
                 "reduceOnly": True,
                 "isPositionTpsl": True,
                 "timeInForce": "GOOD_TIL_CANCEL",
@@ -2253,6 +2336,7 @@ class ExchangeGateway:
         if tp:
             payload["tpPrice"] = self._format_with_step(tp, tick)
             payload["tpTriggerPrice"] = self._format_with_step(tp, tick)
+            payload["tpTriggerPriceType"] = "MARKET"
             payload["isOpenTpslOrder"] = True
             payload["isSetOpenTp"] = True
             payload["tpSide"] = "SELL" if side.upper() == "BUY" else "BUY"
@@ -2260,6 +2344,7 @@ class ExchangeGateway:
         if stop:
             payload["slPrice"] = self._format_with_step(stop, tick)
             payload["slTriggerPrice"] = self._format_with_step(stop, tick)
+            payload["slTriggerPriceType"] = "MARKET"
             payload["isOpenTpslOrder"] = True
             payload["isSetOpenSl"] = True
             payload["slSide"] = "SELL" if side.upper() == "BUY" else "BUY"

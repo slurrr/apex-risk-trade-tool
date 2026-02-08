@@ -70,8 +70,8 @@ class OrderManager:
         )
         self._depth_summary_cache: Dict[tuple[str, int, int], tuple[float, Dict[str, Any]]] = {}
         self._depth_summary_cache_ttl = 1.5
-        self._apex_tpsl_backfill_last_ts = 0.0
-        self._apex_tpsl_backfill_min_gap_seconds = 5.0
+        self._tpsl_backfill_last_ts = 0.0
+        self._tpsl_backfill_min_gap_seconds = 5.0
 
     async def _get_account_context(self) -> tuple[float, Optional[float]]:
         equity = await self.gateway.get_account_equity()
@@ -695,10 +695,10 @@ class OrderManager:
             positions_raw = await self.gateway.get_open_positions(force_rest=True, publish=True)
         self.positions = await self._enrich_positions(positions_raw, tpsl_map=self._tpsl_targets_by_symbol)
 
-        # ApeX: if positions exist but TP/SL map is missing, do a bounded account-orders backfill once
+        # If positions exist but TP/SL map is missing, do a bounded account-orders backfill once
         # to avoid "blank until hard refresh" on initial load.
         venue = (getattr(self.gateway, "venue", "") or "").lower()
-        if venue == "apex" and self.positions:
+        if venue in {"apex", "hyperliquid"} and self.positions:
             needs_backfill = False
             for pos in self.positions:
                 symbol = self._normalize_symbol_value(pos.get("symbol"))
@@ -707,8 +707,8 @@ class OrderManager:
                     needs_backfill = True
                     break
             now = time.time()
-            if needs_backfill and (now - self._apex_tpsl_backfill_last_ts) >= self._apex_tpsl_backfill_min_gap_seconds:
-                self._apex_tpsl_backfill_last_ts = now
+            if needs_backfill and (now - self._tpsl_backfill_last_ts) >= self._tpsl_backfill_min_gap_seconds:
+                self._tpsl_backfill_last_ts = now
                 try:
                     snapshot = self.gateway.get_account_orders_snapshot()
                     if not snapshot:

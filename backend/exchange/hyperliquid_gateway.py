@@ -1,4 +1,5 @@
 import asyncio
+import random
 import time
 from collections import defaultdict, deque
 from decimal import Decimal, ROUND_HALF_UP
@@ -67,6 +68,10 @@ class HyperliquidGateway:
         self._ws_monitor_task: Optional[asyncio.Task] = None
         self._account_refresh_task: Optional[asyncio.Task] = None
         self._account_refresh_interval = 15.0
+        self._rest_max_retries = 2
+        self._rest_retry_backoff = 0.35
+        self._rest_retry_backoff_max = 1.5
+        self._rest_retry_jitter = 0.15
         self._reconcile_audit_interval = max(0.0, float(reconcile_audit_interval_seconds or 0.0))
         self._reconcile_stale_stream_seconds = max(0.0, float(reconcile_stale_stream_seconds or 0.0))
         self._reconcile_order_timeout_seconds = max(0.0, float(reconcile_order_timeout_seconds or 0.0))
@@ -91,6 +96,9 @@ class HyperliquidGateway:
         self._ws_orders: dict[str, dict[str, Any]] = {}
         self._ws_orders_raw: list[dict[str, Any]] = []
         self._ws_positions: dict[str, dict[str, Any]] = {}
+        self._last_account_summary: Optional[dict[str, Any]] = None
+        self._last_account_summary_ts: float = 0.0
+        self._last_account_summary_error: Optional[str] = None
         self._info = info_client or Info(base_url=self._base_url, skip_ws=True, timeout=8)
         self._ws_info = ws_info_client
         self._exchange: Optional[Any] = exchange_client
@@ -285,7 +293,7 @@ class HyperliquidGateway:
             if not isinstance(row, dict):
                 continue
             parsed = self._normalize_order_row(row)
-            if parsed:
+            if parsed and not self._is_terminal_status(parsed.get("status")):
                 normalized.append(parsed)
         return normalized
 
@@ -388,7 +396,121 @@ class HyperliquidGateway:
         return sorted(symbols)
 
     def _stream_has_open_state(self) -> bool:
-        return bool(self._ws_orders or self._ws_positions or self._pending_submitted_orders)
+        # Private order/user streams can be legitimately quiet while orders rest.
+        # Arm stale-private reconciliation only while we are actively waiting for
+        # newly submitted order lifecycle events.
+        return bool(self._pending_submitted_orders)
+
+    @staticmethod
+    def _should_retry_rest(exc: Exception) -> bool:
+        msg = str(exc).lower()
+        return any(
+            phrase in msg
+            for phrase in (
+                "read timed out",
+                "connection aborted",
+                "connection reset",
+                "remote end closed connection",
+                "temporarily unavailable",
+                "timeout",
+                "502",
+                "503",
+                "504",
+            )
+        )
+
+    async def _call_info_with_retries(self, label: str, func, *args) -> Any:
+        attempt = 0
+        while True:
+            try:
+                return await asyncio.to_thread(func, *args)
+            except Exception as exc:
+                if not self._should_retry_rest(exc) or attempt >= self._rest_max_retries:
+                    raise
+                delay = self._rest_retry_backoff * (2**attempt)
+                if self._rest_retry_backoff_max > 0:
+                    delay = min(delay, self._rest_retry_backoff_max)
+                if self._rest_retry_jitter > 0:
+                    delay += random.uniform(0.0, self._rest_retry_jitter)
+                attempt += 1
+                logger.warning(
+                    "hl_rest_retrying",
+                    extra={
+                        "event": "hl_rest_retrying",
+                        "label": label,
+                        "attempt": attempt,
+                        "delay": round(delay, 3),
+                        "error": str(exc),
+                    },
+                )
+                await asyncio.sleep(delay)
+
+    def _build_account_summary_from_payload(self, payload: Any) -> dict[str, Any]:
+        if not isinstance(payload, dict):
+            return {"total_equity": 0.0, "total_upnl": 0.0, "available_margin": 0.0}
+
+        margin = payload.get("marginSummary") or {}
+        account_value = margin.get("accountValue")
+        withdrawable = payload.get("withdrawable")
+        positions = payload.get("assetPositions") or []
+
+        def _f(value: Any) -> float:
+            parsed = self._to_float(value)
+            return float(parsed) if parsed is not None else 0.0
+
+        total_upnl = 0.0
+        for row in positions:
+            if not isinstance(row, dict):
+                continue
+            pos = row.get("position") if isinstance(row.get("position"), dict) else row
+            if not isinstance(pos, dict):
+                continue
+            pnl = (
+                pos.get("unrealizedPnl")
+                if pos.get("unrealizedPnl") is not None
+                else pos.get("unrealizedPnlUsd")
+            )
+            parsed = self._to_float(pnl)
+            if parsed is not None:
+                total_upnl += float(parsed)
+
+        account_value_f = _f(account_value)
+        withdrawable_f = _f(withdrawable)
+        # Prefer explicit available/free margin fields when present.
+        explicit_available = (
+            payload.get("availableMargin")
+            or payload.get("available_margin")
+            or payload.get("availableBalance")
+            or payload.get("freeCollateral")
+            or margin.get("availableMargin")
+            or margin.get("available_margin")
+            or margin.get("availableBalance")
+            or margin.get("freeCollateral")
+        )
+        explicit_available_f = self._to_float(explicit_available)
+        total_margin_used_f = self._to_float(
+            margin.get("totalMarginUsed")
+            if margin.get("totalMarginUsed") is not None
+            else margin.get("marginUsed")
+        )
+        derived_available_f = None
+        if total_margin_used_f is not None:
+            derived_available_f = max(0.0, account_value_f - float(total_margin_used_f))
+
+        if explicit_available_f is not None:
+            available_margin = max(0.0, float(explicit_available_f))
+        elif derived_available_f is not None:
+            available_margin = derived_available_f
+        else:
+            # Fallback: withdrawable can understate opening capacity; use the larger
+            # value when no explicit/derived free-margin field is available.
+            available_margin = max(account_value_f, withdrawable_f)
+
+        return {
+            "total_equity": account_value_f,
+            "total_upnl": total_upnl,
+            "available_margin": available_margin,
+        }
 
     def _record_reconcile_reason_event(
         self,
@@ -456,7 +578,9 @@ class HyperliquidGateway:
     def get_stream_health_snapshot(self) -> dict[str, Any]:
         now = time.time()
         last_private_age = (now - self._last_private_ws_event_ts) if self._last_private_ws_event_ts else None
+        last_reconnect_age = (now - self._last_ws_reconnect_ts) if self._last_ws_reconnect_ts else None
         last_reconcile_age = (now - self._last_reconcile_ts) if self._last_reconcile_ts else None
+        account_summary_cache_age = (now - self._last_account_summary_ts) if self._last_account_summary_ts else None
         oldest_pending_age = None
         if self._pending_submitted_orders:
             oldest_pending = min(float(item.get("ts") or 0.0) for item in self._pending_submitted_orders.values())
@@ -464,7 +588,12 @@ class HyperliquidGateway:
                 oldest_pending_age = max(0.0, now - oldest_pending)
         return {
             "ws_alive": bool(self._ws_alive()),
+            "ws_info_connected": bool(self._ws_info is not None),
+            "ws_subscription_count": len(self._ws_subscription_ids),
+            "last_ws_reconnect_age_seconds": last_reconnect_age,
             "last_private_ws_event_age_seconds": last_private_age,
+            "account_summary_cache_age_seconds": account_summary_cache_age,
+            "last_account_summary_error": self._last_account_summary_error,
             "reconcile_count": int(self._reconcile_count),
             "last_reconcile_age_seconds": last_reconcile_age,
             "last_reconcile_reason": self._last_reconcile_reason,
@@ -483,7 +612,9 @@ class HyperliquidGateway:
         ):
             reasons.append("periodic_audit")
         if self._reconcile_stale_stream_seconds > 0 and self._stream_has_open_state():
-            reference = self._last_private_ws_event_ts or self._stream_started_at
+            # Only evaluate stale-private-stream after we've observed at least one
+            # private event; otherwise startup/idle periods can false-trigger loops.
+            reference = self._last_private_ws_event_ts
             if reference > 0 and ts - reference >= self._reconcile_stale_stream_seconds:
                 reasons.append("ws_stale")
         if self._reconcile_order_timeout_seconds > 0 and self._pending_submitted_orders:
@@ -834,25 +965,28 @@ class HyperliquidGateway:
 
     async def get_account_summary(self) -> Dict[str, Any]:
         user = self._require_user_address()
-        payload = await asyncio.to_thread(self._info.user_state, user)
-        if not isinstance(payload, dict):
-            return {"total_equity": 0.0, "total_upnl": 0.0, "available_margin": 0.0}
+        try:
+            payload = await self._call_info_with_retries("user_state", self._info.user_state, user)
+            summary = self._build_account_summary_from_payload(payload)
+            self._last_account_summary = dict(summary)
+            self._last_account_summary_ts = time.time()
+            self._last_account_summary_error = None
+        except Exception as exc:
+            self._last_account_summary_error = str(exc)
+            if self._last_account_summary is None:
+                raise
+            summary = dict(self._last_account_summary)
+            logger.warning(
+                "hl_account_summary_cache_fallback",
+                extra={
+                    "event": "hl_account_summary_cache_fallback",
+                    "error": str(exc),
+                    "cache_age_seconds": round(max(0.0, time.time() - self._last_account_summary_ts), 3),
+                },
+            )
 
-        margin = payload.get("marginSummary") or {}
-        account_value = margin.get("accountValue")
-        total_upnl = margin.get("totalNtlPos")
-        withdrawable = payload.get("withdrawable")
-
-        def _f(value: Any) -> float:
-            parsed = self._to_float(value)
-            return float(parsed) if parsed is not None else 0.0
-
-        return {
-            "total_equity": _f(account_value),
-            "total_upnl": _f(total_upnl),
-            "available_margin": _f(withdrawable),
-            "stream_health": self.get_stream_health_snapshot(),
-        }
+        summary["stream_health"] = self.get_stream_health_snapshot()
+        return summary
 
     async def get_account_equity(self) -> float:
         summary = await self.get_account_summary()
@@ -974,6 +1108,11 @@ class HyperliquidGateway:
         if orders:
             self._ws_orders = {str(o.get("orderId")): o for o in orders if o.get("orderId")}
             self._ws_orders_raw = list(orders)
+        else:
+            # Empty authoritative snapshot means there are no open orders anymore.
+            # Clear caches so stale-state reconcile logic can stand down.
+            self._ws_orders.clear()
+            self._ws_orders_raw = []
         if publish:
             self._publish_event({"type": "orders", "payload": orders})
             self._publish_event({"type": "orders_raw", "payload": orders})

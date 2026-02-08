@@ -405,10 +405,16 @@
   }
 
   function startAccountSummaryHeartbeat() {
+    let lastForcedRefresh = 0;
     window.setInterval(() => {
       const staleMs = 20000;
+      const forcedRefreshMs = 30000;
+      const now = Date.now();
       const last = state.lastAccountUpdate || 0;
-      if (!last || Date.now() - last > staleMs) {
+      const stale = !last || now - last > staleMs;
+      const dueForced = !lastForcedRefresh || now - lastForcedRefresh > forcedRefreshMs;
+      if (stale || dueForced) {
+        lastForcedRefresh = now;
         loadAccountSummary();
       }
     }, 10000);

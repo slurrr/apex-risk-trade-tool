@@ -111,8 +111,11 @@ async def stream_updates(
 
     # send initial snapshots so UI renders quickly
     try:
-        # prefer WS caches for initial payloads to avoid REST overrides
+        # Prefer raw account-orders when present (contains TP/SL metadata), but fall back to
+        # mapped open-orders cache to avoid rendering a transient empty orders table.
         initial_orders = list(getattr(gateway, "_ws_orders_raw", []) or [])
+        if not initial_orders:
+            initial_orders = list(getattr(gateway, "_ws_orders", {}).values() or [])
         # reconcile TP/SL map from current account raw orders (authoritative on connect)
         try:
             manager._reconcile_tpsl(initial_orders)

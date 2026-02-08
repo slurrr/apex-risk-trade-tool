@@ -1,5 +1,6 @@
 import asyncio
 import sys
+import time
 from pathlib import Path
 import pytest
 
@@ -60,6 +61,7 @@ class FakeSettings:
 class FakeClient:
     def __init__(self) -> None:
         self.deleted: list[str] = []
+        self.created_orders: list[dict] = []
         self.positions = [{"symbol": "BTC-USDT", "size": "1", "side": "LONG"}]
         self.orders = [{"orderId": "abc-123", "symbol": "BTC-USDT", "status": "OPEN"}]
         self.account = {
@@ -91,6 +93,10 @@ class FakeClient:
         order_identifier = kwargs.get("id") or orderId
         self.deleted.append(order_identifier)
         return {"result": {"status": "canceled", "orderId": order_identifier}}
+
+    def create_order_v3(self, **kwargs):
+        self.created_orders.append(dict(kwargs))
+        return {"result": {"orderId": "new-oid-1"}}
 
 
 class FakeDataClient(FakeClient):
@@ -153,6 +159,71 @@ def test_open_orders_handles_data_payload():
     assert orders and orders[0]["orderId"] == "abc-123"
 
 
+def test_apex_place_order_schedules_delayed_refresh():
+    client = FakeClient()
+    gateway = make_apex_gateway(client)
+
+    async def _scenario():
+        gateway._loop = asyncio.get_running_loop()
+        called = asyncio.Event()
+
+        async def _fake_delayed_refresh():
+            called.set()
+
+        gateway._delayed_refresh = _fake_delayed_refresh
+        placed = await gateway.place_order(
+            {
+                "symbol": "BTC-USDT",
+                "side": "BUY",
+                "type": "LIMIT",
+                "size": "0.01",
+                "price": "40000",
+                "clientId": "cid-1",
+            }
+        )
+        assert placed["exchange_order_id"] == "new-oid-1"
+        assert placed["client_id"] == "cid-1"
+        await asyncio.wait_for(called.wait(), timeout=0.5)
+
+    asyncio.run(_scenario())
+
+
+def test_apex_build_order_payload_sets_mark_trigger_type_for_attached_tpsl():
+    gateway = make_apex_gateway(FakeClient())
+    run(gateway.load_configs())
+    payload, warning = run(
+        gateway.build_order_payload(
+            symbol="BTC-USDT",
+            side="BUY",
+            size=0.1,
+            entry_price=40000.0,
+            reduce_only=False,
+            tp=42000.0,
+            stop=39000.0,
+        )
+    )
+    assert warning is None
+    assert payload["tpTriggerPriceType"] == "MARKET"
+    assert payload["slTriggerPriceType"] == "MARKET"
+
+
+def test_apex_update_targets_sets_mark_trigger_type():
+    gateway = make_apex_gateway(FakeClient())
+    submitted = run(
+        gateway.update_targets(
+            symbol="BTC-USDT",
+            side="LONG",
+            size=0.1,
+            take_profit=42000.0,
+            stop_loss=39000.0,
+        )
+    )
+    assert len(submitted["submitted"]) == 2
+    for row in submitted["submitted"]:
+        payload = row["payload"]
+        assert payload["triggerPriceType"] == "MARKET"
+
+
 def test_update_positions_stream_updates_account_cache():
     gateway = make_apex_gateway(FakeClient())
     with gateway._lock:
@@ -191,6 +262,49 @@ def test_get_reference_price_prefers_mid_then_caches():
     assert cached_source in {"mid", "cache"}
 
 
+def test_get_reference_price_prefers_fresh_ws_price():
+    gateway = make_apex_gateway(FakeClient())
+    gateway._ws_prices["BTC-USDT"] = 101.25
+    gateway._ws_price_ts["BTC-USDT"] = time.time()
+    gateway._ws_price_stale_seconds = 30.0
+
+    class _FailTicker:
+        def ticker_v3(self, symbol: str):
+            raise AssertionError("REST ticker should not be called when WS price is fresh")
+
+    gateway._public_client = _FailTicker()
+    price, source = run(gateway.get_reference_price("BTC-USDT"))
+    assert price == 101.25
+    assert source == "ws_ticker"
+
+
+def test_get_reference_price_uses_rest_when_ws_price_is_stale():
+    gateway = make_apex_gateway(FakeClient())
+    gateway._ws_prices["BTC-USDT"] = 101.25
+    gateway._ws_price_ts["BTC-USDT"] = time.time() - 120
+    gateway._ws_price_stale_seconds = 30.0
+    gateway._public_client = FakeTickerClient()
+    price, source = run(gateway.get_reference_price("BTC-USDT"))
+    assert price == 100.0
+    assert source == "mid"
+
+
+def test_get_reference_price_falls_back_to_stale_ws_if_rest_fails():
+    gateway = make_apex_gateway(FakeClient())
+    gateway._ws_prices["BTC-USDT"] = 101.25
+    gateway._ws_price_ts["BTC-USDT"] = time.time() - 120
+    gateway._ws_price_stale_seconds = 30.0
+
+    class _BrokenTicker:
+        def ticker_v3(self, symbol: str):
+            raise RuntimeError("ticker down")
+
+    gateway._public_client = _BrokenTicker()
+    price, source = run(gateway.get_reference_price("BTC-USDT"))
+    assert price == 101.25
+    assert source == "ws_ticker_stale"
+
+
 def test_apex_stream_health_snapshot_has_parity_fields():
     gateway = make_apex_gateway(FakeClient())
     snapshot = gateway.get_stream_health_snapshot()
@@ -201,6 +315,8 @@ def test_apex_stream_health_snapshot_has_parity_fields():
     assert snapshot["pending_submitted_orders"] == 0
     assert snapshot["fallback_rest_orders_used_count"] >= 0
     assert snapshot["fallback_rest_positions_used_count"] >= 0
+    assert "upnl_source" in snapshot
+    assert "upnl_age_seconds" in snapshot
     assert snapshot["poll_orders_interval_seconds"] == 5.0
     assert snapshot["poll_positions_interval_seconds"] == 5.0
     assert snapshot["poll_account_interval_seconds"] == 15.0
@@ -213,6 +329,30 @@ def test_apex_stream_health_fallback_counters_increment_on_rest_reads():
     snapshot = gateway.get_stream_health_snapshot()
     assert snapshot["fallback_rest_orders_used_count"] >= 1
     assert snapshot["fallback_rest_positions_used_count"] >= 1
+
+
+def test_apex_get_account_equity_prefers_rest_upnl_when_ws_pnl_stale():
+    gateway = make_apex_gateway(FakeClient())
+    gateway.apex_enable_ws = True
+    gateway._account_cache["totalUnrealizedPnl"] = 999.0
+    gateway._last_public_ws_event_ts = time.time() - 300
+    gateway._last_pnl_recomputed_ts = time.time() - 300
+
+    run(gateway.get_account_equity())
+    assert gateway._account_cache["totalUnrealizedPnl"] == 25
+    assert gateway.get_stream_health_snapshot()["upnl_source"] in {"rest_account_balance", "rest_account_legacy"}
+
+
+def test_apex_get_account_equity_prefers_ws_upnl_when_ws_pnl_fresh():
+    gateway = make_apex_gateway(FakeClient())
+    gateway.apex_enable_ws = True
+    gateway._account_cache["totalUnrealizedPnl"] = 999.0
+    gateway._last_public_ws_event_ts = time.time()
+    gateway._last_pnl_recomputed_ts = time.time()
+
+    run(gateway.get_account_equity())
+    assert gateway._account_cache["totalUnrealizedPnl"] == 999.0
+    assert gateway.get_stream_health_snapshot()["upnl_source"] == "ws"
 
 
 class FakeHyperliquidGateway(HyperliquidGateway):
@@ -315,7 +455,8 @@ def test_hyperliquid_private_account_orders_positions():
     gateway = FakeHyperliquidGateway()
     summary = run(gateway.get_account_summary())
     assert summary["total_equity"] == 1200.5
-    assert summary["available_margin"] == 800.1
+    assert summary["available_margin"] == 1200.5
+    assert summary["total_upnl"] == pytest.approx(7.4)
 
     positions = run(gateway.get_open_positions())
     assert len(positions) == 2
@@ -433,8 +574,14 @@ def test_hyperliquid_place_order_with_attached_tpsl_uses_bulk_grouping():
     placed = run(gateway.place_order(payload))
     assert placed["exchange_order_id"] == "12345"
     assert len(gateway._exchange.bulk_order_calls) == 1
-    _, _, grouping = gateway._exchange.bulk_order_calls[0]
+    order_requests, _, grouping = gateway._exchange.bulk_order_calls[0]
     assert grouping == "normalTpsl"
+    sl_leg = next(
+        req
+        for req in order_requests
+        if isinstance(req, dict) and (req.get("order_type") or {}).get("trigger", {}).get("tpsl") == "sl"
+    )
+    assert sl_leg["order_type"]["trigger"]["isMarket"] is True
 
 
 def test_hyperliquid_cancel_tpsl_orders_filters_symbol_and_kind():
@@ -446,7 +593,7 @@ def test_hyperliquid_cancel_tpsl_orders_filters_symbol_and_kind():
     assert result["canceled"] == []
 
 
-def test_hyperliquid_reconcile_reasons_periodic_and_stale():
+def test_hyperliquid_reconcile_reasons_periodic_and_stale_for_pending_orders():
     gateway = FakeHyperliquidGateway()
     now = 1_000.0
     gateway._reconcile_audit_interval = 300.0
@@ -454,10 +601,77 @@ def test_hyperliquid_reconcile_reasons_periodic_and_stale():
     gateway._last_reconcile_ts = now - 400.0
     gateway._stream_started_at = now - 200.0
     gateway._last_private_ws_event_ts = now - 120.0
-    gateway._ws_orders = {"1": {"orderId": "1"}}
+    gateway._pending_submitted_orders = {"1": {"ts": now - 30.0, "coin": "BTC"}}
     reasons = gateway._collect_reconcile_reasons(now=now)
     assert "periodic_audit" in reasons
     assert "ws_stale" in reasons
+
+
+def test_hyperliquid_reconcile_stale_ignores_positions_only_state():
+    gateway = FakeHyperliquidGateway()
+    now = 1_500.0
+    gateway._reconcile_stale_stream_seconds = 90.0
+    gateway._stream_started_at = now - 200.0
+    gateway._last_private_ws_event_ts = now - 180.0
+    gateway._ws_positions = {"BTC": {"symbol": "BTC-USDC", "size": "0.01"}}
+    reasons = gateway._collect_reconcile_reasons(now=now)
+    assert "ws_stale" not in reasons
+
+
+def test_hyperliquid_reconcile_stale_requires_private_event_reference():
+    gateway = FakeHyperliquidGateway()
+    now = 1_700.0
+    gateway._reconcile_stale_stream_seconds = 90.0
+    gateway._stream_started_at = now - 500.0
+    gateway._last_private_ws_event_ts = 0.0
+    gateway._pending_submitted_orders = {"1": {"ts": now - 30.0, "coin": "BTC"}}
+    reasons = gateway._collect_reconcile_reasons(now=now)
+    assert "ws_stale" not in reasons
+
+
+def test_hyperliquid_reconcile_stale_ignores_resting_open_orders_without_pending_submit():
+    gateway = FakeHyperliquidGateway()
+    now = 1_750.0
+    gateway._reconcile_stale_stream_seconds = 90.0
+    gateway._last_private_ws_event_ts = now - 300.0
+    gateway._ws_orders = {"1": {"orderId": "1"}}
+    gateway._pending_submitted_orders = {}
+    reasons = gateway._collect_reconcile_reasons(now=now)
+    assert "ws_stale" not in reasons
+
+
+def test_hyperliquid_empty_orders_snapshot_clears_cached_open_state():
+    gateway = FakeHyperliquidGateway()
+    gateway._ws_orders = {"1": {"orderId": "1", "symbol": "BTC-USDC"}}
+    gateway._ws_orders_raw = [{"orderId": "1", "symbol": "BTC-USDC"}]
+
+    async def _empty_orders():
+        return []
+
+    gateway._fetch_frontend_open_orders = _empty_orders
+    orders = run(gateway.get_open_orders(force_rest=True, publish=False))
+    assert orders == []
+    assert gateway._ws_orders == {}
+    assert gateway._ws_orders_raw == []
+
+    now = 2_000.0
+    gateway._reconcile_stale_stream_seconds = 90.0
+    gateway._stream_started_at = now - 1_000.0
+    gateway._last_private_ws_event_ts = now - 900.0
+    reasons = gateway._collect_reconcile_reasons(now=now)
+    assert "ws_stale" not in reasons
+
+
+def test_hyperliquid_open_orders_filter_terminal_status_rows():
+    gateway = FakeHyperliquidGateway()
+    gateway._info.frontend_open_orders = lambda address: [
+        {"oid": 1, "coin": "BTC", "side": "B", "sz": "0.01", "limitPx": "41000", "status": "OPEN", "orderType": "Limit"},
+        {"oid": 2, "coin": "BTC", "side": "B", "sz": "0.01", "limitPx": "41000", "status": "CANCELED", "orderType": "Limit"},
+        {"oid": 3, "coin": "BTC", "side": "B", "sz": "0.01", "limitPx": "41000", "status": "FILLED", "orderType": "Limit"},
+    ]
+    orders = run(gateway.get_open_orders(force_rest=True, publish=False))
+    assert len(orders) == 1
+    assert orders[0]["orderId"] == "1"
 
 
 def test_hyperliquid_order_timeout_reason_and_clear_on_ws_update():
@@ -528,3 +742,38 @@ def test_hyperliquid_account_summary_exposes_stream_health():
     summary = run(gateway.get_account_summary())
     assert "stream_health" in summary
     assert "reconcile_count" in summary["stream_health"]
+
+
+def test_hyperliquid_account_summary_retries_transient_disconnect():
+    gateway = FakeHyperliquidGateway()
+    gateway._rest_retry_backoff = 0.0
+    gateway._rest_retry_backoff_max = 0.0
+    gateway._rest_retry_jitter = 0.0
+    original = gateway._info.user_state
+    state = {"calls": 0}
+
+    def _flaky_user_state(address: str):
+        state["calls"] += 1
+        if state["calls"] == 1:
+            raise RuntimeError("Connection aborted: Remote end closed connection without response")
+        return original(address)
+
+    gateway._info.user_state = _flaky_user_state
+    summary = run(gateway.get_account_summary())
+    assert summary["total_equity"] > 0
+    assert state["calls"] >= 2
+
+
+def test_hyperliquid_account_summary_uses_cache_on_repeated_disconnect():
+    gateway = FakeHyperliquidGateway()
+    cached = run(gateway.get_account_summary())
+    gateway._rest_retry_backoff = 0.0
+    gateway._rest_retry_backoff_max = 0.0
+    gateway._rest_retry_jitter = 0.0
+    gateway._info.user_state = lambda address: (_ for _ in ()).throw(
+        RuntimeError("Connection aborted: Remote end closed connection without response")
+    )
+    summary = run(gateway.get_account_summary())
+    assert summary["total_equity"] == cached["total_equity"]
+    assert summary["available_margin"] == cached["available_margin"]
+    assert gateway.get_stream_health_snapshot()["last_account_summary_error"] is not None

@@ -13,8 +13,11 @@
   const slValues = new Map();
   let lastPositions = [];
   let lastPositionsUpdate = 0;
+  let positionsRefreshInFlight = false;
   let editLockCount = 0;
   let pendingRender = null;
+  let streamSocket = null;
+  let streamToken = 0;
   const lockEditing = () => {};
   const unlockEditing = () => {};
 
@@ -308,6 +311,8 @@
   }
 
   async function loadPositions(forceResync = false) {
+    if (positionsRefreshInFlight) return;
+    positionsRefreshInFlight = true;
     const errorBox = document.getElementById("positions-error");
     errorBox.textContent = "";
     try {
@@ -315,19 +320,39 @@
       renderPositions(positions);
     } catch (err) {
       errorBox.textContent = err.message;
+    } finally {
+      positionsRefreshInFlight = false;
     }
   }
 
-  function startStream(attempt = 0) {
+  function startPositionsHeartbeat() {
+    let lastForcedRefresh = 0;
+    window.setInterval(() => {
+      const now = Date.now();
+      const staleMs = 20000;
+      const forcedRefreshMs = 45000;
+      const stale = !lastPositionsUpdate || (now - lastPositionsUpdate) > staleMs;
+      const dueForced = !lastForcedRefresh || (now - lastForcedRefresh) > forcedRefreshMs;
+      if (stale || dueForced) {
+        lastForcedRefresh = now;
+        loadPositions(false);
+      }
+    }, 10000);
+  }
+
+  function startStream(attempt = 0, token = streamToken) {
     const errorBox = document.getElementById("positions-error");
     try {
       const wsUrl = API_BASE.replace(/^http/, "ws") + "/ws/stream";
       const socket = new WebSocket(wsUrl);
+      streamSocket = socket;
       socket.onmessage = (event) => {
+        if (token !== streamToken) {
+          return;
+        }
         try {
           const msg = JSON.parse(event.data);
           if (msg.type === "positions" && Array.isArray(msg.payload)) {
-            console.log("WS positions message", msg);
             renderPositions(msg.payload);
           }
         } catch (err) {
@@ -338,12 +363,26 @@
         errorBox.textContent = "Stream disconnected; falling back to manual refresh.";
       };
       socket.onclose = () => {
+        if (token !== streamToken) {
+          return;
+        }
         errorBox.textContent = "Stream closed; attempting to reconnect.";
-        setTimeout(() => startStream(Math.min(attempt + 1, 5)), 1000 * Math.min(attempt + 1, 5));
+        setTimeout(
+          () => startStream(Math.min(attempt + 1, 5), token),
+          1000 * Math.min(attempt + 1, 5)
+        );
       };
     } catch (err) {
       errorBox.textContent = err.message;
     }
+  }
+
+  function restartStream() {
+    streamToken += 1;
+    if (streamSocket && streamSocket.readyState < WebSocket.CLOSING) {
+      streamSocket.close();
+    }
+    startStream(0, streamToken);
   }
 
   document.addEventListener("DOMContentLoaded", () => {
@@ -562,10 +601,12 @@
     });
 
     loadPositions();
-    startStream();
+    restartStream();
+    startPositionsHeartbeat();
 
     window.addEventListener("venue:changed", () => {
       loadPositions(true);
+      restartStream();
     });
 
     window.setInterval(() => {

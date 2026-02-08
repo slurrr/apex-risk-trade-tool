@@ -3,6 +3,8 @@
   window.API_BASE || 
   `${window.location.protocol}//${window.location.hostname}:8000`;
   const formatNumber = (window.TradeApp && window.TradeApp.formatNumber) || ((v) => v);
+  let streamSocket = null;
+  let streamToken = 0;
 
   async function fetchOrders() {
     const resp = await fetch(`${API_BASE}/api/orders`);
@@ -79,12 +81,16 @@
     }
   }
 
-  function startStream(attempt = 0) {
+  function startStream(attempt = 0, token = streamToken) {
     const errorBox = document.getElementById("orders-error");
     try {
       const wsUrl = (API_BASE.replace(/^http/, "ws")) + "/ws/stream";
       const socket = new WebSocket(wsUrl);
+      streamSocket = socket;
       socket.onmessage = (event) => {
+        if (token !== streamToken) {
+          return;
+        }
         try {
           const msg = JSON.parse(event.data);
           if (msg.type === "account" && window.TradeApp && typeof window.TradeApp.applyAccountPayload === "function") {
@@ -104,12 +110,26 @@
         errorBox.textContent = "Stream disconnected; falling back to manual refresh.";
       };
       socket.onclose = () => {
+        if (token !== streamToken) {
+          return;
+        }
         errorBox.textContent = "Stream closed; attempting to reconnect.";
-        setTimeout(() => startStream(Math.min(attempt + 1, 5)), 1000 * Math.min(attempt + 1, 5));
+        setTimeout(
+          () => startStream(Math.min(attempt + 1, 5), token),
+          1000 * Math.min(attempt + 1, 5)
+        );
       };
     } catch (err) {
       errorBox.textContent = err.message;
     }
+  }
+
+  function restartStream() {
+    streamToken += 1;
+    if (streamSocket && streamSocket.readyState < WebSocket.CLOSING) {
+      streamSocket.close();
+    }
+    startStream(0, streamToken);
   }
 
   document.addEventListener("DOMContentLoaded", () => {
@@ -134,10 +154,11 @@
     });
 
     loadOrders();
-    startStream();
+    restartStream();
 
     window.addEventListener("venue:changed", () => {
       loadOrders();
+      restartStream();
     });
   });
 })();

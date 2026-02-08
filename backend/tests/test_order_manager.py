@@ -597,6 +597,28 @@ def test_list_positions_apex_backfills_tpsl_without_manual_refresh():
     assert positions[0]["stop_loss"] == 90.0
 
 
+def test_list_positions_hyperliquid_backfills_tpsl_without_manual_refresh():
+    gateway = FakeGateway(
+        venue="hyperliquid",
+        positions=[
+            {"positionId": "pos-1", "symbol": "BTC-USDT", "positionSide": "LONG", "size": "1", "entryPrice": "100"},
+        ],
+        orders=[
+            {
+                "symbol": "BTC-USDT",
+                "type": "STOP_MARKET",
+                "isPositionTpsl": True,
+                "triggerPrice": "90",
+                "status": "UNTRIGGERED",
+                "reduceOnly": True,
+            }
+        ],
+    )
+    manager = OrderManager(gateway)
+    positions = asyncio.run(manager.list_positions())
+    assert positions[0]["stop_loss"] == 90.0
+
+
 def test_preview_trade_hyperliquid_margin_guard_uses_leverage():
     class _Gateway(FakeGateway):
         async def get_account_summary(self):

@@ -88,6 +88,7 @@ class Settings(BaseSettings):
     apex_poll_positions_interval_seconds: float = Field(5.0, env="APEX_POLL_POSITIONS_INTERVAL_SECONDS")
     apex_poll_account_interval_seconds: float = Field(15.0, env="APEX_POLL_ACCOUNT_INTERVAL_SECONDS")
     apex_local_hint_ttl_seconds: float = Field(20.0, env="APEX_LOCAL_HINT_TTL_SECONDS")
+    apex_ws_price_stale_seconds: float = Field(30.0, env="APEX_WS_PRICE_STALE_SECONDS")
     slippage_factor: float = Field(0.0, env="SLIPPAGE_FACTOR")
     fee_buffer_pct: float = Field(0.0, env="FEE_BUFFER_PCT")
     atr_timeframe: str = Field(
@@ -163,6 +164,7 @@ class Settings(BaseSettings):
         "apex_poll_positions_interval_seconds",
         "apex_poll_account_interval_seconds",
         "apex_local_hint_ttl_seconds",
+        "apex_ws_price_stale_seconds",
         "hyperliquid_reconcile_audit_interval_seconds",
         "hyperliquid_reconcile_stale_stream_seconds",
         "hyperliquid_reconcile_order_timeout_seconds",
