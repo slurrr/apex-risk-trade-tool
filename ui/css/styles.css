@@ -8,6 +8,7 @@
   --border: #243040;
   --accent: #ecbc43;
   --accent-rgb: 236, 188, 67;
+  --accent-ink: #1a2433;
   --accent-press: #d8a529;
   --accent-muted: rgba(236, 188, 67, 0.28);
   --positive: #3ecf8e;
@@ -24,6 +25,7 @@
   --border: #dce3ef;
   --accent: #ecbc43;
   --accent-rgb: 236, 188, 67;
+  --accent-ink: #1a2433;
   --accent-press: #d8a529;
   --accent-muted: rgba(236, 188, 67, 0.34);
   --positive: #16a34a;
@@ -326,13 +328,15 @@ body {
   letter-spacing: 0.08em;
 }
 
-.atr-timeframe-toggle {
+.atr-timeframe-toggle,
+.risk-preset-toggle {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 0.35rem;
 }
 
-.atr-timeframe-option {
+.atr-timeframe-option,
+.risk-preset-option {
   border: 1px solid var(--border);
   background: rgba(16, 23, 36, 0.4);
   color: var(--muted);
@@ -347,14 +351,30 @@ body {
   transition: background 0.15s ease, color 0.15s ease, box-shadow 0.2s ease;
 }
 
-.atr-timeframe-option:hover {
+.atr-timeframe-option:hover,
+.risk-preset-option:hover {
   color: var(--text);
 }
 
-.atr-timeframe-option.is-active {
+.atr-timeframe-option.is-active,
+.risk-preset-option.is-active {
   background: var(--accent);
-  color: #fff;
+  color: var(--accent-ink);
   box-shadow: 0 10px 20px rgba(var(--accent-rgb), 0.3);
+}
+
+.risk-preset {
+  margin-top: 0.35rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.risk-preset-label {
+  font-size: 0.75rem;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
 }
 
 .liquidity-panel {
@@ -407,7 +427,7 @@ body {
 
 .liquidity-chip.is-active {
   background: var(--accent);
-  color: #fff;
+  color: var(--accent-ink);
   box-shadow: 0 10px 20px rgba(var(--accent-rgb), 0.22);
 }
 
@@ -675,7 +695,7 @@ body {
 
 .side-option.is-active {
   background: var(--accent);
-  color: #fff;
+  color: var(--accent-ink);
   box-shadow: 0 10px 24px rgba(var(--accent-rgb), 0.35);
 }
 
@@ -704,7 +724,7 @@ html[data-theme="light"] .side-option {
 
 html[data-theme="light"] .side-option.is-active {
   background: var(--accent);
-  color: #fff;
+  color: var(--accent-ink);
 }
 
 html[data-theme="light"] .atr-timeframe-option {
@@ -712,9 +732,15 @@ html[data-theme="light"] .atr-timeframe-option {
   color: rgba(15, 23, 42, 0.72);
 }
 
-html[data-theme="light"] .atr-timeframe-option.is-active {
+html[data-theme="light"] .atr-timeframe-option.is-active,
+html[data-theme="light"] .risk-preset-option.is-active {
   background: var(--accent);
-  color: #fff;
+  color: var(--accent-ink);
+}
+
+html[data-theme="light"] .risk-preset-option {
+  background: rgba(15, 23, 42, 0.08);
+  color: rgba(15, 23, 42, 0.72);
 }
 
 html[data-theme="light"] .liquidity-panel {
@@ -728,7 +754,7 @@ html[data-theme="light"] .liquidity-chip {
 
 html[data-theme="light"] .liquidity-chip.is-active {
   background: var(--accent);
-  color: #fff;
+  color: var(--accent-ink);
 }
 
 .grid-actions {
@@ -750,7 +776,7 @@ html[data-theme="light"] .liquidity-chip.is-active {
 
 .btn.primary {
   background: var(--accent);
-  color: #fff;
+  color: var(--accent-ink);
   box-shadow: 0 10px 24px rgba(var(--accent-rgb), 0.35);
 }
 

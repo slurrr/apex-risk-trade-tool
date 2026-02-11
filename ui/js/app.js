@@ -7,7 +7,7 @@
   const ATR_TIMEFRAME_STORAGE_KEY = "atr_timeframe_override";
   const SYMBOL_FAVORITES_STORAGE_KEY = "symbol_favorites_v1";
   const ATR_TIMEFRAME_DEFAULT = "15m";
-  const ATR_TIMEFRAMES = ["3m", "15m", "1h", "4h"];
+  const ATR_TIMEFRAMES_FALLBACK = ["3m", "15m", "1h", "4h"];
   const SUPPORTED_VENUES = ["hyperliquid", "apex"];
   const DAILY_EQUITY_BASELINES_STORAGE_KEY = "daily_equity_baselines_v1";
   const VENUE_ACCENT_MAP = {
@@ -45,6 +45,9 @@
     dailyEquityBaselines: new Map(),
     lastAccountSummary: null,
     symbolFavoritesByVenue: {},
+    atrTimeframes: [...ATR_TIMEFRAMES_FALLBACK],
+    atrDefaultTimeframe: ATR_TIMEFRAME_DEFAULT,
+    riskPresets: [1, 3, 6, 9],
   };
   let sideToggleControl = null;
 
@@ -236,7 +239,11 @@
 
   function normalizeAtrTimeframe(value) {
     const clean = (value || "").toString().trim().toLowerCase();
-    return ATR_TIMEFRAMES.includes(clean) ? clean : null;
+    const allowed =
+      Array.isArray(state.atrTimeframes) && state.atrTimeframes.length
+        ? state.atrTimeframes
+        : ATR_TIMEFRAMES_FALLBACK;
+    return allowed.includes(clean) ? clean : null;
   }
 
   function getStoredAtrTimeframe() {
@@ -327,9 +334,66 @@
     return document.getElementById("atr_timeframe");
   }
 
+  function getAtrTimeframeToggle() {
+    return document.querySelector(".atr-timeframe-toggle");
+  }
+
+  function getRiskPresetToggle() {
+    return document.querySelector(".risk-preset-toggle");
+  }
+
+  function normalizeRiskPreset(value) {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+  }
+
+  function formatRiskPreset(value) {
+    const parsed = Number(value);
+    if (!Number.isFinite(parsed)) return "";
+    return Number.isInteger(parsed) ? `${parsed}%` : `${parsed.toFixed(2)}%`;
+  }
+
+  function renderRiskPresetButtons(options) {
+    const toggle = getRiskPresetToggle();
+    if (!toggle) return;
+    toggle.querySelectorAll(".risk-preset-option").forEach((el) => el.remove());
+    const list = Array.isArray(options) && options.length ? options : [1, 3, 6, 9];
+    list.slice(0, 4).forEach((value) => {
+      const normalized = normalizeRiskPreset(value);
+      if (normalized === null) return;
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "risk-preset-option";
+      btn.dataset.value = String(normalized);
+      btn.setAttribute("aria-pressed", "false");
+      btn.textContent = formatRiskPreset(normalized);
+      toggle.appendChild(btn);
+    });
+  }
+
+  function renderAtrTimeframeButtons(options) {
+    const toggle = getAtrTimeframeToggle();
+    if (!toggle) return;
+    const input = getAtrTimeframeInput();
+    toggle.querySelectorAll(".atr-timeframe-option").forEach((el) => el.remove());
+    const list = Array.isArray(options) && options.length ? options : ATR_TIMEFRAMES_FALLBACK;
+    list.slice(0, 4).forEach((value) => {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "atr-timeframe-option";
+      btn.dataset.value = value;
+      btn.setAttribute("aria-pressed", "false");
+      btn.textContent = value;
+      toggle.appendChild(btn);
+    });
+    if (input && !normalizeAtrTimeframe(input.value)) {
+      input.value = list[0] || ATR_TIMEFRAME_DEFAULT;
+    }
+  }
+
   function applyAtrTimeframeSelection(value, options = {}) {
     const { persist = false, silent = false } = options;
-    const normalized = normalizeAtrTimeframe(value) || ATR_TIMEFRAME_DEFAULT;
+    const normalized = normalizeAtrTimeframe(value) || state.atrDefaultTimeframe || ATR_TIMEFRAME_DEFAULT;
     const input = getAtrTimeframeInput();
     const buttons = Array.from(document.querySelectorAll(".atr-timeframe-option"));
     if (input) {
@@ -356,21 +420,80 @@
     const fromInput = input ? normalizeAtrTimeframe(input.value) : null;
     if (fromInput) return fromInput;
     const stored = normalizeAtrTimeframe(getStoredAtrTimeframe());
-    return stored || ATR_TIMEFRAME_DEFAULT;
+    return stored || state.atrDefaultTimeframe || ATR_TIMEFRAME_DEFAULT;
   }
 
-  function initAtrTimeframeSelector() {
+  async function loadAtrTimeframeConfig() {
+    try {
+      const payload = await fetchJson(`${API_BASE}/risk/atr-config`);
+      const optionsRaw = Array.isArray(payload?.timeframes) ? payload.timeframes : [];
+      const options = optionsRaw
+        .map((v) => (v || "").toString().trim().toLowerCase())
+        .filter((v) => /^\d+[mh]$/.test(v));
+      state.atrTimeframes = options.length ? options.slice(0, 4) : [...ATR_TIMEFRAMES_FALLBACK];
+      const def = (payload?.default_timeframe || "").toString().trim().toLowerCase();
+      state.atrDefaultTimeframe = state.atrTimeframes.includes(def)
+        ? def
+        : (state.atrTimeframes[0] || ATR_TIMEFRAME_DEFAULT);
+      const riskRaw = Array.isArray(payload?.risk_presets) ? payload.risk_presets : [];
+      const risk = riskRaw
+        .map(normalizeRiskPreset)
+        .filter((v) => v !== null);
+      state.riskPresets = risk.length ? risk.slice(0, 4) : [1, 3, 6, 9];
+    } catch (err) {
+      state.atrTimeframes = [...ATR_TIMEFRAMES_FALLBACK];
+      state.atrDefaultTimeframe = ATR_TIMEFRAME_DEFAULT;
+      state.riskPresets = [1, 3, 6, 9];
+    }
+    renderAtrTimeframeButtons(state.atrTimeframes);
+    renderRiskPresetButtons(state.riskPresets);
+  }
+
+  async function initAtrTimeframeSelector() {
+    await loadAtrTimeframeConfig();
     const input = getAtrTimeframeInput();
     const buttons = Array.from(document.querySelectorAll(".atr-timeframe-option"));
     if (!input || buttons.length === 0) return;
     const stored = normalizeAtrTimeframe(getStoredAtrTimeframe());
-    const initial = stored || normalizeAtrTimeframe(input.value) || ATR_TIMEFRAME_DEFAULT;
+    const initial = stored || normalizeAtrTimeframe(input.value) || state.atrDefaultTimeframe || ATR_TIMEFRAME_DEFAULT;
     applyAtrTimeframeSelection(initial, { persist: true, silent: true });
     buttons.forEach((btn) => {
       btn.addEventListener("click", () => {
         applyAtrTimeframeSelection(btn.dataset.value, { persist: true });
       });
     });
+  }
+
+  function refreshRiskPresetState() {
+    const input = document.getElementById("risk_pct");
+    if (!input) return;
+    const current = Number(input.value);
+    const buttons = Array.from(document.querySelectorAll(".risk-preset-option"));
+    buttons.forEach((btn) => {
+      const value = Number(btn.dataset.value);
+      const isActive = Number.isFinite(current) && Number.isFinite(value) && Math.abs(current - value) < 1e-9;
+      btn.classList.toggle("is-active", isActive);
+      btn.setAttribute("aria-pressed", String(isActive));
+    });
+  }
+
+  function initRiskPresetSelector() {
+    const input = document.getElementById("risk_pct");
+    const toggle = getRiskPresetToggle();
+    if (!input || !toggle) return;
+    toggle.addEventListener("click", (event) => {
+      const btn = event.target.closest(".risk-preset-option");
+      if (!btn) return;
+      const value = normalizeRiskPreset(btn.dataset.value);
+      if (value === null) return;
+      input.value = Number.isInteger(value) ? String(value) : value.toFixed(2);
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+      input.dispatchEvent(new Event("change", { bubbles: true }));
+      refreshRiskPresetState();
+    });
+    input.addEventListener("input", refreshRiskPresetState);
+    input.addEventListener("change", refreshRiskPresetState);
+    refreshRiskPresetState();
   }
 
   async function fetchJson(url) {
@@ -1323,6 +1446,7 @@
     initThemeListener();
     initVenueSwitcher();
     initAtrTimeframeSelector();
+    initRiskPresetSelector();
     initSideToggle();
     initTradeDirectionGuard();
     attachSymbolDropdown();

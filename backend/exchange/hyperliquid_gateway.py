@@ -1,5 +1,6 @@
 import asyncio
 import random
+import threading
 import time
 from collections import defaultdict, deque
 from decimal import Decimal, ROUND_HALF_UP
@@ -68,6 +69,8 @@ class HyperliquidGateway:
         self._ws_monitor_task: Optional[asyncio.Task] = None
         self._account_refresh_task: Optional[asyncio.Task] = None
         self._account_refresh_interval = 15.0
+        self._ws_pnl_publish_min_interval = 0.25
+        self._last_ws_pnl_publish_ts = 0.0
         self._rest_max_retries = 2
         self._rest_retry_backoff = 0.35
         self._rest_retry_backoff_max = 1.5
@@ -98,6 +101,7 @@ class HyperliquidGateway:
         self._ws_orders: dict[str, dict[str, Any]] = {}
         self._ws_orders_raw: list[dict[str, Any]] = []
         self._ws_positions: dict[str, dict[str, Any]] = {}
+        self._state_lock = threading.Lock()
         self._last_account_summary: Optional[dict[str, Any]] = None
         self._last_account_summary_ts: float = 0.0
         self._last_account_summary_error: Optional[str] = None
@@ -968,6 +972,43 @@ class HyperliquidGateway:
             changed = True
         if changed:
             self._mids_cached_at = now
+            if self._recompute_ws_positions_pnl_from_mids():
+                if (now - self._last_ws_pnl_publish_ts) >= self._ws_pnl_publish_min_interval:
+                    self._last_ws_pnl_publish_ts = now
+                    self._publish_event({"type": "positions", "payload": list(self._ws_positions.values())})
+                    self._schedule_account_summary_refresh()
+
+    def _recompute_ws_positions_pnl_from_mids(self) -> bool:
+        if not self._ws_positions or not self._mids_cache:
+            return False
+        changed = False
+        with self._state_lock:
+            for pos in self._ws_positions.values():
+                if not isinstance(pos, dict):
+                    continue
+                coin = str(pos.get("positionId") or "").upper().strip()
+                if not coin:
+                    symbol = str(pos.get("symbol") or "").upper().strip()
+                    if "-" in symbol:
+                        coin = symbol.split("-")[0]
+                if not coin:
+                    continue
+                mid = self._mids_cache.get(coin)
+                if mid is None:
+                    continue
+                entry = self._to_float(pos.get("entryPrice"))
+                size = self._to_float(pos.get("size"))
+                if entry is None or size is None or size <= 0:
+                    continue
+                side = str(pos.get("positionSide") or pos.get("side") or "").upper()
+                pnl = (float(mid) - float(entry)) * float(size)
+                if side in {"SHORT", "SELL"}:
+                    pnl = -pnl
+                prev = self._to_float(pos.get("unrealizedPnl"))
+                pos["unrealizedPnl"] = pnl
+                if prev is None or abs(float(prev) - float(pnl)) > 1e-9:
+                    changed = True
+        return changed
 
     def _on_ws_order_updates(self, ws_msg: dict[str, Any]) -> None:
         payload = ws_msg.get("data")
@@ -1144,6 +1185,14 @@ class HyperliquidGateway:
                 "size": abs(size_val),
                 "entryPrice": pos.get("entryPx"),
                 "unrealizedPnl": pos.get("unrealizedPnl"),
+                # Preserve margin/leverage hints so ROE-style UI metrics can use
+                # initial margin instead of notional fallback.
+                "leverage": pos.get("leverage"),
+                "leverageValue": (pos.get("leverage") or {}).get("value") if isinstance(pos.get("leverage"), dict) else pos.get("leverage"),
+                "marginUsed": pos.get("marginUsed"),
+                "positionInitialMargin": pos.get("positionInitialMargin"),
+                "initialMargin": pos.get("initialMargin"),
+                "positionValue": pos.get("positionValue"),
             }
             normalized.append(item)
             self._ws_positions[coin] = item

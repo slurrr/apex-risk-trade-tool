@@ -97,6 +97,14 @@ class Settings(BaseSettings):
         env="ATR_TIMEFRAME",
         description="ATR candle timeframe (e.g., '5m', '15m', '1h').",
     )
+    atr_sl_1: str = Field("3m", env="ATR_SL_1")
+    atr_sl_2: str = Field("15m", env="ATR_SL_2")
+    atr_sl_3: str = Field("1h", env="ATR_SL_3")
+    atr_sl_4: str = Field("4h", env="ATR_SL_4")
+    risk_pct_1: float = Field(1.0, env="RISK_PCT_1")
+    risk_pct_2: float = Field(3.0, env="RISK_PCT_2")
+    risk_pct_3: float = Field(6.0, env="RISK_PCT_3")
+    risk_pct_4: float = Field(9.0, env="RISK_PCT_4")
     atr_period: int = Field(
         14,
         env="ATR_PERIOD",
@@ -142,7 +150,7 @@ class Settings(BaseSettings):
             raise ValueError("ATR_MULTIPLIER must be greater than zero")
         return value
 
-    @field_validator("atr_timeframe")
+    @field_validator("atr_timeframe", "atr_sl_1", "atr_sl_2", "atr_sl_3", "atr_sl_4")
     @classmethod
     def validate_atr_timeframe(cls, value: str) -> str:
         normalized = (value or "").strip()
@@ -156,6 +164,26 @@ class Settings(BaseSettings):
                 "ATR_TIMEFRAME must include a unit suffix in minutes or hours (examples: 3m, 15m, 1h, 4h)"
             )
         return compact
+
+    def atr_sl_timeframes(self) -> list[str]:
+        ordered = [self.atr_sl_1, self.atr_sl_2, self.atr_sl_3, self.atr_sl_4]
+        out: list[str] = []
+        for tf in ordered:
+            if tf and tf not in out:
+                out.append(tf)
+        return out
+
+    def risk_pct_presets(self) -> list[float]:
+        ordered = [self.risk_pct_1, self.risk_pct_2, self.risk_pct_3, self.risk_pct_4]
+        out: list[float] = []
+        for value in ordered:
+            try:
+                parsed = float(value)
+            except Exception:
+                continue
+            if parsed > 0:
+                out.append(parsed)
+        return out or [1.0, 3.0, 6.0, 9.0]
 
     @field_validator(
         "apex_rest_timeout_seconds",

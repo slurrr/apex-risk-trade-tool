@@ -1420,8 +1420,12 @@ class OrderManager:
             margin_used_val = _coerce_float(candidate)
             if margin_used_val is not None:
                 break
-        if margin_used_val is None and entry_price is not None and size_val is not None and leverage_val and leverage_val > 0:
-            margin_used_val = abs(float(entry_price) * float(size_val)) / float(leverage_val)
+        if margin_used_val is None and leverage_val and leverage_val > 0:
+            pos_value = _coerce_float(position.get("positionValue") or position.get("notional"))
+            if pos_value is None and entry_price is not None and size_val is not None:
+                pos_value = abs(float(entry_price) * float(size_val))
+            if pos_value is not None:
+                margin_used_val = float(pos_value) / float(leverage_val)
 
         norm = {
             "id": position.get("positionId") or position.get("id") or symbol,

@@ -79,6 +79,28 @@ def _atr_fetch_limit(gateway: ExchangeGateway, period: int, timeframe: str) -> i
     return min(500, base)
 
 
+def _configured_timeframes(settings) -> list[str]:
+    configured = list(getattr(settings, "atr_sl_timeframes", lambda: [])() or [])
+    return configured or ["3m", "15m", "1h", "4h"]
+
+
+@router.get(
+    "/atr-config",
+    responses={500: {"model": ErrorResponse}},
+)
+async def atr_config():
+    settings = get_settings()
+    options = _configured_timeframes(settings)
+    default_tf = settings.atr_timeframe if settings.atr_timeframe in options else options[0]
+    return {
+        "timeframes": options[:4],
+        "default_timeframe": default_tf,
+        "risk_presets": settings.risk_pct_presets()[:4],
+        "period": settings.atr_period,
+        "multiplier": settings.atr_multiplier,
+    }
+
+
 @router.post(
     "/atr-stop",
     response_model=AtrStopResponse,
@@ -92,8 +114,10 @@ async def atr_stop(
 ):
     settings = get_settings()
     config: AtrConfig = config_from_settings(settings)
-    effective_timeframe = request.timeframe or config.timeframe
-    allowed_timeframes = {"3m", "15m", "1h", "4h", config.timeframe}
+    configured_timeframes = _configured_timeframes(settings)
+    allowed_timeframes = set(configured_timeframes)
+    default_timeframe = config.timeframe if config.timeframe in allowed_timeframes else configured_timeframes[0]
+    effective_timeframe = request.timeframe or default_timeframe
     if effective_timeframe not in allowed_timeframes:
         return error_response(
             status_code=400,

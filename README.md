@@ -21,7 +21,14 @@ Backend + static UI for previewing, executing, and monitoring ApeX trades with r
   - `ATR_TIMEFRAME`: candle size such as `5m`, `15m`, or `1h`.
   - `ATR_PERIOD`: number of candles included in the Wilder ATR calculation.
   - `ATR_MULTIPLIER`: factor applied to ATR when deriving the stop offset.
-- The UI includes an ATR timeframe selector (3m/15m/1h/4h); the selection persists in localStorage and is sent as an optional `timeframe` override to `/risk/atr-stop`.
+- ATR timeframe selector options are config-driven:
+  - `ATR_SL_1`, `ATR_SL_2`, `ATR_SL_3`, `ATR_SL_4` map to the 4 UI buttons from left to right.
+  - Backend exposes these via `GET /risk/atr-config`, and `/risk/atr-stop` only accepts configured options.
+- Risk presets are config-driven with the same 4-button UX:
+  - `RISK_PCT_1`, `RISK_PCT_2`, `RISK_PCT_3`, `RISK_PCT_4` map left-to-right under the Risk % field.
+  - Default values: `1`, `3`, `6`, `9`.
+  - Manual Risk % input remains fully editable.
+- The selected ATR timeframe persists in localStorage and is sent as an optional `timeframe` override to `/risk/atr-stop`.
 - After editing any of the above values, restart the FastAPI service (or your process manager) so the new configuration is loaded by `backend/core/config.py`.
 
 ## Hyperliquid TP/SL Behavior
