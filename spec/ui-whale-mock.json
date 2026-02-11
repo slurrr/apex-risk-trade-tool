@@ -1,0 +1,122 @@
+{
+  "apex": {
+    "symbols": [
+      { "code": "BTC-USDT", "base_asset": "BTC", "quote_asset": "USDT", "status": "TRADING", "tick_size": 0.1, "step_size": 0.001, "price_decimals": 1, "size_decimals": 3 },
+      { "code": "ETH-USDT", "base_asset": "ETH", "quote_asset": "USDT", "status": "TRADING", "tick_size": 0.01, "step_size": 0.01, "price_decimals": 2, "size_decimals": 2 },
+      { "code": "SOL-USDT", "base_asset": "SOL", "quote_asset": "USDT", "status": "TRADING", "tick_size": 0.01, "step_size": 0.1, "price_decimals": 2, "size_decimals": 1 },
+      { "code": "AVAX-USDT", "base_asset": "AVAX", "quote_asset": "USDT", "status": "TRADING", "tick_size": 0.01, "step_size": 0.1, "price_decimals": 2, "size_decimals": 1 },
+      { "code": "BNB-USDT", "base_asset": "BNB", "quote_asset": "USDT", "status": "TRADING", "tick_size": 0.01, "step_size": 0.01, "price_decimals": 2, "size_decimals": 2 },
+      { "code": "DOGE-USDT", "base_asset": "DOGE", "quote_asset": "USDT", "status": "TRADING", "tick_size": 0.00001, "step_size": 10.0, "price_decimals": 5, "size_decimals": 0 },
+      { "code": "ASTR-USDT", "base_asset": "ASTR", "quote_asset": "USDT", "status": "TRADING", "tick_size": 0.0001, "step_size": 1.0, "price_decimals": 4, "size_decimals": 0 },
+      { "code": "ZEC-USDT", "base_asset": "ZEC", "quote_asset": "USDT", "status": "TRADING", "tick_size": 0.01, "step_size": 0.01, "price_decimals": 2, "size_decimals": 2 }
+    ],
+    "prices": {
+      "BTC-USDT": 108245.1,
+      "ETH-USDT": 6212.88,
+      "SOL-USDT": 342.62,
+      "AVAX-USDT": 118.47,
+      "BNB-USDT": 1098.15,
+      "DOGE-USDT": 0.55192,
+      "ASTR-USDT": 0.3744,
+      "ZEC-USDT": 232.04
+    },
+    "account_summary": {
+      "venue": "apex",
+      "total_equity": 12849673.22,
+      "total_upnl": 415982.55,
+      "total_upnl_pct": 3.35,
+      "available_margin": 7125549.13,
+      "withdrawable_amount": 6640320.42,
+      "daily_equity_change_pct": 2.84
+    },
+    "orders": [
+      { "id": "A-920441", "symbol": "BTC-USDT", "side": "BUY", "size": 42.5, "entry_price": 107822.4, "status": "OPEN", "reduce_only": false },
+      { "id": "A-920442", "symbol": "ETH-USDT", "side": "SELL", "size": 915.0, "entry_price": 6268.35, "status": "OPEN", "reduce_only": false },
+      { "id": "A-920443", "symbol": "AVAX-USDT", "side": "BUY", "size": 18400.0, "entry_price": 117.2, "status": "OPEN", "reduce_only": false },
+      { "id": "A-920444", "symbol": "SOL-USDT", "side": "SELL", "size": 12040.0, "entry_price": 346.85, "status": "OPEN", "reduce_only": false }
+    ],
+    "positions": [
+      { "id": "BTC-USDT", "symbol": "BTC-USDT", "side": "BUY", "size": 168.2, "entry_price": 103412.6, "pnl": 812345.41, "margin_used": 1450000.0, "leverage": 12.0, "take_profit": 112800.0, "stop_loss": 101980.0, "take_profit_count": 1, "stop_loss_count": 1 },
+      { "id": "ETH-USDT", "symbol": "ETH-USDT", "side": "SELL", "size": 2150.0, "entry_price": 6384.2, "pnl": 368241.92, "margin_used": 1716000.0, "leverage": 8.0, "take_profit": 6015.0, "stop_loss": 6510.0, "take_profit_count": 2, "stop_loss_count": 2 },
+      { "id": "SOL-USDT", "symbol": "SOL-USDT", "side": "BUY", "size": 38450.0, "entry_price": 318.42, "pnl": 929833.65, "margin_used": 1224000.0, "leverage": 10.0, "take_profit": 359.0, "stop_loss": 304.6, "take_profit_count": 1, "stop_loss_count": 1 },
+      { "id": "DOGE-USDT", "symbol": "DOGE-USDT", "side": "BUY", "size": 4200000.0, "entry_price": 0.44123, "pnl": 464886.0, "margin_used": 370600.0, "leverage": 5.0, "take_profit": 0.589, "stop_loss": 0.418, "take_profit_count": 1, "stop_loss_count": 1 }
+    ],
+    "stream_health": {
+      "venue": "apex",
+      "ws_alive": true,
+      "last_public_ws_event_age_seconds": 0.31,
+      "last_private_ws_event_age_seconds": 1.18,
+      "reconcile_count": 0,
+      "last_reconcile_age_seconds": 942.4,
+      "last_reconcile_reason": "periodic_audit",
+      "last_reconcile_error": null,
+      "pending_submitted_orders": 0,
+      "oldest_pending_order_age_seconds": null,
+      "reconcile_reason_counts": {
+        "periodic_audit": 7
+      },
+      "fallback_rest_orders_used_count": 0,
+      "fallback_rest_positions_used_count": 0,
+      "empty_snapshot_protected_count": 0,
+      "tpsl_symbols_tracked": 4,
+      "tpsl_flap_suspected_count": 0,
+      "upnl_source": "ws",
+      "upnl_age_seconds": 0.28
+    }
+  },
+  "hyperliquid": {
+    "symbols": [
+      { "code": "BTC-USDC", "base_asset": "BTC", "quote_asset": "USDC", "status": "TRADING", "tick_size": 1.0, "step_size": 0.001, "price_decimals": 1, "size_decimals": 3 },
+      { "code": "ETH-USDC", "base_asset": "ETH", "quote_asset": "USDC", "status": "TRADING", "tick_size": 0.1, "step_size": 0.01, "price_decimals": 2, "size_decimals": 2 },
+      { "code": "SOL-USDC", "base_asset": "SOL", "quote_asset": "USDC", "status": "TRADING", "tick_size": 0.01, "step_size": 0.1, "price_decimals": 2, "size_decimals": 1 },
+      { "code": "HYPE-USDC", "base_asset": "HYPE", "quote_asset": "USDC", "status": "TRADING", "tick_size": 0.001, "step_size": 1.0, "price_decimals": 3, "size_decimals": 0 },
+      { "code": "FARTCOIN-USDC", "base_asset": "FARTCOIN", "quote_asset": "USDC", "status": "TRADING", "tick_size": 0.0001, "step_size": 1.0, "price_decimals": 4, "size_decimals": 0 },
+      { "code": "PEPE-USDC", "base_asset": "PEPE", "quote_asset": "USDC", "status": "TRADING", "tick_size": 0.0000001, "step_size": 100.0, "price_decimals": 7, "size_decimals": 0 }
+    ],
+    "prices": {
+      "BTC-USDC": 108280.5,
+      "ETH-USDC": 6209.44,
+      "SOL-USDC": 343.1,
+      "HYPE-USDC": 36.827,
+      "FARTCOIN-USDC": 1.9421,
+      "PEPE-USDC": 0.0000294
+    },
+    "account_summary": {
+      "venue": "hyperliquid",
+      "total_equity": 22384190.66,
+      "total_upnl": 1293678.9,
+      "total_upnl_pct": 6.13,
+      "available_margin": 14128892.3,
+      "withdrawable_amount": 13193448.7,
+      "daily_equity_change_pct": 4.97
+    },
+    "orders": [
+      { "id": "H-7102101", "symbol": "BTC-USDC", "side": "BUY", "size": 95.0, "entry_price": 107950.0, "status": "OPEN", "reduce_only": false },
+      { "id": "H-7102102", "symbol": "ETH-USDC", "side": "BUY", "size": 1850.0, "entry_price": 6148.4, "status": "OPEN", "reduce_only": false },
+      { "id": "H-7102103", "symbol": "SOL-USDC", "side": "SELL", "size": 41500.0, "entry_price": 347.2, "status": "OPEN", "reduce_only": false }
+    ],
+    "positions": [
+      { "id": "BTC-USDC", "symbol": "BTC-USDC", "side": "BUY", "size": 236.8, "entry_price": 102844.0, "pnl": 1289350.4, "margin_used": 1218000.0, "leverage": 20.0, "take_profit": 114500.0, "stop_loss": 101210.0, "take_profit_count": 1, "stop_loss_count": 1 },
+      { "id": "ETH-USDC", "symbol": "ETH-USDC", "side": "BUY", "size": 5220.0, "entry_price": 5798.3, "pnl": 2157190.4, "margin_used": 2522000.0, "leverage": 12.0, "take_profit": 6680.0, "stop_loss": 5630.0, "take_profit_count": 2, "stop_loss_count": 1 },
+      { "id": "HYPE-USDC", "symbol": "HYPE-USDC", "side": "BUY", "size": 180000.0, "entry_price": 30.442, "pnl": 1149300.0, "margin_used": 782800.0, "leverage": 7.0, "take_profit": 40.2, "stop_loss": 28.95, "take_profit_count": 1, "stop_loss_count": 1 },
+      { "id": "PEPE-USDC", "symbol": "PEPE-USDC", "side": "SELL", "size": 900000000.0, "entry_price": 0.0000312, "pnl": 1620000.0, "margin_used": 5600.0, "leverage": 5.0, "take_profit": 0.0000276, "stop_loss": 0.0000328, "take_profit_count": 1, "stop_loss_count": 1 }
+    ],
+    "stream_health": {
+      "venue": "hyperliquid",
+      "ws_alive": true,
+      "ws_info_connected": true,
+      "ws_subscription_count": 3,
+      "last_ws_reconnect_age_seconds": null,
+      "last_private_ws_event_age_seconds": 2.9,
+      "reconcile_count": 1,
+      "last_reconcile_age_seconds": 616.3,
+      "last_reconcile_reason": "periodic_audit",
+      "last_reconcile_error": null,
+      "pending_submitted_orders": 0,
+      "oldest_pending_order_age_seconds": null,
+      "reconcile_reason_counts": {
+        "periodic_audit": 1
+      }
+    }
+  }
+}

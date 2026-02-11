@@ -23,16 +23,19 @@
       </div>
       <div class="account-summary" id="account-summary">
         <div class="summary-item">
-          <div class="label">Total Equity</div>
+          <div class="label">Account Equity</div>
           <div class="value" id="summary-equity">--</div>
+          <div class="subvalue" id="summary-equity-daily-pct">--</div>
         </div>
         <div class="summary-item">
-          <div class="label">Total uPNL</div>
+          <div class="label">Total P&amp;L</div>
           <div class="value" id="summary-upnl">--</div>
+          <div class="subvalue" id="summary-upnl-pct">--</div>
         </div>
         <div class="summary-item">
           <div class="label">Available Margin</div>
           <div class="value" id="summary-margin">--</div>
+          <div class="subvalue" id="summary-withdrawable">--</div>
         </div>
       </div>
     </header>
@@ -69,7 +72,7 @@
           <div class="dropdown">
             <input type="text" id="symbol-input" autocomplete="off" placeholder="BTC-USDT" required />
             <button type="button" class="clear-input hidden" id="symbol-clear" aria-label="Clear symbol input">&times;</button>
-            <div class="dropdown-list" id="symbol-options"></div>
+            <div class="dropdown-list symbol-options-list" id="symbol-options"></div>
           </div>
         </label>
         <label class="field">
@@ -132,11 +135,11 @@
         </div>
       </form>
       <div class="results-row">
-        <div class="result">
+        <div class="result hidden" id="preview-card">
           <div class="result-title">Preview</div>
           <div id="preview-result"></div>
         </div>
-        <div class="result">
+        <div class="result hidden" id="execute-card">
           <div class="result-title">Execution</div>
           <div id="execute-result"></div>
         </div>
@@ -193,7 +196,7 @@
             <thead>
               <tr>
                 <th>Symbol</th>
-                <th>Price</th>
+                <th>Entry</th>
                 <th>Side</th>
                 <th>Size</th>
                 <th>Status</th>
@@ -201,6 +204,16 @@
               </tr>
             </thead>
             <tbody></tbody>
+            <tfoot id="orders-total-foot" class="hidden">
+              <tr>
+                <td></td>
+                <td></td>
+                <td></td>
+                <td id="orders-total-notional" class="muted"></td>
+                <td></td>
+                <td></td>
+              </tr>
+            </tfoot>
           </table>
         </div>
       </div>
@@ -210,7 +223,28 @@
     <section id="positions-section" class="card">
       <div class="section-header">
         <h2>Open Positions</h2>
-        <button id="refresh-positions" type="button" class="btn ghost">Refresh</button>
+        <div class="positions-header-actions">
+          <label class="positions-pnl-basis">
+            <span>PnL basis</span>
+            <div class="dropdown positions-basis-dropdown">
+              <button
+                type="button"
+                id="positions-pnl-basis-trigger"
+                class="positions-basis-trigger"
+                aria-haspopup="listbox"
+                aria-expanded="false"
+              >
+                Notional %
+              </button>
+              <div class="dropdown-list" id="positions-pnl-basis-options" role="listbox">
+                <button type="button" data-value="notional" role="option">Notional % (ROE)</button>
+                <button type="button" data-value="equity" role="option">Equity %</button>
+                <button type="button" data-value="size_move" role="option">Underlying</button>
+              </div>
+            </div>
+          </label>
+          <button id="refresh-positions" type="button" class="btn ghost">Refresh</button>
+        </div>
       </div>
       <div id="positions-error" class="error"></div>
       <div class="table-shell">
@@ -228,6 +262,17 @@
               </tr>
             </thead>
             <tbody></tbody>
+            <tfoot id="positions-total-foot" class="hidden">
+              <tr>
+                <td></td>
+                <td></td>
+                <td></td>
+                <td id="positions-total-oi" class="muted"></td>
+                <td></td>
+                <td></td>
+                <td></td>
+              </tr>
+            </tfoot>
           </table>
         </div>
       </div>

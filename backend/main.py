@@ -12,6 +12,7 @@ from backend.api.routes_venue import configure_venue_controller, router as venue
 from backend.api.errors import error_response
 from backend.core.config import get_settings
 from backend.core.logging import init_logging
+from backend.core.ui_mock import is_ui_mock_enabled
 from backend.exchange.exchange_gateway import ExchangeGateway
 from backend.exchange.hyperliquid_gateway import HyperliquidGateway
 from backend.exchange.venue_controller import VenueController
@@ -84,6 +85,18 @@ def create_app() -> FastAPI:
     @app.middleware("http")
     async def guard_switching_requests(request: Request, call_next):
         path = request.url.path or ""
+        if is_ui_mock_enabled():
+            is_mutating = request.method.upper() in {"POST", "PUT", "PATCH", "DELETE"}
+            protected = (
+                path.startswith("/api/orders")
+                or path.startswith("/api/positions")
+            )
+            if is_mutating and protected:
+                return error_response(
+                    status_code=503,
+                    code="ui_mock_mode_enabled",
+                    detail="UI mock mode is enabled. Trading and order mutations are disabled.",
+                )
         if venue_controller.switch_in_progress:
             is_mutating = request.method.upper() in {"POST", "PUT", "PATCH", "DELETE"}
             protected = (

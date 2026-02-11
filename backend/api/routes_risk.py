@@ -1,3 +1,5 @@
+import re
+import time
 from typing import Any, List
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -33,6 +35,50 @@ def _sort_candles(candles: List[Any]) -> List[Any]:
         return candles
 
 
+def _timeframe_to_ms(timeframe: str) -> int:
+    value = (timeframe or "").strip().lower()
+    match = re.fullmatch(r"(\d+)([mh])", value)
+    if not match:
+        raise ValueError(f"Unsupported ATR timeframe '{timeframe}'.")
+    qty = int(match.group(1))
+    unit = match.group(2)
+    base = 60_000 if unit == "m" else 3_600_000
+    return qty * base
+
+
+def _drop_incomplete_tail(candles: List[Any], timeframe: str) -> List[Any]:
+    if not candles:
+        return candles
+    try:
+        interval_ms = _timeframe_to_ms(timeframe)
+    except ValueError:
+        return candles
+    last = candles[-1] if isinstance(candles[-1], dict) else None
+    if not isinstance(last, dict):
+        return candles
+    open_ts = last.get("open_time") or last.get("openTime")
+    try:
+        open_ms = int(open_ts)
+    except (TypeError, ValueError):
+        return candles
+    now_ms = int(time.time() * 1000)
+    if open_ms + interval_ms > now_ms:
+        return candles[:-1]
+    return candles
+
+
+def _atr_fetch_limit(gateway: ExchangeGateway, period: int, timeframe: str) -> int:
+    base = max(period * 20, 200)
+    venue = str(getattr(gateway, "venue", "") or "").strip().lower()
+    # Apex REST kline endpoint is less tolerant to large windows, especially 3m->1m fallback.
+    if venue == "apex":
+        tf = (timeframe or "").strip().lower()
+        if tf == "3m":
+            return max(period * 3, period + 5)
+        return min(120, base)
+    return min(500, base)
+
+
 @router.post(
     "/atr-stop",
     response_model=AtrStopResponse,
@@ -61,7 +107,9 @@ async def atr_stop(
         multiplier=config.multiplier,
     )
 
-    limit = max(config.period * 3, config.period + 5)
+    # Use a deep warmup window so Wilder smoothing aligns more closely with chart ATR values.
+    # Cap per venue where needed for endpoint stability.
+    limit = _atr_fetch_limit(gateway, config.period, config.timeframe)
     try:
         candles = await gateway.fetch_klines(
             request.symbol,
@@ -86,7 +134,7 @@ async def atr_stop(
             },
         )
 
-    candles = _sort_candles(candles)
+    candles = _drop_incomplete_tail(_sort_candles(candles), config.timeframe)
     available_candles = len(candles)
     if available_candles == 0:
         return error_response(

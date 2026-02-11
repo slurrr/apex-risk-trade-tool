@@ -3,6 +3,7 @@ from fastapi import APIRouter, Depends
 from backend.api.errors import error_response
 from backend.api.routes_trade import get_order_manager
 from backend.core.logging import get_logger
+from backend.core.ui_mock import get_ui_mock_section, is_ui_mock_enabled
 from backend.trading.order_manager import OrderManager
 from backend.trading.schemas import (
     ClosePositionRequest,
@@ -21,6 +22,10 @@ async def list_positions(
 ) -> list[dict]:
     """Return open positions from the gateway."""
     try:
+        if is_ui_mock_enabled():
+            venue = (getattr(manager.gateway, "venue", "apex") or "apex").lower()
+            positions = get_ui_mock_section(venue, "positions", [])
+            return positions if isinstance(positions, list) else []
         if resync:
             ok = await manager.resync_tpsl_from_account()
             if not ok:
@@ -45,6 +50,13 @@ async def close_position(
 ) -> dict:
     """Close part or all of a position."""
     try:
+        if is_ui_mock_enabled():
+            return {
+                "position_id": position_id,
+                "requested_percent": request.close_percent,
+                "close_size": None,
+                "exchange": {"status": "mock_closed"},
+            }
         return await manager.close_position(
             position_id=position_id,
             close_percent=request.close_percent,
@@ -74,6 +86,15 @@ async def update_targets(
 ) -> dict:
     """Modify TP/SL targets for a position."""
     try:
+        if is_ui_mock_enabled():
+            return {
+                "position_id": position_id,
+                "take_profit": request.take_profit,
+                "stop_loss": request.stop_loss,
+                "clear_tp": bool(request.clear_tp),
+                "clear_sl": bool(request.clear_sl),
+                "status": "mock_updated",
+            }
         return await manager.modify_targets(
             position_id=position_id,
             take_profit=request.take_profit,

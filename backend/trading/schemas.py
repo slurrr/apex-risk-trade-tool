@@ -53,6 +53,9 @@ class AccountSummary(BaseModel):
     total_equity: float
     total_upnl: float
     available_margin: float
+    total_upnl_pct: Optional[float] = None
+    daily_equity_change_pct: Optional[float] = None
+    withdrawable_amount: Optional[float] = None
     as_of: Optional[str] = None
 
 
@@ -87,6 +90,10 @@ class PositionResponse(BaseModel):
     take_profit: Optional[float] = None
     stop_loss: Optional[float] = None
     pnl: Optional[float] = None
+    margin_used: Optional[float] = None
+    leverage: Optional[float] = None
+    take_profit_count: Optional[int] = None
+    stop_loss_count: Optional[int] = None
 
 
 class ClosePositionRequest(BaseModel):

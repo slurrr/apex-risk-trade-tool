@@ -1,7 +1,10 @@
+import time
+
 from fastapi import APIRouter, Depends, HTTPException
 
 from backend.api.errors import error_response
 from backend.core.logging import get_logger
+from backend.core.ui_mock import get_ui_mock_section, is_ui_mock_enabled
 from backend.risk.risk_engine import PositionSizingError
 from backend.trading.order_manager import OrderManager
 from backend.trading.schemas import (
@@ -16,6 +19,10 @@ router = APIRouter(prefix="/api", tags=["trade"])
 
 _manager: OrderManager | None = None
 logger = get_logger(__name__)
+
+
+def _active_venue(manager: OrderManager) -> str:
+    return (getattr(manager.gateway, "venue", "apex") or "apex").lower()
 
 
 def configure_order_manager(manager: OrderManager) -> None:
@@ -33,6 +40,9 @@ def get_order_manager() -> OrderManager:
 async def list_symbols(manager: OrderManager = Depends(get_order_manager)):
     """Return catalog of tradeable symbols for dropdowns."""
     try:
+        if is_ui_mock_enabled():
+            venue = _active_venue(manager)
+            return get_ui_mock_section(venue, "symbols", [])
         return await manager.list_symbols()
     except Exception as exc:
         logger.exception("list_symbols_failed", extra={"event": "list_symbols_failed", "error": str(exc)})
@@ -43,6 +53,14 @@ async def list_symbols(manager: OrderManager = Depends(get_order_manager)):
 async def account_summary(manager: OrderManager = Depends(get_order_manager)):
     """Return account summary for UI header."""
     try:
+        if is_ui_mock_enabled():
+            venue = _active_venue(manager)
+            summary = get_ui_mock_section(venue, "account_summary", {})
+            if isinstance(summary, dict):
+                payload = dict(summary)
+                payload.setdefault("venue", venue)
+                return payload
+            return {"total_equity": 0.0, "total_upnl": 0.0, "available_margin": 0.0, "venue": venue}
         return await manager.get_account_summary()
     except Exception as exc:
         logger.exception("account_summary_failed", extra={"event": "account_summary_failed", "error": str(exc)})
@@ -53,6 +71,16 @@ async def account_summary(manager: OrderManager = Depends(get_order_manager)):
 async def symbol_price(symbol: str, manager: OrderManager = Depends(get_order_manager)):
     """Return latest price for symbol (best-effort)."""
     try:
+        if is_ui_mock_enabled():
+            venue = _active_venue(manager)
+            prices = get_ui_mock_section(venue, "prices", {})
+            if isinstance(prices, dict):
+                raw = prices.get(symbol.upper())
+                try:
+                    return {"symbol": symbol.upper(), "price": float(raw)}
+                except Exception:
+                    pass
+            return {"symbol": symbol.upper(), "price": 0.0}
         return await manager.get_symbol_price(symbol)
     except ValueError as exc:
         return error_response(status_code=400, code="validation_error", detail=str(exc))
@@ -80,6 +108,27 @@ async def symbol_price(symbol: str, manager: OrderManager = Depends(get_order_ma
 async def trade(request: TradeRequest, manager: OrderManager = Depends(get_order_manager)):
     """Preview trade sizing or execute when requested."""
     try:
+        if is_ui_mock_enabled():
+            side = (request.side or "").upper().strip()
+            if side not in {"BUY", "SELL"}:
+                side = "BUY" if request.stop_price < request.entry_price else "SELL"
+            per_unit = abs(float(request.entry_price) - float(request.stop_price))
+            size = max(1.0, round(float(request.risk_pct or 1.0) * 120.0, 3))
+            notional = float(size * float(request.entry_price))
+            estimated_loss = float(size * per_unit)
+            payload = {
+                "side": side,
+                "size": size,
+                "notional": notional,
+                "estimated_loss": estimated_loss,
+                "warnings": [],
+                "entry_price": float(request.entry_price),
+                "stop_price": float(request.stop_price),
+            }
+            if request.execute:
+                payload["executed"] = True
+                payload["exchange_order_id"] = f"MOCK-{int(time.time() * 1000)}"
+            return payload
         if request.execute:
             exec_result = await manager.execute_trade(
                 symbol=request.symbol,

@@ -1,5 +1,6 @@
 from functools import lru_cache
 from pathlib import Path
+import re
 from typing import Optional
 
 from dotenv import load_dotenv
@@ -93,19 +94,21 @@ class Settings(BaseSettings):
     fee_buffer_pct: float = Field(0.0, env="FEE_BUFFER_PCT")
     atr_timeframe: str = Field(
         "5m",
-        env=("ATR_TIMEFRAME", "TIMEFRAME"),
+        env="ATR_TIMEFRAME",
         description="ATR candle timeframe (e.g., '5m', '15m', '1h').",
     )
     atr_period: int = Field(
         14,
-        env=("ATR_PERIOD", "PERIOD"),
+        env="ATR_PERIOD",
         description="ATR lookback window in candles.",
     )
     atr_multiplier: float = Field(
         1.5,
-        env=("ATR_MULTIPLIER", "MULTIPLIER"),
+        env="ATR_MULTIPLIER",
         description="ATR multiplier applied when deriving stop offsets.",
     )
+    ui_mock_mode_enabled: bool = Field(False, env="UI_MOCK_MODE_ENABLED")
+    ui_mock_data_path: str = Field("spec/ui-whale-mock.json", env="UI_MOCK_DATA_PATH")
 
     @field_validator("apex_network")
     @classmethod
@@ -144,8 +147,15 @@ class Settings(BaseSettings):
     def validate_atr_timeframe(cls, value: str) -> str:
         normalized = (value or "").strip()
         if not normalized:
-            raise ValueError("TIMEFRAME must be a non-empty candle interval (e.g., 5m)")
-        return normalized
+            raise ValueError("ATR_TIMEFRAME must be a non-empty candle interval (e.g., 5m)")
+        compact = normalized.lower()
+        if re.fullmatch(r"\d+", compact):
+            compact = f"{compact}m"
+        if not re.fullmatch(r"\d+[mh]", compact):
+            raise ValueError(
+                "ATR_TIMEFRAME must include a unit suffix in minutes or hours (examples: 3m, 15m, 1h, 4h)"
+            )
+        return compact
 
     @field_validator(
         "apex_rest_timeout_seconds",

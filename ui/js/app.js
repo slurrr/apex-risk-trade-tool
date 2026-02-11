@@ -5,9 +5,25 @@
   const PRICE_INPUT_IDS = ["entry_price", "stop_price", "tp"];
   const THEME_STORAGE_KEY = "trade_app_theme";
   const ATR_TIMEFRAME_STORAGE_KEY = "atr_timeframe_override";
+  const SYMBOL_FAVORITES_STORAGE_KEY = "symbol_favorites_v1";
   const ATR_TIMEFRAME_DEFAULT = "15m";
   const ATR_TIMEFRAMES = ["3m", "15m", "1h", "4h"];
   const SUPPORTED_VENUES = ["hyperliquid", "apex"];
+  const DAILY_EQUITY_BASELINES_STORAGE_KEY = "daily_equity_baselines_v1";
+  const VENUE_ACCENT_MAP = {
+    hyperliquid: {
+      accent: "#4fd6b4",
+      accentRgb: "79, 214, 180",
+      accentPress: "#35b394",
+      accentMuted: "rgba(79, 214, 180, 0.30)",
+    },
+    apex: {
+      accent: "#ecbc43",
+      accentRgb: "236, 188, 67",
+      accentPress: "#d8a529",
+      accentMuted: "rgba(236, 188, 67, 0.30)",
+    },
+  };
   const VENUE_SYNC_INTERVAL_MS = 5000;
   const DEV_STREAM_HEALTH_STORAGE_KEY = "dev_stream_health";
   const STREAM_HEALTH_POLL_INTERVAL_MS = 15000;
@@ -26,6 +42,9 @@
     activePriceDecimals: DEFAULT_PRICE_DECIMALS,
     lastAccountUpdate: 0,
     activeVenue: null,
+    dailyEquityBaselines: new Map(),
+    lastAccountSummary: null,
+    symbolFavoritesByVenue: {},
   };
   let sideToggleControl = null;
 
@@ -99,6 +118,50 @@
       return window.localStorage ? window.localStorage.getItem(THEME_STORAGE_KEY) : null;
     } catch (err) {
       return null;
+    }
+  }
+
+  function getCurrentUtcDayKey() {
+    return new Date().toISOString().slice(0, 10);
+  }
+
+  function loadDailyEquityBaselines() {
+    try {
+      if (!window.localStorage) return;
+      const raw = window.localStorage.getItem(DAILY_EQUITY_BASELINES_STORAGE_KEY);
+      if (!raw) return;
+      const parsed = JSON.parse(raw);
+      if (!parsed || typeof parsed !== "object") return;
+      const currentDay = getCurrentUtcDayKey();
+      const next = new Map();
+      Object.entries(parsed).forEach(([key, value]) => {
+        if (typeof key !== "string") return;
+        const day = key.split(":")[1];
+        if (day !== currentDay) return;
+        const num = Number(value);
+        if (!Number.isFinite(num)) return;
+        next.set(key, num);
+      });
+      state.dailyEquityBaselines = next;
+      persistDailyEquityBaselines();
+    } catch (err) {
+      // ignore storage errors
+    }
+  }
+
+  function persistDailyEquityBaselines() {
+    try {
+      if (!window.localStorage) return;
+      const currentDay = getCurrentUtcDayKey();
+      const serializable = {};
+      for (const [key, value] of state.dailyEquityBaselines.entries()) {
+        const day = key.split(":")[1];
+        if (day !== currentDay) continue;
+        serializable[key] = value;
+      }
+      window.localStorage.setItem(DAILY_EQUITY_BASELINES_STORAGE_KEY, JSON.stringify(serializable));
+    } catch (err) {
+      // ignore storage errors
     }
   }
 
@@ -196,6 +259,68 @@
     } catch (err) {
       // ignore storage errors
     }
+  }
+
+  function normalizeFavoriteSymbol(value) {
+    if (!value) return null;
+    const symbol = normalizeSymbolCode(value);
+    return symbol || null;
+  }
+
+  function getFavoritesVenueKey(venue = null) {
+    return normalizeVenue(venue || state.activeVenue) || "global";
+  }
+
+  function loadSymbolFavorites() {
+    try {
+      if (!window.localStorage) return;
+      const raw = window.localStorage.getItem(SYMBOL_FAVORITES_STORAGE_KEY);
+      if (!raw) return;
+      const parsed = JSON.parse(raw);
+      if (!parsed || typeof parsed !== "object") return;
+      const next = {};
+      Object.entries(parsed).forEach(([venue, values]) => {
+        if (!Array.isArray(values)) return;
+        const unique = Array.from(
+          new Set(values.map(normalizeFavoriteSymbol).filter(Boolean))
+        );
+        next[venue] = unique;
+      });
+      state.symbolFavoritesByVenue = next;
+    } catch (err) {
+      state.symbolFavoritesByVenue = {};
+    }
+  }
+
+  function persistSymbolFavorites() {
+    try {
+      if (!window.localStorage) return;
+      window.localStorage.setItem(
+        SYMBOL_FAVORITES_STORAGE_KEY,
+        JSON.stringify(state.symbolFavoritesByVenue || {})
+      );
+    } catch (err) {
+      // ignore storage errors
+    }
+  }
+
+  function getFavoriteSet(venue = null) {
+    const key = getFavoritesVenueKey(venue);
+    const raw = state.symbolFavoritesByVenue[key];
+    const normalized = Array.isArray(raw)
+      ? Array.from(new Set(raw.map(normalizeFavoriteSymbol).filter(Boolean)))
+      : [];
+    state.symbolFavoritesByVenue[key] = normalized;
+    return new Set(normalized);
+  }
+
+  function setFavoritesForVenue(symbolSet, venue = null) {
+    const key = getFavoritesVenueKey(venue);
+    const normalized = Array.from(
+      new Set(Array.from(symbolSet || []).map(normalizeFavoriteSymbol).filter(Boolean))
+    ).sort((a, b) => a.localeCompare(b));
+    state.symbolFavoritesByVenue[key] = normalized;
+    persistSymbolFavorites();
   }
 
   function getAtrTimeframeInput() {
@@ -336,18 +461,67 @@
 
   function renderAccountSummary(summary) {
     const equityEl = document.getElementById("summary-equity");
+    const equityDailyPctEl = document.getElementById("summary-equity-daily-pct");
     const upnlEl = document.getElementById("summary-upnl");
+    const upnlPctEl = document.getElementById("summary-upnl-pct");
     const marginEl = document.getElementById("summary-margin");
+    const withdrawableEl = document.getElementById("summary-withdrawable");
     if (!summary) return;
     const format = (val) => (typeof val === "number" ? val.toLocaleString(undefined, { maximumFractionDigits: 2 }) : "--");
+    const formatPct = (val) => {
+      if (typeof val !== "number" || !Number.isFinite(val)) return "--";
+      const sign = val > 0 ? "+" : "";
+      return `${sign}${val.toFixed(2)}%`;
+    };
+    const updateSignClass = (el, value) => {
+      if (!el) return;
+      el.classList.remove("positive", "negative");
+      if (typeof value === "number" && Number.isFinite(value)) {
+        if (value > 0) el.classList.add("positive");
+        if (value < 0) el.classList.add("negative");
+      }
+    };
+    const venue = normalizeVenue(summary.venue) || state.activeVenue || "apex";
+    const dayKey = getCurrentUtcDayKey();
+    const baselineKey = `${venue}:${dayKey}`;
+    const equityNow = typeof summary.total_equity === "number" ? summary.total_equity : null;
+    if (equityNow !== null && !state.dailyEquityBaselines.has(baselineKey)) {
+      state.dailyEquityBaselines.set(baselineKey, equityNow);
+      persistDailyEquityBaselines();
+    }
+    const baselineEquity = state.dailyEquityBaselines.get(baselineKey);
+    const computedDailyPct =
+      equityNow !== null &&
+      typeof baselineEquity === "number" &&
+      Number.isFinite(baselineEquity) &&
+      baselineEquity > 0
+        ? ((equityNow - baselineEquity) / baselineEquity) * 100
+        : null;
+    const dailyPct =
+      typeof summary.daily_equity_change_pct === "number" && Number.isFinite(summary.daily_equity_change_pct)
+        ? summary.daily_equity_change_pct
+        : computedDailyPct;
+
+    let upnlPct = null;
+    if (typeof summary.total_upnl_pct === "number" && Number.isFinite(summary.total_upnl_pct)) {
+      upnlPct = summary.total_upnl_pct;
+    } else if (typeof summary.total_upnl === "number" && typeof summary.total_equity === "number") {
+      const pnlBase = summary.total_equity - summary.total_upnl;
+      const safeBase = Math.abs(pnlBase) > 1e-9 ? pnlBase : summary.total_equity;
+      if (Math.abs(safeBase) > 1e-9) {
+        upnlPct = (summary.total_upnl / safeBase) * 100;
+      }
+    }
+
     equityEl.textContent = format(summary.total_equity);
     upnlEl.textContent = format(summary.total_upnl);
     marginEl.textContent = format(summary.available_margin);
-    upnlEl.classList.remove("positive", "negative");
-    if (typeof summary.total_upnl === "number") {
-      if (summary.total_upnl > 0) upnlEl.classList.add("positive");
-      if (summary.total_upnl < 0) upnlEl.classList.add("negative");
-    }
+    if (equityDailyPctEl) equityDailyPctEl.textContent = formatPct(dailyPct);
+    if (upnlPctEl) upnlPctEl.textContent = formatPct(upnlPct);
+    if (withdrawableEl) withdrawableEl.textContent = format(summary.withdrawable_amount);
+    updateSignClass(upnlEl, summary.total_upnl);
+    updateSignClass(upnlPctEl, upnlPct);
+    updateSignClass(equityDailyPctEl, dailyPct);
   }
 
   function coerceNumber(value) {
@@ -356,24 +530,47 @@
     return Number.isFinite(num) ? num : null;
   }
 
+  function pickNumber(...values) {
+    for (const value of values) {
+      const parsed = coerceNumber(value);
+      if (parsed !== null) {
+        return parsed;
+      }
+    }
+    return null;
+  }
+
   function normalizeAccountPayload(payload) {
     if (!payload || typeof payload !== "object") return null;
-    const totalEquity =
-      coerceNumber(payload.total_equity) ||
-      coerceNumber(payload.totalEquity) ||
-      coerceNumber(payload.totalEquityValue) ||
-      coerceNumber(payload.totalEquityUsd) ||
-      coerceNumber(payload.totalEquityUSDT);
-    const available =
-      coerceNumber(payload.available_margin) ||
-      coerceNumber(payload.availableBalance) ||
-      coerceNumber(payload.available) ||
-      coerceNumber(payload.availableEquity);
-    const totalUpnl =
-      coerceNumber(payload.total_upnl) ||
-      coerceNumber(payload.totalUnrealizedPnl) ||
-      coerceNumber(payload.totalUnrealizedPnlUsd) ||
-      coerceNumber(payload.totalUpnl);
+    const totalEquity = pickNumber(
+      payload.total_equity,
+      payload.totalEquity,
+      payload.totalEquityValue,
+      payload.totalEquityUsd,
+      payload.totalEquityUSDT
+    );
+    const available = pickNumber(
+      payload.available_margin,
+      payload.availableBalance,
+      payload.available,
+      payload.availableEquity
+    );
+    const totalUpnl = pickNumber(
+      payload.total_upnl,
+      payload.totalUnrealizedPnl,
+      payload.totalUnrealizedPnlUsd,
+      payload.totalUpnl
+    );
+    const withdrawable = pickNumber(
+      payload.withdrawable_amount,
+      payload.withdrawable,
+      payload.withdrawableAmount,
+      payload.availableWithdrawable,
+      available
+    );
+    const totalUpnlPct = pickNumber(payload.total_upnl_pct, payload.totalUpnlPct);
+    const dailyEquityChangePct = pickNumber(payload.daily_equity_change_pct, payload.dailyEquityChangePct);
+    const venue = normalizeVenue(payload.venue) || state.activeVenue;
     if (totalEquity === null && available === null && totalUpnl === null) {
       return null;
     }
@@ -381,22 +578,27 @@
       total_equity: totalEquity ?? 0,
       available_margin: available ?? 0,
       total_upnl: totalUpnl ?? 0,
+      total_upnl_pct: totalUpnlPct,
+      daily_equity_change_pct: dailyEquityChangePct,
+      withdrawable_amount: withdrawable,
+      venue,
     };
   }
 
   function applyAccountPayload(payload) {
     const summary = normalizeAccountPayload(payload);
     if (summary) {
+      state.lastAccountSummary = summary;
       renderAccountSummary(summary);
       state.lastAccountUpdate = Date.now();
+      window.dispatchEvent(new CustomEvent("account:summary", { detail: summary }));
     }
   }
 
   async function loadAccountSummary() {
     try {
       const data = await fetchJson(`${API_BASE}/api/account/summary`);
-      renderAccountSummary(data);
-      state.lastAccountUpdate = Date.now();
+      applyAccountPayload(data);
     } catch (err) {
       // silent fail for header; avoid blocking UI
       const upnlEl = document.getElementById("summary-upnl");
@@ -425,6 +627,15 @@
     return SUPPORTED_VENUES.includes(clean) ? clean : null;
   }
 
+  function applyVenueAccent(venue) {
+    const normalized = normalizeVenue(venue) || "apex";
+    const palette = VENUE_ACCENT_MAP[normalized] || VENUE_ACCENT_MAP.apex;
+    document.documentElement.style.setProperty("--accent", palette.accent);
+    document.documentElement.style.setProperty("--accent-rgb", palette.accentRgb);
+    document.documentElement.style.setProperty("--accent-press", palette.accentPress);
+    document.documentElement.style.setProperty("--accent-muted", palette.accentMuted);
+  }
+
   function setVenueSwitchState({ activeVenue = null, switching = false, status = "" } = {}) {
     const statusEl = document.getElementById("venue-switch-status");
     const buttons = Array.from(document.querySelectorAll(".venue-switch-btn"));
@@ -435,6 +646,9 @@
       btn.setAttribute("aria-pressed", String(isActive));
       btn.disabled = switching;
     });
+    if (activeVenue) {
+      applyVenueAccent(activeVenue);
+    }
     if (statusEl) {
       if (switching && status) {
         statusEl.textContent = status;
@@ -649,13 +863,21 @@
     const input = document.getElementById("symbol-input");
     if (!list || !input) return;
     const query = (filter || input.value || "").toUpperCase();
-    const matches = state.symbols.filter((sym) => sym.code.toUpperCase().includes(query));
+    const favorites = getFavoriteSet();
+    const filtered = state.symbols.filter((sym) => sym.code.toUpperCase().includes(query));
+    const favoriteRows = filtered.filter((sym) => favorites.has(sym.code.toUpperCase()));
+    const regularRows = filtered.filter((sym) => !favorites.has(sym.code.toUpperCase()));
+    const matches = [...favoriteRows, ...regularRows];
     list.innerHTML = "";
     matches.slice(0, 30).forEach((sym) => {
-      const btn = document.createElement("button");
-      btn.type = "button";
-      btn.textContent = sym.code;
-      btn.addEventListener("click", () => {
+      const row = document.createElement("div");
+      row.className = "symbol-option-row";
+
+      const selectBtn = document.createElement("button");
+      selectBtn.type = "button";
+      selectBtn.className = "symbol-option-btn";
+      selectBtn.textContent = sym.code;
+      selectBtn.addEventListener("click", () => {
         symbolDropdownState.suppressOpen = true;
         input.value = sym.code;
         list.classList.remove("open");
@@ -667,7 +889,35 @@
           symbolDropdownState.suppressOpen = false;
         }, 0);
       });
-      list.appendChild(btn);
+
+      const favBtn = document.createElement("button");
+      favBtn.type = "button";
+      favBtn.className = "symbol-fav-btn";
+      const symCode = sym.code.toUpperCase();
+      const isFavorite = favorites.has(symCode);
+      favBtn.classList.toggle("is-favorite", isFavorite);
+      favBtn.textContent = isFavorite ? "★" : "☆";
+      favBtn.setAttribute("aria-label", isFavorite ? `Remove ${sym.code} from favorites` : `Add ${sym.code} to favorites`);
+      favBtn.addEventListener("click", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        const nextFavorites = getFavoriteSet();
+        if (nextFavorites.has(symCode)) {
+          nextFavorites.delete(symCode);
+        } else {
+          nextFavorites.add(symCode);
+        }
+        setFavoritesForVenue(nextFavorites);
+        renderSymbolOptions(input.value);
+        list.classList.add("open");
+        if (typeof input.focus === "function") {
+          input.focus({ preventScroll: true });
+        }
+      });
+
+      row.appendChild(favBtn);
+      row.appendChild(selectBtn);
+      list.appendChild(row);
     });
     const shouldOpen = document.activeElement === input && matches.length > 0 && !symbolDropdownState.suppressOpen;
     if (shouldOpen) {
@@ -742,6 +992,10 @@
         updateSymbolClearState();
         document.getElementById("preview-result").innerHTML = "";
         document.getElementById("execute-result").innerHTML = "";
+        const previewCard = document.getElementById("preview-card");
+        const executeCard = document.getElementById("execute-card");
+        if (previewCard) previewCard.classList.add("hidden");
+        if (executeCard) executeCard.classList.add("hidden");
         applySymbolPrecision(null);
       });
     }
@@ -804,6 +1058,162 @@
         sideInput.value = (value || "").toString().trim().toUpperCase();
       }
     }
+  }
+
+  function normalizeTradeSide(value) {
+    const raw = (value || "").toString().trim().toUpperCase();
+    if (raw === "BUY" || raw === "LONG") return "BUY";
+    if (raw === "SELL" || raw === "SHORT") return "SELL";
+    return null;
+  }
+
+  function markStopInputInvalid(invalid) {
+    const stopInput = document.getElementById("stop_price");
+    if (!stopInput) return;
+    stopInput.classList.toggle("is-invalid", Boolean(invalid));
+  }
+
+  function flashSideToggle() {
+    const wrapper = document.querySelector(".side-toggle");
+    if (!wrapper) return;
+    wrapper.classList.remove("is-flash");
+    // restart animation
+    void wrapper.offsetWidth;
+    wrapper.classList.add("is-flash");
+    window.setTimeout(() => wrapper.classList.remove("is-flash"), 1680);
+  }
+
+  function warnUserPopup(message) {
+    const msg = (message || "").toString().trim() || "Invalid order inputs.";
+    if (typeof window !== "undefined" && typeof window.alert === "function") {
+      window.alert(msg);
+    }
+  }
+
+  function assessTradeDirection(entryPrice, stopPrice, sideValue) {
+    const entry = Number(entryPrice);
+    const stop = Number(stopPrice);
+    const side = normalizeTradeSide(sideValue);
+    if (!Number.isFinite(entry) || !Number.isFinite(stop) || !side) {
+      return { ready: false, valid: true, side, expectedSide: null, reason: null };
+    }
+    if (stop === entry) {
+      return {
+        ready: true,
+        valid: false,
+        side,
+        expectedSide: null,
+        reason: "Stop price cannot equal entry price.",
+      };
+    }
+    const expectedSide = stop < entry ? "BUY" : "SELL";
+    if (side !== expectedSide) {
+      return {
+        ready: true,
+        valid: false,
+        side,
+        expectedSide,
+        reason:
+          expectedSide === "BUY"
+            ? "Stop below entry implies Long (BUY). Side was auto-corrected."
+            : "Stop above entry implies Short (SELL). Side was auto-corrected.",
+      };
+    }
+    return { ready: true, valid: true, side, expectedSide, reason: null };
+  }
+
+  function enforceTradeDirectionConsistency(options = {}) {
+    const { autoFlip = true, animate = true } = options;
+    const entryInput = document.getElementById("entry_price");
+    const stopInput = document.getElementById("stop_price");
+    const sideInput = document.getElementById("side");
+    if (!entryInput || !stopInput || !sideInput) {
+      return { ready: false, valid: true, reason: null };
+    }
+    const check = assessTradeDirection(entryInput.value, stopInput.value, sideInput.value);
+    if (!check.ready) {
+      markStopInputInvalid(false);
+      return check;
+    }
+    if (!check.valid && check.expectedSide && autoFlip) {
+      markStopInputInvalid(true);
+      setSideValue(check.expectedSide, { force: true });
+      if (animate) {
+        flashSideToggle();
+      }
+      window.setTimeout(() => markStopInputInvalid(false), 520);
+      return { ...check, valid: true, corrected: true };
+    }
+    markStopInputInvalid(!check.valid);
+    return check;
+  }
+
+  function initTradeDirectionGuard() {
+    const entryInput = document.getElementById("entry_price");
+    const stopInput = document.getElementById("stop_price");
+    const sideInput = document.getElementById("side");
+    if (!entryInput || !stopInput || !sideInput) return;
+    let showInvalidState = false;
+    const hasCompleteInputs = () => {
+      const entry = Number(entryInput.value);
+      const stop = Number(stopInput.value);
+      const side = normalizeTradeSide(sideInput.value);
+      return Number.isFinite(entry) && Number.isFinite(stop) && !!side;
+    };
+    const isTickDistanceInvalid = () => {
+      const tickSize = state.activeTickSize;
+      if (!(typeof tickSize === "number" && tickSize > 0)) {
+        return false;
+      }
+      const entry = Number(entryInput.value);
+      const stop = Number(stopInput.value);
+      if (!Number.isFinite(entry) || !Number.isFinite(stop)) {
+        return false;
+      }
+      return Math.abs(entry - stop) < tickSize;
+    };
+    const refreshInvalidState = (directionCheck) => {
+      if (!hasCompleteInputs()) {
+        markStopInputInvalid(false);
+        return;
+      }
+      if (!showInvalidState) {
+        markStopInputInvalid(false);
+        return;
+      }
+      const directionInvalid = Boolean(directionCheck?.ready && !directionCheck.valid);
+      const tickInvalid = isTickDistanceInvalid();
+      markStopInputInvalid(directionInvalid || tickInvalid);
+    };
+    const priceHandler = (evt) => {
+      if (evt?.isTrusted) {
+        showInvalidState = true;
+      }
+      enforceTradeDirectionConsistency({ autoFlip: true, animate: true });
+      const current = assessTradeDirection(entryInput.value, stopInput.value, sideInput.value);
+      refreshInvalidState(current);
+    };
+    const sideHandler = (evt) => {
+      if (evt?.isTrusted) {
+        showInvalidState = true;
+      }
+      const check = enforceTradeDirectionConsistency({ autoFlip: false, animate: false });
+      refreshInvalidState(check);
+      if (!check.valid) {
+        window.dispatchEvent(
+          new CustomEvent("trade:side-stop-mismatch", {
+            detail: {
+              reason: check.reason || "Side and stop are inconsistent for the current entry.",
+            },
+          })
+        );
+      }
+    };
+    markStopInputInvalid(false);
+    entryInput.addEventListener("input", priceHandler);
+    stopInput.addEventListener("input", priceHandler);
+    sideInput.addEventListener("change", sideHandler);
+    priceHandler();
   }
 
   function resetSideValue() {
@@ -902,13 +1312,19 @@
     snapToInputStep,
     setSideValue,
     resetSideValue,
+    enforceTradeDirectionConsistency,
+    warnUserPopup,
+    markStopInputInvalid,
   };
 
   document.addEventListener("DOMContentLoaded", () => {
+    loadDailyEquityBaselines();
+    loadSymbolFavorites();
     initThemeListener();
     initVenueSwitcher();
     initAtrTimeframeSelector();
     initSideToggle();
+    initTradeDirectionGuard();
     attachSymbolDropdown();
     applySymbolPrecision(null);
     loadSymbols();

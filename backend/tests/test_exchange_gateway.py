@@ -99,6 +99,65 @@ class FakeClient:
         return {"result": {"orderId": "new-oid-1"}}
 
 
+class FakeStrictClient(FakeClient):
+    """Simulate SDK versions with strict create_order_v3 kwargs."""
+
+    def create_order_v3(
+        self,
+        *,
+        symbol: str,
+        side: str,
+        type: str,
+        size: str,
+        price: str,
+        reduceOnly: bool = False,
+        clientId: str | None = None,
+        timeInForce: str | None = None,
+        takerFeeRate: str | None = None,
+        triggerPriceType: str | None = None,
+        tpPrice: str | None = None,
+        tpTriggerPrice: str | None = None,
+        slPrice: str | None = None,
+        slTriggerPrice: str | None = None,
+        isOpenTpslOrder: bool | None = None,
+        isSetOpenTp: bool | None = None,
+        isSetOpenSl: bool | None = None,
+        tpSide: str | None = None,
+        slSide: str | None = None,
+        tpSize: str | None = None,
+        slSize: str | None = None,
+        isPositionTpsl: bool | None = None,
+        triggerPrice: str | None = None,
+    ):
+        payload = {
+            "symbol": symbol,
+            "side": side,
+            "type": type,
+            "size": size,
+            "price": price,
+            "reduceOnly": reduceOnly,
+            "clientId": clientId,
+            "timeInForce": timeInForce,
+            "takerFeeRate": takerFeeRate,
+            "triggerPriceType": triggerPriceType,
+            "tpPrice": tpPrice,
+            "tpTriggerPrice": tpTriggerPrice,
+            "slPrice": slPrice,
+            "slTriggerPrice": slTriggerPrice,
+            "isOpenTpslOrder": isOpenTpslOrder,
+            "isSetOpenTp": isSetOpenTp,
+            "isSetOpenSl": isSetOpenSl,
+            "tpSide": tpSide,
+            "slSide": slSide,
+            "tpSize": tpSize,
+            "slSize": slSize,
+            "isPositionTpsl": isPositionTpsl,
+            "triggerPrice": triggerPrice,
+        }
+        self.created_orders.append(payload)
+        return {"result": {"orderId": "new-oid-1"}}
+
+
 class FakeDataClient(FakeClient):
     """Return Apex responses with 'data' envelopes instead of 'result'."""
 
@@ -122,12 +181,53 @@ def test_get_open_positions_returns_positions():
     assert positions[0]["side"] == "LONG"
 
 
+def test_get_open_positions_publish_bypasses_cached_positions():
+    client = FakeClient()
+    gateway = make_apex_gateway(client)
+    # Seed cache with one open position.
+    run(gateway.get_open_positions(force_rest=True, publish=False))
+    assert gateway._ws_positions
+
+    # Exchange now has no positions.
+    client.positions = []
+    gateway._positions_empty_stale_seconds = 0.0
+
+    refreshed = run(gateway.get_open_positions(force_rest=False, publish=True))
+    assert refreshed == []
+    assert gateway._ws_positions == {}
+
+
 def test_get_open_orders_returns_orders():
     gateway = make_apex_gateway(FakeClient())
     orders = run(gateway.get_open_orders())
     assert orders[0]["orderId"] == "abc-123"
     assert orders[0]["symbol"] == "BTC-USDT"
     assert orders[0]["status"] == "OPEN"
+
+
+def test_get_open_orders_filters_tpsl_without_explicit_position_flag():
+    client = FakeClient()
+    client.orders = [
+        {
+            "orderId": "entry-1",
+            "symbol": "ASTER-USDT",
+            "status": "OPEN",
+            "type": "LIMIT",
+            "reduceOnly": False,
+        },
+        {
+            "orderId": "sl-1",
+            "symbol": "ASTER-USDT",
+            "status": "OPEN",
+            "type": "STOP_MARKET",
+            "reduceOnly": True,
+            # intentionally no isPositionTpsl flag to mimic WS/REST edge cases
+        },
+    ]
+    gateway = make_apex_gateway(client)
+    orders = run(gateway.get_open_orders(force_rest=True, publish=False))
+    assert len(orders) == 1
+    assert orders[0]["orderId"] == "entry-1"
 
 
 def test_cancel_order_uses_client_and_returns_payload():
@@ -144,6 +244,7 @@ def test_account_summary_handles_data_payload():
     summary = run(gateway.get_account_summary())
     assert summary["total_equity"] == 1500
     assert summary["available_margin"] == 1200
+    assert summary["withdrawable_amount"] == 1200
     assert summary["total_upnl"] == 25
 
 
@@ -179,16 +280,38 @@ def test_apex_place_order_schedules_delayed_refresh():
                 "size": "0.01",
                 "price": "40000",
                 "clientId": "cid-1",
+                "slTriggerPriceType": "MARKET",
             }
         )
         assert placed["exchange_order_id"] == "new-oid-1"
         assert placed["client_id"] == "cid-1"
+        assert client.created_orders[-1].get("slTriggerPriceType") == "MARKET"
         await asyncio.wait_for(called.wait(), timeout=0.5)
 
     asyncio.run(_scenario())
 
 
-def test_apex_build_order_payload_sets_mark_trigger_type_for_attached_tpsl():
+def test_apex_place_order_strips_unsupported_trigger_type_for_strict_sdk():
+    client = FakeStrictClient()
+    gateway = make_apex_gateway(client)
+    placed = run(
+        gateway.place_order(
+            {
+                "symbol": "BTC-USDT",
+                "side": "BUY",
+                "type": "LIMIT",
+                "size": "0.01",
+                "price": "40000",
+                "clientId": "cid-2",
+                "slTriggerPriceType": "MARKET",
+            }
+        )
+    )
+    assert placed["exchange_order_id"] == "new-oid-1"
+    assert "slTriggerPriceType" not in client.created_orders[-1]
+
+
+def test_apex_build_order_payload_sets_mark_trigger_type_for_attached_tpsl_when_supported():
     gateway = make_apex_gateway(FakeClient())
     run(gateway.load_configs())
     payload, warning = run(
@@ -207,7 +330,7 @@ def test_apex_build_order_payload_sets_mark_trigger_type_for_attached_tpsl():
     assert payload["slTriggerPriceType"] == "MARKET"
 
 
-def test_apex_update_targets_sets_mark_trigger_type():
+def test_apex_update_targets_sets_mark_trigger_type_when_supported():
     gateway = make_apex_gateway(FakeClient())
     submitted = run(
         gateway.update_targets(
@@ -222,6 +345,26 @@ def test_apex_update_targets_sets_mark_trigger_type():
     for row in submitted["submitted"]:
         payload = row["payload"]
         assert payload["triggerPriceType"] == "MARKET"
+
+
+def test_apex_build_order_payload_omits_trigger_type_when_sdk_does_not_support():
+    gateway = make_apex_gateway(FakeStrictClient())
+    run(gateway.load_configs())
+    payload, warning = run(
+        gateway.build_order_payload(
+            symbol="BTC-USDT",
+            side="BUY",
+            size=0.1,
+            entry_price=40000.0,
+            reduce_only=False,
+            tp=42000.0,
+            stop=39000.0,
+        )
+    )
+    assert warning is None
+    assert "tpTriggerPriceType" not in payload
+    assert "slTriggerPriceType" not in payload
+    assert payload["triggerPriceType"] == "MARKET"
 
 
 def test_update_positions_stream_updates_account_cache():
@@ -456,6 +599,8 @@ def test_hyperliquid_private_account_orders_positions():
     summary = run(gateway.get_account_summary())
     assert summary["total_equity"] == 1200.5
     assert summary["available_margin"] == 1200.5
+    assert summary["sizing_available_margin"] == 800.1
+    assert summary["withdrawable_amount"] == 800.1
     assert summary["total_upnl"] == pytest.approx(7.4)
 
     positions = run(gateway.get_open_positions())
@@ -674,6 +819,27 @@ def test_hyperliquid_open_orders_filter_terminal_status_rows():
     assert orders[0]["orderId"] == "1"
 
 
+def test_hyperliquid_normalize_order_row_detects_dict_trigger_tpsl():
+    gateway = FakeHyperliquidGateway()
+    row = {
+        "order": {
+            "oid": 101,
+            "coin": "BTC",
+            "side": "A",
+            "sz": "0.01",
+            "limitPx": "41000",
+            "reduceOnly": True,
+            "orderType": {"trigger": {"isMarket": True, "triggerPx": "40900", "tpsl": "sl"}},
+        },
+        "status": "OPEN",
+    }
+    parsed = gateway._normalize_order_row(row)
+    assert parsed is not None
+    assert parsed["type"] == "STOP_MARKET"
+    assert parsed["triggerPrice"] == "40900"
+    assert parsed["isPositionTpsl"] is True
+
+
 def test_hyperliquid_order_timeout_reason_and_clear_on_ws_update():
     gateway = FakeHyperliquidGateway()
     now = 2_000.0
@@ -702,6 +868,42 @@ def test_hyperliquid_order_timeout_reason_and_clear_on_ws_update():
         }
     )
     assert "12345" not in gateway._pending_submitted_orders
+
+
+def test_hyperliquid_terminal_order_update_schedules_account_refresh():
+    gateway = FakeHyperliquidGateway()
+    gateway._ws_orders = {"12345": {"orderId": "12345", "symbol": "BTC-USDC"}}
+    gateway._ws_orders_raw = list(gateway._ws_orders.values())
+    scheduled = {"count": 0}
+
+    async def _fake_refresh():
+        return None
+
+    gateway._refresh_account_summary_now = _fake_refresh
+    gateway._schedule_coro = lambda factory: scheduled.__setitem__("count", scheduled["count"] + 1)
+
+    gateway._on_ws_order_updates(
+        {
+            "channel": "orderUpdates",
+            "data": [
+                {
+                    "order": {
+                        "oid": 12345,
+                        "coin": "BTC",
+                        "side": "B",
+                        "sz": "0.01",
+                        "limitPx": "41000",
+                        "reduceOnly": False,
+                        "orderType": "Limit",
+                    },
+                    "status": "canceled",
+                }
+            ],
+        }
+    )
+
+    assert "12345" not in gateway._ws_orders
+    assert scheduled["count"] == 1
 
 
 def test_hyperliquid_reconcile_min_gap_prevents_storm_and_tracks_reasons():

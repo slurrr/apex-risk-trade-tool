@@ -3,6 +3,10 @@
   window.API_BASE || 
   `${window.location.protocol}//${window.location.hostname}:8000`;
   const validateSymbol = (window.TradeApp && window.TradeApp.validateSymbol) || ((val) => val?.toUpperCase());
+  const enforceTradeDirectionConsistency =
+    (window.TradeApp && window.TradeApp.enforceTradeDirectionConsistency) || (() => ({ valid: true }));
+  const warnUserPopup = (window.TradeApp && window.TradeApp.warnUserPopup) || ((msg) => window.alert(msg));
+  const markStopInputInvalid = (window.TradeApp && window.TradeApp.markStopInputInvalid) || (() => {});
 
   function getActiveTickSize() {
     const tick = window.TradeApp && window.TradeApp.state && window.TradeApp.state.activeTickSize;
@@ -35,15 +39,42 @@
     return data;
   }
 
-  function renderExecute(container, result) {
+  function formatCompact(value, maxDigits = 6) {
+    const numeric = Number(value);
+    if (!Number.isFinite(numeric)) return "--";
+    return numeric.toLocaleString(undefined, { maximumFractionDigits: maxDigits });
+  }
+
+  function getCard(container) {
+    return container ? container.closest(".result") : null;
+  }
+
+  function showCard(container) {
+    const card = getCard(container);
+    if (card) card.classList.remove("hidden");
+  }
+
+  function renderWarnings(warnings) {
+    if (!Array.isArray(warnings) || warnings.length === 0) return "";
+    const rows = warnings.map((warning) => `<div class="trade-warning">${warning}</div>`).join("");
+    return `<div class="trade-warnings">${rows}</div>`;
+  }
+
+  function renderExecute(container, result, context = {}) {
+    showCard(container);
+    const side = String(result.side || context.side || "").toUpperCase();
+    const sideClass = side === "SELL" ? "sell" : "buy";
+    const symbol = context.symbol || result.symbol || "";
+    const displaySymbol = symbol.includes("-") ? symbol.split("-")[0] : symbol;
     container.innerHTML = `
-      <div><strong>Executed:</strong> ${result.executed}</div>
-      <div><strong>Exchange Order ID:</strong> ${result.exchange_order_id}</div>
-      <div><strong>Side:</strong> ${result.side}</div>
-      <div><strong>Size:</strong> ${result.size}</div>
-      <div><strong>Notional:</strong> ${result.notional}</div>
-      <div><strong>Estimated Loss:</strong> ${result.estimated_loss}</div>
-      <div><strong>Warnings:</strong> ${(result.warnings || []).join(", ") || "None"}</div>
+      <div class="trade-output">
+        <div class="trade-output-head">
+          <span class="trade-action-pill ${sideClass}">${side || "--"}</span>
+        </div>
+        <div class="trade-line strong">Order to ${side || "--"} ${formatCompact(result.size)} ${displaySymbol} Submitted</div>
+        <div class="trade-line dim">Order ID: ${result.exchange_order_id || "--"}</div>
+        ${renderWarnings(result.warnings)}
+      </div>
     `;
   }
 
@@ -54,6 +85,7 @@
     executeBtn.addEventListener("click", async () => {
       const symbol = validateSymbol(document.getElementById("symbol-input").value);
       if (!symbol) {
+        showCard(executeResult);
         executeResult.innerHTML = `<div class="error">Select a valid symbol (e.g., BTC-USDT).</div>`;
         return;
       }
@@ -65,6 +97,17 @@
         side: document.getElementById("side").value || null,
         tp: document.getElementById("tp").value ? parseFloat(document.getElementById("tp").value) : null,
       };
+      const directionCheck = enforceTradeDirectionConsistency({ autoFlip: true, animate: true });
+      if (!directionCheck.valid) {
+        const message = directionCheck.reason || "Invalid side/stop configuration.";
+        showCard(executeResult);
+        executeResult.innerHTML = `<div class="error">${message}</div>`;
+        warnUserPopup(message);
+        return;
+      }
+      if (directionCheck.corrected) {
+        payload.side = document.getElementById("side").value || null;
+      }
       const tickSize = getActiveTickSize();
       if (
         tickSize &&
@@ -73,13 +116,18 @@
         Math.abs(payload.entry_price - payload.stop_price) < tickSize
       ) {
         const formattedTick = formatTickSize(tickSize) || tickSize;
-        executeResult.innerHTML = `<div class="error">Entry and stop must differ by at least ${formattedTick}.</div>`;
+        const message = `Entry and stop must differ by at least ${formattedTick}.`;
+        markStopInputInvalid(true);
+        showCard(executeResult);
+        executeResult.innerHTML = `<div class="error">${message}</div>`;
+        warnUserPopup(message);
         return;
       }
       try {
         const result = await postExecute(payload);
-        renderExecute(executeResult, result);
+        renderExecute(executeResult, result, { symbol, side: payload.side });
       } catch (err) {
+        showCard(executeResult);
         executeResult.innerHTML = `<div class="error">${err.message}</div>`;
       }
     });

@@ -6,6 +6,10 @@
   const validateSymbol = (window.TradeApp && window.TradeApp.validateSymbol) || ((val) => val?.toUpperCase());
   const fetchAtrStop = window.TradeApp && window.TradeApp.fetchAtrStop;
   const getAtrTimeframe = window.TradeApp && window.TradeApp.getAtrTimeframe;
+  const enforceTradeDirectionConsistency =
+    (window.TradeApp && window.TradeApp.enforceTradeDirectionConsistency) || (() => ({ valid: true }));
+  const warnUserPopup = (window.TradeApp && window.TradeApp.warnUserPopup) || ((msg) => window.alert(msg));
+  const markStopInputInvalid = (window.TradeApp && window.TradeApp.markStopInputInvalid) || (() => {});
   const snapToStep = (window.TradeApp && window.TradeApp.snapToInputStep) || ((value) => value);
   const ATR_STATUS_DEFAULT = "ATR stop will populate once symbol, side, and entry price are set.";
 
@@ -34,6 +38,7 @@
     manualSymbol: null,
     lastAutoPrice: null,
     settingStopValue: false,
+    emptyActiveLock: false,
   };
 
   async function postPreview(payload) {
@@ -50,19 +55,48 @@
     return data;
   }
 
-  function renderResult(container, result) {
+  function formatCompact(value, maxDigits = 6) {
+    const numeric = Number(value);
+    if (!Number.isFinite(numeric)) return "--";
+    return numeric.toLocaleString(undefined, { maximumFractionDigits: maxDigits });
+  }
+
+  function getCard(container) {
+    return container ? container.closest(".result") : null;
+  }
+
+  function showCard(container) {
+    const card = getCard(container);
+    if (card) card.classList.remove("hidden");
+  }
+
+  function renderWarnings(warnings) {
+    if (!Array.isArray(warnings) || warnings.length === 0) return "";
+    const rows = warnings.map((warning) => `<div class="trade-warning">${warning}</div>`).join("");
+    return `<div class="trade-warnings">${rows}</div>`;
+  }
+
+  function renderResult(container, result, context = {}) {
+    showCard(container);
+    const side = String(result.side || context.side || "").toUpperCase();
+    const sideClass = side === "SELL" ? "sell" : "buy";
+    const symbol = context.symbol || result.symbol || "";
     container.innerHTML = `
-      <div><strong>Side:</strong> ${result.side}</div>
-      <div><strong>Size:</strong> ${result.size}</div>
-      <div><strong>Notional:</strong> ${result.notional}</div>
-      <div><strong>Estimated Loss:</strong> ${result.estimated_loss}</div>
-      <div><strong>Entry:</strong> ${result.entry_price}</div>
-      <div><strong>Stop:</strong> ${result.stop_price}</div>
-      <div><strong>Warnings:</strong> ${(result.warnings || []).join(", ") || "None"}</div>
+      <div class="trade-output">
+        <div class="trade-output-head">
+          <span class="trade-action-pill ${sideClass}">${side || "--"}</span>
+          <span class="trade-symbol">${symbol}</span>
+        </div>
+        <div class="trade-line strong">${formatCompact(result.notional, 2)}</div>
+        <div class="trade-line">${formatCompact(result.size)} @ ${formatCompact(result.entry_price)} ${formatCompact(result.notional, 2)}</div>
+        <div class="trade-line dim">SL: ${formatCompact(result.stop_price)} Risk: ${formatCompact(result.estimated_loss, 2)}</div>
+        ${renderWarnings(result.warnings)}
+      </div>
     `;
   }
 
   function renderError(container, message) {
+    showCard(container);
     container.innerHTML = `<div class="error">${message}</div>`;
   }
 
@@ -150,8 +184,20 @@
     entryInput.addEventListener("input", schedule);
     sideSelect.addEventListener("change", schedule);
     if (timeframeInput) {
-      timeframeInput.addEventListener("change", schedule);
+      timeframeInput.addEventListener("change", () => {
+        // Timeframe changes should re-enable ATR auto-stop even after manual stop edits.
+        clearManualOverride();
+        atrState.lastAutoPrice = null;
+        schedule();
+      });
     }
+    window.addEventListener("trade:side-stop-mismatch", () => {
+      // When user flips side and stop is now invalid for that side,
+      // release manual lock and recompute stop from ATR immediately.
+      clearManualOverride();
+      atrState.lastAutoPrice = null;
+      schedule();
+    });
 
     stopInput.addEventListener("input", () => {
       if (atrState.settingStopValue) {
@@ -159,10 +205,38 @@
       }
       const value = (stopInput.value || "").trim();
       const symbol = validateSymbol(symbolInput.value);
+      const isActive = document.activeElement === stopInput;
       if (value) {
+        atrState.emptyActiveLock = false;
         setManualOverride(symbol);
         setAtrStatus("Manual stop in use. Clear the Stop field to resume ATR suggestions.");
       } else {
+        if (isActive) {
+          // User is actively editing stop and has cleared the input (e.g. backspace).
+          // Keep ATR from repopulating until they leave the field.
+          atrState.emptyActiveLock = true;
+          setManualOverride(symbol);
+          setAtrStatus("Manual stop edit in progress.");
+        } else {
+          atrState.emptyActiveLock = false;
+          clearManualOverride();
+          atrState.lastAutoPrice = null;
+          setAtrStatus(ATR_STATUS_DEFAULT);
+          schedule();
+        }
+      }
+    });
+    stopInput.addEventListener("focus", () => {
+      const value = (stopInput.value || "").trim();
+      if (!value) {
+        atrState.emptyActiveLock = true;
+      }
+    });
+    stopInput.addEventListener("blur", () => {
+      if (!atrState.emptyActiveLock) return;
+      atrState.emptyActiveLock = false;
+      const value = (stopInput.value || "").trim();
+      if (!value) {
         clearManualOverride();
         atrState.lastAutoPrice = null;
         setAtrStatus(ATR_STATUS_DEFAULT);
@@ -208,6 +282,11 @@
       return;
     }
 
+    if (atrState.emptyActiveLock && document.activeElement === stopInput && !(stopInput.value || "").trim()) {
+      setAtrStatus("Manual stop edit in progress.");
+      return;
+    }
+
     if (manualOverrideActive(symbol)) {
       setAtrStatus("Manual stop preserved. Clear the Stop field to use ATR suggestions again.");
       return;
@@ -225,6 +304,7 @@
         const snapped = snapToStep(response.stop_loss_price, stopInput);
         atrState.settingStopValue = true;
         stopInput.value = snapped;
+        stopInput.dispatchEvent(new Event("input", { bubbles: true }));
         atrState.settingStopValue = false;
         atrState.lastAutoPrice = typeof snapped === "string" ? parseFloat(snapped) : snapped;
       }
@@ -238,6 +318,7 @@
       if (!manualOverrideActive(symbol)) {
         atrState.settingStopValue = true;
         stopInput.value = "";
+        stopInput.dispatchEvent(new Event("input", { bubbles: true }));
         atrState.settingStopValue = false;
         atrState.lastAutoPrice = null;
       }
@@ -288,6 +369,16 @@
         preview: true,
         execute: false,
       };
+      const directionCheck = enforceTradeDirectionConsistency({ autoFlip: true, animate: true });
+      if (!directionCheck.valid) {
+        const message = directionCheck.reason || "Invalid side/stop configuration.";
+        renderError(resultContainer, message);
+        warnUserPopup(message);
+        return;
+      }
+      if (directionCheck.corrected) {
+        payload.side = document.getElementById("side").value || null;
+      }
       const tickSize = getActiveTickSize();
       if (
         tickSize &&
@@ -296,13 +387,16 @@
         Math.abs(payload.entry_price - payload.stop_price) < tickSize
       ) {
         const formattedTick = formatTickSize(tickSize) || tickSize;
-        renderError(resultContainer, `Entry and stop must differ by at least ${formattedTick}.`);
+        const message = `Entry and stop must differ by at least ${formattedTick}.`;
+        markStopInputInvalid(true);
+        renderError(resultContainer, message);
+        warnUserPopup(message);
         return;
       }
 
       try {
         const result = await postPreview(payload);
-        renderResult(resultContainer, result);
+        renderResult(resultContainer, result, { symbol, side: payload.side });
       } catch (err) {
         renderError(resultContainer, err.message);
       }

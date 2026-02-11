@@ -3,6 +3,8 @@
   window.API_BASE || 
   `${window.location.protocol}//${window.location.hostname}:8000`;
   const formatNumber = (window.TradeApp && window.TradeApp.formatNumber) || ((v) => v);
+  const PNL_BASIS_STORAGE_KEY = "positions_pnl_basis_v1";
+  const PNL_BASIS_OPTIONS = new Set(["notional", "equity", "size_move"]);
   const openPanels = {
     manage: new Set(),
     modify: new Set(),
@@ -18,8 +20,39 @@
   let pendingRender = null;
   let streamSocket = null;
   let streamToken = 0;
+  let currentPnlBasis = "notional";
   const lockEditing = () => {};
   const unlockEditing = () => {};
+
+  function normalizePnlBasis(value) {
+    const clean = (value || "").toString().trim().toLowerCase();
+    return PNL_BASIS_OPTIONS.has(clean) ? clean : "notional";
+  }
+
+  function getPnlBasisLabel(value) {
+    const basis = normalizePnlBasis(value);
+    if (basis === "equity") return "Equity %";
+    if (basis === "size_move") return "Underlying";
+    return "Notional % (ROE)";
+  }
+
+  function loadStoredPnlBasis() {
+    try {
+      if (!window.localStorage) return "notional";
+      return normalizePnlBasis(window.localStorage.getItem(PNL_BASIS_STORAGE_KEY));
+    } catch (err) {
+      return "notional";
+    }
+  }
+
+  function persistPnlBasis(value) {
+    try {
+      if (!window.localStorage) return;
+      window.localStorage.setItem(PNL_BASIS_STORAGE_KEY, normalizePnlBasis(value));
+    } catch (err) {
+      // ignore storage errors
+    }
+  }
 
   function showConfirmPopover(targetBtn, positionId, message, onConfirm) {
     if (!targetBtn) return;
@@ -148,8 +181,12 @@
         size: pos.size ?? null,
         entry: pos.entry_price ?? null,
         pnl: pos.pnl ?? null,
+        margin_used: pos.margin_used ?? null,
+        leverage: pos.leverage ?? null,
         tp: pos.take_profit ?? null,
         sl: pos.stop_loss ?? null,
+        tp_count: pos.take_profit_count ?? 0,
+        sl_count: pos.stop_loss_count ?? 0,
       }))
       .sort((a, b) => a.id.localeCompare(b.id));
   }
@@ -168,8 +205,12 @@
         left.size !== right.size ||
         left.entry !== right.entry ||
         left.pnl !== right.pnl ||
+        left.margin_used !== right.margin_used ||
+        left.leverage !== right.leverage ||
         left.tp !== right.tp ||
-        left.sl !== right.sl
+        left.sl !== right.sl ||
+        left.tp_count !== right.tp_count ||
+        left.sl_count !== right.sl_count
       ) {
         return false;
       }
@@ -177,8 +218,9 @@
     return true;
   }
 
-  function renderPositions(positions) {
-    if (positionsEqual(lastPositions, positions)) {
+  function renderPositions(positions, options = {}) {
+    const { force = false } = options;
+    if (!force && positionsEqual(lastPositions, positions)) {
       return;
     }
     lastPositions = positions;
@@ -195,7 +237,11 @@
     pendingRender = null;
     const tbody = document.querySelector("#positions-table tbody");
     const emptyState = document.getElementById("positions-empty");
+    const totalFoot = document.getElementById("positions-total-foot");
+    const totalOiCell = document.getElementById("positions-total-oi");
     tbody.innerHTML = "";
+    if (totalFoot) totalFoot.classList.add("hidden");
+    if (totalOiCell) totalOiCell.textContent = "";
     if (!positions || positions.length === 0) {
       emptyState.style.display = "block";
       return;
@@ -223,29 +269,89 @@
       if (!existingIds.has(id)) slValues.delete(id);
     }
 
+    const formatNotional = (value) =>
+      Number.isFinite(value)
+        ? value.toLocaleString(undefined, { maximumFractionDigits: 2 })
+        : "--";
+    const formatPercent = (value) =>
+      Number.isFinite(value)
+        ? `${value.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}%`
+        : "--";
+    let totalOpenInterest = 0;
+    let hasOpenInterest = false;
+    const accountEquity =
+      window.TradeApp && window.TradeApp.state && window.TradeApp.state.lastAccountSummary
+        ? Number(window.TradeApp.state.lastAccountSummary.total_equity)
+        : null;
+
     positions.forEach((pos) => {
       const row = document.createElement("tr");
       row.dataset.positionId = pos.id || pos.symbol || "";
       const pnlValue = typeof pos.pnl === "number" ? pos.pnl : Number(pos.pnl);
       const pnlClass = Number.isFinite(pnlValue) ? (pnlValue > 0 ? "positive" : pnlValue < 0 ? "negative" : "") : "";
+      const entryValue = Number(pos.entry_price);
+      const sizeValue = Number(pos.size);
+      const notionalValue =
+        Number.isFinite(entryValue) && Number.isFinite(sizeValue) ? Math.abs(entryValue * sizeValue) : null;
+      if (Number.isFinite(notionalValue)) {
+        totalOpenInterest += notionalValue;
+        hasOpenInterest = true;
+      }
+      const pnlPctValue =
+        Number.isFinite(pnlValue) && Number.isFinite(notionalValue) && notionalValue > 0
+          ? (pnlValue / notionalValue) * 100
+          : null;
+      const marginUsedValue = Number(pos.margin_used);
+      const marginReturnPct =
+        Number.isFinite(pnlValue) && Number.isFinite(marginUsedValue) && marginUsedValue > 0
+          ? (pnlValue / marginUsedValue) * 100
+          : null;
+      const equityPctValue =
+        Number.isFinite(pnlValue) && Number.isFinite(accountEquity) && Math.abs(accountEquity) > 1e-9
+          ? (pnlValue / accountEquity) * 100
+          : null;
+      const perUnitMove =
+        Number.isFinite(pnlValue) && Number.isFinite(sizeValue) && Math.abs(sizeValue) > 1e-9
+          ? (pnlValue / sizeValue)
+          : null;
+      const underlyingMovePct =
+        Number.isFinite(perUnitMove) && Number.isFinite(entryValue) && Math.abs(entryValue) > 1e-9
+          ? (perUnitMove / entryValue) * 100
+          : null;
+      const tpCount = Number(pos.take_profit_count || 0);
+      const slCount = Number(pos.stop_loss_count || 0);
+      const tpBadge = tpCount > 1 ? `<span class="tpsl-count-badge" title="${tpCount} TP orders">${tpCount}</span>` : "";
+      const slBadge = slCount > 1 ? `<span class="tpsl-count-badge" title="${slCount} SL orders">${slCount}</span>` : "";
       const positionId = row.dataset.positionId;
       const sliderVal = sliderValues.get(positionId) ?? 100;
       const limitVal = limitPriceValues.get(positionId) ?? "";
       const tpVal = tpValues.get(positionId) ?? "";
       const slVal = slValues.get(positionId) ?? "";
+      let pnlDetail = "";
+      if (currentPnlBasis === "equity") {
+        pnlDetail = Number.isFinite(equityPctValue) ? formatPercent(equityPctValue) : "--";
+      } else if (currentPnlBasis === "size_move") {
+        pnlDetail = Number.isFinite(underlyingMovePct) ? formatPercent(underlyingMovePct) : "--";
+      } else {
+        pnlDetail = Number.isFinite(marginReturnPct)
+          ? formatPercent(marginReturnPct)
+          : (Number.isFinite(pnlPctValue) ? formatPercent(pnlPctValue) : "--");
+      }
+      const pnlDisplay = pnlDetail && pnlDetail !== "--"
+        ? `${formatNumber(pos.pnl)} (${pnlDetail})`
+        : `${formatNumber(pos.pnl)}`;
       row.innerHTML = `
         <td>${pos.symbol || ""}</td>
         <td>${formatNumber(pos.entry_price)}</td>
         <td>${pos.side || ""}</td>
-        <td>${pos.size ?? ""}</td>
-        <td class="pnl ${pnlClass}">${formatNumber(pos.pnl)}</td>
+        <td>${notionalValue !== null ? formatNotional(notionalValue) : ""}</td>
+        <td class="pnl ${pnlClass}">${pnlDisplay}</td>
         <td class="tp-sl-cell">
-          <div class="tp-sl-row">
+          <div class="tp-sl-row tp-sl-click-target" role="button" tabindex="0" aria-label="Manage TP/SL">
             <div class="stacked">
-              <span class="tp">TP: ${pos.take_profit ?? "None"}</span>
-              <span class="sl">SL: ${pos.stop_loss ?? "None"}</span>
+              <span class="tp">TP: ${pos.take_profit ?? "None"} ${tpBadge}</span>
+              <span class="sl">SL: ${pos.stop_loss ?? "None"} ${slBadge}</span>
             </div>
-            <button class="btn ghost modify-btn" type="button">Modify</button>
           </div>
           <div class="modify-panel hidden">
             <div class="manage-row">
@@ -270,7 +376,7 @@
       actionsCell.classList.add("actions-cell");
       actionsCell.innerHTML = `
         <div class="actions-cell">
-          <button class="btn ghost manage-btn" type="button">Manage</button>
+          <button class="btn ghost manage-btn" type="button">Close</button>
         </div>
         <div class="manage-panel hidden">
           <div class="manage-row">
@@ -308,6 +414,11 @@
       row.appendChild(actionsCell);
       tbody.appendChild(row);
     });
+
+    if (hasOpenInterest && totalFoot && totalOiCell) {
+      totalOiCell.textContent = `Total OI: ${formatNotional(totalOpenInterest)}`;
+      totalFoot.classList.remove("hidden");
+    }
   }
 
   async function loadPositions(forceResync = false) {
@@ -388,6 +499,49 @@
   document.addEventListener("DOMContentLoaded", () => {
     const refreshBtn = document.getElementById("refresh-positions");
     const table = document.getElementById("positions-table");
+    const pnlBasisTrigger = document.getElementById("positions-pnl-basis-trigger");
+    const pnlBasisOptions = document.getElementById("positions-pnl-basis-options");
+
+    currentPnlBasis = loadStoredPnlBasis();
+    if (pnlBasisTrigger) {
+      pnlBasisTrigger.textContent = getPnlBasisLabel(currentPnlBasis);
+    }
+    if (pnlBasisOptions) {
+      const buttons = Array.from(pnlBasisOptions.querySelectorAll("button[data-value]"));
+      const syncActive = () => {
+        buttons.forEach((btn) => {
+          const isActive = normalizePnlBasis(btn.dataset.value) === currentPnlBasis;
+          btn.classList.toggle("is-active", isActive);
+          btn.setAttribute("aria-selected", String(isActive));
+        });
+      };
+      syncActive();
+      if (pnlBasisTrigger) {
+        pnlBasisTrigger.addEventListener("click", () => {
+          const isOpen = pnlBasisOptions.classList.contains("open");
+          pnlBasisOptions.classList.toggle("open", !isOpen);
+          pnlBasisTrigger.setAttribute("aria-expanded", String(!isOpen));
+        });
+      }
+      pnlBasisOptions.addEventListener("click", (event) => {
+        const btn = event.target.closest("button[data-value]");
+        if (!btn) return;
+        const next = normalizePnlBasis(btn.dataset.value);
+        if (next !== currentPnlBasis) {
+          currentPnlBasis = next;
+          persistPnlBasis(currentPnlBasis);
+          if (pnlBasisTrigger) {
+            pnlBasisTrigger.textContent = getPnlBasisLabel(currentPnlBasis);
+          }
+          syncActive();
+          renderPositions(lastPositions || [], { force: true });
+        }
+        pnlBasisOptions.classList.remove("open");
+        if (pnlBasisTrigger) {
+          pnlBasisTrigger.setAttribute("aria-expanded", "false");
+        }
+      });
+    }
 
     refreshBtn.addEventListener("click", () => loadPositions(true));
 
@@ -427,7 +581,7 @@
 
     table.addEventListener("click", async (event) => {
       const manageBtn = event.target.closest(".manage-btn");
-      const modifyBtn = event.target.closest(".modify-btn");
+      const tpSlTarget = event.target.closest(".tp-sl-click-target");
       const mark = event.target.closest(".slider-mark");
       const marketCloseBtn = event.target.closest(".market-close");
       const limitCloseBtn = event.target.closest(".limit-close");
@@ -465,7 +619,7 @@
         }
         return;
       }
-      if (modifyBtn) {
+      if (tpSlTarget) {
         event.stopPropagation();
         const panel = row.querySelector(".modify-panel");
         if (panel) {
@@ -582,16 +736,38 @@
       }
     });
 
+    table.addEventListener("keydown", (event) => {
+      const tpSlTarget = event.target.closest(".tp-sl-click-target");
+      if (!tpSlTarget) return;
+      if (event.key !== "Enter" && event.key !== " ") return;
+      event.preventDefault();
+      const row = tpSlTarget.closest("tr");
+      if (!row) return;
+      const positionId = row.dataset.positionId;
+      const panel = row.querySelector(".modify-panel");
+      if (!panel) return;
+      const isOpen = !panel.classList.contains("hidden");
+      panel.classList.toggle("hidden");
+      if (isOpen) {
+        openPanels.modify.delete(positionId);
+      } else {
+        openPanels.modify.add(positionId);
+      }
+    });
+
     document.addEventListener("click", (event) => {
       const target = event.target;
       const clickedManagePanel = target.closest(".manage-panel");
       const clickedModifyPanel = target.closest(".modify-panel");
       const clickedManageBtn = target.closest(".manage-btn");
-      const clickedModifyBtn = target.closest(".modify-btn");
+      const clickedModifyBtn = target.closest(".tp-sl-click-target");
+      const clickedPnlBasis = target.closest(".positions-basis-dropdown");
       // If click is inside a panel or on its toggle buttons, do nothing.
-      if (clickedManagePanel || clickedModifyPanel || clickedManageBtn || clickedModifyBtn) {
+      if (clickedManagePanel || clickedModifyPanel || clickedManageBtn || clickedModifyBtn || clickedPnlBasis) {
         return;
       }
+      if (pnlBasisOptions) pnlBasisOptions.classList.remove("open");
+      if (pnlBasisTrigger) pnlBasisTrigger.setAttribute("aria-expanded", "false");
       // Otherwise collapse all open panels
       document.querySelectorAll(".manage-panel").forEach((panel) => panel.classList.add("hidden"));
       document.querySelectorAll(".modify-panel").forEach((panel) => panel.classList.add("hidden"));
@@ -607,6 +783,12 @@
     window.addEventListener("venue:changed", () => {
       loadPositions(true);
       restartStream();
+    });
+
+    window.addEventListener("account:summary", () => {
+      if (currentPnlBasis === "equity" && Array.isArray(lastPositions) && lastPositions.length > 0) {
+        renderPositions(lastPositions, { force: true });
+      }
     });
 
     window.setInterval(() => {

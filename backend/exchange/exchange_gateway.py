@@ -1,4 +1,5 @@
 import asyncio
+import inspect
 import random
 import time
 import uuid
@@ -114,6 +115,8 @@ class ExchangeGateway:
         self.apex_client = ApexClient(settings, private_client=client, public_client=fallback_public)
         self._client: Any = self.apex_client.private_client
         self._public_client: Any = self.apex_client.public_client
+        self._create_order_supports_kwargs: Optional[bool] = None
+        self._create_order_supported_params: Optional[set[str]] = None
         self._rest_timeout_seconds = max(0.0, float(getattr(settings, "apex_rest_timeout_seconds", 10) or 0))
         self._rest_max_retries = max(0, int(getattr(settings, "apex_rest_retries", 0) or 0))
         self._rest_retry_backoff = max(0.0, float(getattr(settings, "apex_rest_retry_backoff_seconds", 0.5) or 0))
@@ -189,6 +192,16 @@ class ExchangeGateway:
                     self._account_cache.setdefault("totalEquityValue", account.get("totalEquityValue"))
                 if account.get("availableBalance") is not None:
                     self._account_cache.setdefault("availableBalance", account.get("availableBalance"))
+                withdrawable = (
+                    account.get("withdrawable")
+                    or account.get("withdrawableAmount")
+                    or account.get("availableWithdrawable")
+                    or payload.get("withdrawable")
+                    or payload.get("withdrawableAmount")
+                    or payload.get("availableWithdrawable")
+                )
+                if withdrawable is not None:
+                    self._account_cache.setdefault("withdrawableAmount", withdrawable)
                 if account.get("totalUnrealizedPnl") is not None:
                     self._account_cache.setdefault("totalUnrealizedPnl", account.get("totalUnrealizedPnl"))
         except Exception as exc:
@@ -235,6 +248,44 @@ class ExchangeGateway:
                     },
                 )
                 await asyncio.sleep(delay)
+
+    def _supports_create_order_field(self, field: str) -> bool:
+        if self._create_order_supports_kwargs is None:
+            supports_kwargs = False
+            params: set[str] = set()
+            try:
+                signature = inspect.signature(self._client.create_order_v3)
+                for name, param in signature.parameters.items():
+                    if param.kind == inspect.Parameter.VAR_KEYWORD:
+                        supports_kwargs = True
+                    elif param.kind in (
+                        inspect.Parameter.POSITIONAL_OR_KEYWORD,
+                        inspect.Parameter.KEYWORD_ONLY,
+                    ):
+                        params.add(name)
+            except Exception:
+                # Conservative fallback: unknown signature, assume kwargs-capable.
+                supports_kwargs = True
+                params = set()
+            self._create_order_supports_kwargs = supports_kwargs
+            self._create_order_supported_params = params
+
+        if self._create_order_supports_kwargs:
+            return True
+        return bool(self._create_order_supported_params and field in self._create_order_supported_params)
+
+    def _sanitize_create_order_payload(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        if not isinstance(payload, dict):
+            return {}
+        unsupported_by_design = {"clientOrderId", "limitFee", "expiration"}
+        trigger_type_fields = {"tpTriggerPriceType", "slTriggerPriceType", "triggerPriceType"}
+        sanitized = dict(payload)
+        for key in unsupported_by_design:
+            sanitized.pop(key, None)
+        for key in trigger_type_fields:
+            if key in sanitized and not self._supports_create_order_field(key):
+                sanitized.pop(key, None)
+        return sanitized
 
     # --- WebSocket helpers ---
     def attach_loop(self, loop: asyncio.AbstractEventLoop) -> None:
@@ -374,12 +425,16 @@ class ExchangeGateway:
             total_equity = self._account_cache.get("totalEquityValue")
             available = self._account_cache.get("availableBalance")
             total_upnl = self._account_cache.get("totalUnrealizedPnl")
+            withdrawable = self._account_cache.get("withdrawableAmount")
         if total_equity is None and available is None and total_upnl is None:
             return None
+        if withdrawable is None:
+            withdrawable = available
         summary: Dict[str, Optional[float]] = {
             "total_equity": float(total_equity) if total_equity is not None else None,
             "available_margin": float(available) if available is not None else None,
             "total_upnl": float(total_upnl) if total_upnl is not None else None,
+            "withdrawable_amount": float(withdrawable) if withdrawable is not None else None,
         }
         return summary
 
@@ -606,6 +661,11 @@ class ExchangeGateway:
         summary_changed = False
         total_equity_stream = payload.get("totalEquityValue") or payload.get("totalEquity") or None
         available_balance_stream = payload.get("availableBalance") or payload.get("available_margin")
+        withdrawable_stream = (
+            payload.get("withdrawable")
+            or payload.get("withdrawableAmount")
+            or payload.get("availableWithdrawable")
+        )
         total_upnl_stream = (
             payload.get("totalUnrealizedPnl")
             or payload.get("totalUnrealizedPnlUsd")
@@ -624,6 +684,12 @@ class ExchangeGateway:
                         total_equity_stream = acct.get("totalEquityValue") or acct.get("totalEquity")
                     if available_balance_stream is None:
                         available_balance_stream = acct.get("availableBalance") or acct.get("available_margin")
+                    if withdrawable_stream is None:
+                        withdrawable_stream = (
+                            acct.get("withdrawable")
+                            or acct.get("withdrawableAmount")
+                            or acct.get("availableWithdrawable")
+                        )
                     if total_upnl_stream is None:
                         total_upnl_stream = (
                             acct.get("totalUnrealizedPnl")
@@ -649,11 +715,18 @@ class ExchangeGateway:
             self._account_cache["totalEquityValue"] = total_equity_stream
         if available_balance_stream is not None:
             self._account_cache["availableBalance"] = available_balance_stream
+        if withdrawable_stream is not None:
+            self._account_cache["withdrawableAmount"] = withdrawable_stream
         if total_upnl_stream is not None:
             self._account_cache["totalUnrealizedPnl"] = total_upnl_stream
             self._last_upnl_source = "ws_account_stream"
             self._last_upnl_updated_ts = time.time()
-        if total_upnl_stream is not None or total_equity_stream is not None or available_balance_stream is not None:
+        if (
+            total_upnl_stream is not None
+            or total_equity_stream is not None
+            or available_balance_stream is not None
+            or withdrawable_stream is not None
+        ):
             summary_changed = True
         if summary_changed:
             self._publish_account_summary_event()
@@ -855,7 +928,7 @@ class ExchangeGateway:
                 continue
             # Skip TP/SL reduce-only helpers; the UI has dedicated controls for these and Apex
             # does not display them alongside discretionary orders.
-            if o.get("isPositionTpsl"):
+            if self._is_tpsl_order_payload(o):
                 continue
             status = str(o.get("status") or o.get("orderStatus") or "").lower()
             if status in {"canceled", "cancelled", "filled"} or "cancel" in status:
@@ -1002,6 +1075,14 @@ class ExchangeGateway:
                     or payload_dict.get("available_margin")
                     or available
                 )
+                withdrawable = (
+                    account.get("withdrawable")
+                    or account.get("withdrawableAmount")
+                    or account.get("availableWithdrawable")
+                    or payload_dict.get("withdrawable")
+                    or payload_dict.get("withdrawableAmount")
+                    or payload_dict.get("availableWithdrawable")
+                )
                 total_upnl = (
                     account.get("totalUnrealizedPnl")
                     or account.get("totalUnrealizedPnlUsd")
@@ -1015,6 +1096,8 @@ class ExchangeGateway:
                         self._account_cache["totalEquityValue"] = total_equity
                     if available is not None:
                         self._account_cache["availableBalance"] = available
+                    if withdrawable is not None:
+                        self._account_cache["withdrawableAmount"] = withdrawable
                     if total_upnl is not None:
                         self._account_cache["totalUnrealizedPnl"] = total_upnl
                 # logger.info(
@@ -1042,7 +1125,7 @@ class ExchangeGateway:
         summary = self._current_account_summary()
         if summary:
             return summary
-        return {"total_equity": 0.0, "total_upnl": 0.0, "available_margin": 0.0}
+        return {"total_equity": 0.0, "total_upnl": 0.0, "available_margin": 0.0, "withdrawable_amount": 0.0}
 
     async def load_configs(self) -> None:
         """Fetch and cache symbol configs."""
@@ -1293,11 +1376,17 @@ class ExchangeGateway:
                         account = payload.get("account") if isinstance(payload, dict) else None
                         account_equity = None
                         available_balance = None
+                        withdrawable_amount = None
                         realized_pnl = None
                         total_upnl = None
                         if isinstance(payload, dict):
                             account_equity = payload.get("totalEquityValue")
                             available_balance = payload.get("availableBalance")
+                            withdrawable_amount = (
+                                payload.get("withdrawable")
+                                or payload.get("withdrawableAmount")
+                                or payload.get("availableWithdrawable")
+                            )
                             realized_pnl = payload.get("realizedPnl")
                             total_upnl = (
                                 payload.get("totalUnrealizedPnl")
@@ -1318,6 +1407,12 @@ class ExchangeGateway:
                         if isinstance(account, dict):
                             account_equity = account_equity or account.get("totalEquityValue")
                             available_balance = available_balance or account.get("availableBalance")
+                            withdrawable_amount = (
+                                withdrawable_amount
+                                or account.get("withdrawable")
+                                or account.get("withdrawableAmount")
+                                or account.get("availableWithdrawable")
+                            )
                             realized_pnl = realized_pnl or account.get("realizedPnl")
                             total_upnl = (
                                 total_upnl
@@ -1345,6 +1440,9 @@ class ExchangeGateway:
                                 {
                                     "totalEquityValue": account_equity,
                                     "availableBalance": available_balance,
+                                    "withdrawableAmount": (
+                                        withdrawable_amount if withdrawable_amount is not None else available_balance
+                                    ),
                                     "totalUnrealizedPnl": total_upnl,
                                 }
                             )
@@ -1374,6 +1472,9 @@ class ExchangeGateway:
                                 {
                                     "totalEquityValue": equity_usdt,
                                     "availableBalance": available_balance,
+                                    "withdrawableAmount": (
+                                        withdrawable_amount if withdrawable_amount is not None else available_balance
+                                    ),
                                     "totalUnrealizedPnl": total_upnl,
                                 }
                             )
@@ -1578,7 +1679,9 @@ class ExchangeGateway:
 
     async def get_open_positions(self, *, force_rest: bool = False, publish: bool = False) -> list[Dict[str, Any]]:
         with self._lock:
-            if self._ws_positions and not force_rest:
+            # When publish=True callers expect an authoritative refresh for UI/state fanout,
+            # so do not short-circuit on cached positions.
+            if self._ws_positions and not force_rest and not publish:
                 return list(self._ws_positions.values())
         self._fallback_rest_positions_used_count += 1
         self._record_fallback_usage("positions")
@@ -1838,10 +1941,8 @@ class ExchangeGateway:
 
     async def place_order(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         try:
-            # SDK signature expects clientId; pop clientOrderId to avoid unexpected kwargs.
-            api_payload = dict(payload)
-            for key in ("clientOrderId", "limitFee", "expiration"):
-                api_payload.pop(key, None)
+            # SDK signature differs by installed ApeX client version; strip only unsupported fields.
+            api_payload = self._sanitize_create_order_payload(payload)
             resp = await asyncio.to_thread(self._client.create_order_v3, **api_payload)
             order_id = (
                 resp.get("result", {}).get("orderId")
@@ -2272,14 +2373,15 @@ class ExchangeGateway:
                 "size": size_fmt,
                 "triggerPrice": self._format_with_step(trigger_price, tick) if trigger_price is not None else None,
                 "price": self._format_with_step(trigger_price, tick) if trigger_price is not None else None,
-                # Explicitly request mark-based trigger evaluation for Apex conditional TP/SL.
-                "triggerPriceType": "MARKET",
                 "reduceOnly": True,
                 "isPositionTpsl": True,
                 "timeInForce": "GOOD_TIL_CANCEL",
             }
+            if self._supports_create_order_field("triggerPriceType"):
+                payload["triggerPriceType"] = "MARKET"
             try:
-                resp = await asyncio.to_thread(self._client.create_order_v3, **payload)
+                api_payload = self._sanitize_create_order_payload(payload)
+                resp = await asyncio.to_thread(self._client.create_order_v3, **api_payload)
                 return {"payload": payload, "raw": resp}
             except Exception as exc:  # pragma: no cover
                 logger.warning("update_targets_submit_failed", extra={"event": "update_targets_submit_failed", "error": str(exc)})
@@ -2336,7 +2438,8 @@ class ExchangeGateway:
         if tp:
             payload["tpPrice"] = self._format_with_step(tp, tick)
             payload["tpTriggerPrice"] = self._format_with_step(tp, tick)
-            payload["tpTriggerPriceType"] = "MARKET"
+            if self._supports_create_order_field("tpTriggerPriceType"):
+                payload["tpTriggerPriceType"] = "MARKET"
             payload["isOpenTpslOrder"] = True
             payload["isSetOpenTp"] = True
             payload["tpSide"] = "SELL" if side.upper() == "BUY" else "BUY"
@@ -2344,11 +2447,14 @@ class ExchangeGateway:
         if stop:
             payload["slPrice"] = self._format_with_step(stop, tick)
             payload["slTriggerPrice"] = self._format_with_step(stop, tick)
-            payload["slTriggerPriceType"] = "MARKET"
+            if self._supports_create_order_field("slTriggerPriceType"):
+                payload["slTriggerPriceType"] = "MARKET"
             payload["isOpenTpslOrder"] = True
             payload["isSetOpenSl"] = True
             payload["slSide"] = "SELL" if side.upper() == "BUY" else "BUY"
             payload["slSize"] = self._format_with_step(size, step)
+        if (tp or stop) and self._supports_create_order_field("triggerPriceType"):
+            payload["triggerPriceType"] = "MARKET"
         return payload, None
 
     def _redact_order_payload(self, payload: Dict[str, Any]) -> Dict[str, Any]:

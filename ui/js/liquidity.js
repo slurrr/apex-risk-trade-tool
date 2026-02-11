@@ -17,6 +17,7 @@
     pollTimer: null,
     debounceTimer: null,
     paused: false,
+    hasData: false,
   };
 
   function getPanelElements() {
@@ -91,27 +92,45 @@
     const { headline, headlineBuy, headlineSell } = getPanelElements();
     if (!headline || !headlineBuy || !headlineSell) return;
     const label = Number.isFinite(tolerance) ? `${tolerance} bps` : "--";
-    if (loading) {
-      headline.textContent = "Loading...";
-      headline.classList.remove("hidden");
-      headlineBuy.classList.add("hidden");
-      headlineSell.classList.add("hidden");
-      return;
+    const desiredPrefix = `Max size @ ${label}: `;
+
+    let prefixEl = headline.querySelector(".liquidity-headline-prefix");
+    let valueEl = headline.querySelector(".liquidity-headline-value");
+    if (!prefixEl || !valueEl) {
+      headline.textContent = "";
+      prefixEl = document.createElement("span");
+      prefixEl.className = "liquidity-headline-prefix";
+      valueEl = document.createElement("span");
+      valueEl.className = "liquidity-headline-value";
+      headline.appendChild(prefixEl);
+      headline.appendChild(valueEl);
     }
+    if (prefixEl.textContent !== desiredPrefix) {
+      prefixEl.textContent = desiredPrefix;
+    }
+
+    let valueText = "--";
+    if (!loading) {
+      if (side === "BUY" || side === "SELL") {
+        const notional = side === "BUY" ? buyNotional : sellNotional;
+        valueText = formatNotional(notional);
+      } else {
+        valueText = "--";
+      }
+    }
+    if (valueEl.textContent !== valueText) {
+      valueEl.textContent = valueText;
+    }
+
     if (side === "BUY" || side === "SELL") {
-      const notional = side === "BUY" ? buyNotional : sellNotional;
-      headline.textContent = `Max size @ ${label}: ${formatNotional(notional)}`;
       headline.classList.remove("hidden");
       headlineBuy.classList.add("hidden");
       headlineSell.classList.add("hidden");
       return;
     }
-    headline.textContent = "--";
-    headline.classList.add("hidden");
-    headlineBuy.textContent = `Max Buy @ ${label}: ${formatNotional(buyNotional)}`;
-    headlineSell.textContent = `Max Sell @ ${label}: ${formatNotional(sellNotional)}`;
-    headlineBuy.classList.remove("hidden");
-    headlineSell.classList.remove("hidden");
+    headline.classList.remove("hidden");
+    headlineBuy.classList.add("hidden");
+    headlineSell.classList.add("hidden");
   }
 
   function renderIdle() {
@@ -125,6 +144,7 @@
       status.removeAttribute("title");
       status.classList.remove("is-error");
     }
+    state.hasData = false;
   }
 
   function renderLoading(side) {
@@ -190,6 +210,7 @@
       status.removeAttribute("title");
       status.classList.remove("is-error");
     }
+    state.hasData = true;
   }
 
   function getActiveSide() {
@@ -224,7 +245,9 @@
     }
     const side = getActiveSide();
     const token = ++state.inflight;
-    renderLoading(side);
+    if (!state.hasData) {
+      renderLoading(side);
+    }
     try {
       const url = `${API_BASE}/api/market/depth-summary/${encodeURIComponent(symbol)}?tolerance_bps=${state.tolerance}&levels=${LEVELS}`;
       const resp = await fetch(url);

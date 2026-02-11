@@ -4,6 +4,7 @@ import logging
 from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect
 
 from backend.api.routes_trade import get_order_manager
+from backend.core.ui_mock import get_ui_mock_section, is_ui_mock_enabled
 from backend.trading.order_manager import OrderManager
 
 router = APIRouter(tags=["stream"])
@@ -14,6 +15,14 @@ logger = logging.getLogger(__name__)
 async def stream_health(manager: OrderManager = Depends(get_order_manager)) -> dict:
     """Expose stream/reconcile health metrics for diagnostics and alerting."""
     try:
+        if is_ui_mock_enabled():
+            venue = (getattr(manager.gateway, "venue", "apex") or "apex").lower()
+            health = get_ui_mock_section(venue, "stream_health", {})
+            if isinstance(health, dict):
+                payload = dict(health)
+                payload.setdefault("venue", venue)
+                return payload
+            return {"venue": venue, "ws_alive": True}
         return await manager.get_stream_health()
     except Exception as exc:
         logger.warning("stream_health_failed", extra={"event": "stream_health_failed", "error": str(exc)})
@@ -27,6 +36,25 @@ async def stream_updates(
 ) -> None:
     """Push gateway events to the UI (orders, positions, ticker/account)."""
     await websocket.accept()
+    if is_ui_mock_enabled():
+        venue = (getattr(manager.gateway, "venue", "apex") or "apex").lower()
+        account = get_ui_mock_section(venue, "account_summary", {})
+        orders = get_ui_mock_section(venue, "orders", [])
+        positions = get_ui_mock_section(venue, "positions", [])
+        try:
+            if isinstance(account, dict):
+                account_payload = dict(account)
+                account_payload.setdefault("venue", venue)
+                await websocket.send_json({"type": "account", "payload": account_payload})
+            await websocket.send_json({"type": "orders", "payload": orders if isinstance(orders, list) else []})
+            await websocket.send_json({"type": "positions", "payload": positions if isinstance(positions, list) else []})
+            while True:
+                await asyncio.sleep(30)
+        except WebSocketDisconnect:
+            return
+        except Exception:
+            return
+
     gateway = manager.gateway
     queue = gateway.register_subscriber()
     is_apex_gateway = (getattr(gateway, "venue", "apex") or "").lower() == "apex"

@@ -93,6 +93,23 @@ def test_leverage_cap_reduces_size():
     assert "leverage constraints" in " ".join(result.warnings).lower()
 
 
+def test_leverage_cap_uses_leverage_capital_when_provided():
+    cfg = base_config()
+    cfg["maxLeverage"] = 10
+    result = calculate_position_size(
+        equity=1000,
+        leverage_capital=100,
+        risk_pct=20,
+        entry_price=100,
+        stop_price=95,
+        symbol_config=cfg,
+    )
+    # Risk-based raw size = 40, but leverage cap uses 100*10=1000 notional -> size 10.
+    assert math.isclose(result.size, 10.0)
+    assert math.isclose(result.notional, 1000.0)
+    assert "leverage constraints" in " ".join(result.warnings).lower()
+
+
 def test_slippage_reduces_size():
     cfg = base_config()
     result = calculate_position_size(

@@ -37,12 +37,23 @@
   function renderOrders(orders) {
     const tbody = document.querySelector("#orders-table tbody");
     const emptyState = document.getElementById("orders-empty");
+    const totalFoot = document.getElementById("orders-total-foot");
+    const totalCell = document.getElementById("orders-total-notional");
+    const formatNotional = (value) =>
+      Number.isFinite(value)
+        ? value.toLocaleString(undefined, { maximumFractionDigits: 2 })
+        : "--";
     tbody.innerHTML = "";
+    if (totalFoot) totalFoot.classList.add("hidden");
+    if (totalCell) totalCell.textContent = "";
     if (!orders || orders.length === 0) {
       emptyState.style.display = "block";
       return;
     }
     emptyState.style.display = "none";
+
+    let totalNotional = 0;
+    let hasNotional = false;
 
     orders.forEach((order) => {
       const row = document.createElement("tr");
@@ -56,18 +67,31 @@
       cancelBtn.dataset.orderId = oid || "";
       cancelCell.appendChild(cancelBtn);
 
+      const entry = Number(order.entry_price);
+      const size = Number(order.size);
+      const notional = Number.isFinite(entry) && Number.isFinite(size) ? Math.abs(entry * size) : null;
+      if (Number.isFinite(notional)) {
+        totalNotional += notional;
+        hasNotional = true;
+      }
+
       const sideIsClose = !!order.reduce_only;
       const sideIcon = sideIsClose ? "/assets/close.png" : "/assets/open.png";
       row.innerHTML = `
         <td>${order.symbol || ""}</td>
         <td>${formatNumber(order.entry_price)}</td>
         <td><span class="side-cell">${order.side || ""}<img src="${sideIcon}" alt="" /></span></td>
-        <td>${order.size ?? ""}</td>
+        <td>${notional !== null ? formatNotional(notional) : ""}</td>
         <td>${order.status || ""}</td>
       `;
       row.appendChild(cancelCell);
       tbody.appendChild(row);
     });
+
+    if (hasNotional && totalCell && totalFoot) {
+      totalCell.textContent = `Total: ${formatNotional(totalNotional)}`;
+      totalFoot.classList.remove("hidden");
+    }
   }
 
   async function loadOrders() {

@@ -62,6 +62,7 @@ class OrderManager:
         self.pending_order_prices_client: Dict[str, float] = {}
         self.position_targets: Dict[str, Dict[str, float]] = {}
         self._tpsl_targets_by_symbol: Dict[str, Dict[str, float]] = {}
+        self._tpsl_order_meta_by_symbol: Dict[str, Dict[str, int]] = {}
         self._tpsl_local_hints: Dict[str, Dict[str, Any]] = {}
         settings = getattr(gateway, "settings", None)
         self._tpsl_hint_ttl_seconds = max(
@@ -74,19 +75,39 @@ class OrderManager:
         self._tpsl_backfill_min_gap_seconds = 5.0
 
     async def _get_account_context(self) -> tuple[float, Optional[float]]:
-        equity = await self.gateway.get_account_equity()
+        venue = (getattr(self.gateway, "venue", "") or "").lower()
+        equity: Optional[float] = None
         available_margin: Optional[float] = None
         summary_getter = getattr(self.gateway, "get_account_summary", None)
         if callable(summary_getter):
             try:
                 summary = await summary_getter()
                 if isinstance(summary, dict):
-                    available_margin = _coerce_float(summary.get("available_margin"))
-            except Exception:
+                    equity = _coerce_float(summary.get("total_equity"))
+                    if venue == "hyperliquid":
+                        available_margin = _coerce_float(
+                            summary.get("sizing_available_margin")
+                            if summary.get("sizing_available_margin") is not None
+                            else summary.get("available_margin")
+                        )
+                    else:
+                        available_margin = _coerce_float(summary.get("available_margin"))
+            except Exception as exc:
+                # Hyperliquid sizing must not fall back to equity-only assumptions.
+                if venue == "hyperliquid":
+                    raise risk_engine.PositionSizingError(
+                        f"Unable to fetch Hyperliquid account summary for sizing: {exc}"
+                    ) from exc
                 available_margin = None
+        if equity is None:
+            equity = await self.gateway.get_account_equity()
         if available_margin is None:
+            if venue == "hyperliquid":
+                raise risk_engine.PositionSizingError(
+                    "Hyperliquid available margin is unavailable; cannot size safely right now."
+                )
             available_margin = equity
-        return equity, available_margin
+        return float(equity), available_margin
 
     def _enforce_venue_margin_guard(
         self,
@@ -120,6 +141,65 @@ class OrderManager:
                 f"Order notional {sizing.notional:.6f} is below Hyperliquid minimum "
                 f"{min_notional:.2f} USDC."
             )
+
+    @staticmethod
+    def _round_down_to_step(value: float, step: float) -> float:
+        if step <= 0:
+            return value
+        return float(int(value / step) * step)
+
+    def _is_hyperliquid_insufficient_margin(self, raw: Any) -> bool:
+        def _walk(node: Any) -> list[str]:
+            out: list[str] = []
+            if node is None:
+                return out
+            if isinstance(node, str):
+                out.append(node)
+                return out
+            if isinstance(node, dict):
+                for key in ("error", "msg", "message", "detail"):
+                    val = node.get(key)
+                    if isinstance(val, str):
+                        out.append(val)
+                for val in node.values():
+                    out.extend(_walk(val))
+                return out
+            if isinstance(node, list):
+                for item in node:
+                    out.extend(_walk(item))
+            return out
+
+        text = " | ".join(_walk(raw)).lower()
+        return "insufficient margin" in text
+
+    def _compute_hyperliquid_retry_size(
+        self,
+        *,
+        symbol_info: Dict[str, Any],
+        sizing: risk_engine.PositionSizingResult,
+        available_margin: Optional[float],
+    ) -> Optional[float]:
+        margin = _coerce_float(available_margin)
+        if margin is None or margin <= 0:
+            return None
+        max_leverage = _coerce_float(symbol_info.get("maxLeverage")) or 1.0
+        step_size = _coerce_float(symbol_info.get("stepSize")) or 0.0
+        min_size = _coerce_float(symbol_info.get("minOrderSize")) or 0.0
+        safety = 0.97
+        affordable_notional = float(margin) * float(max_leverage) * safety
+        if affordable_notional <= 0:
+            return None
+        if affordable_notional >= float(sizing.notional):
+            return None
+        candidate = affordable_notional / float(sizing.entry_price)
+        candidate = self._round_down_to_step(candidate, step_size)
+        if step_size > 0 and candidate >= float(sizing.size):
+            candidate = self._round_down_to_step(float(sizing.size) - step_size, step_size)
+        if candidate <= 0:
+            return None
+        if min_size > 0 and candidate < min_size:
+            return None
+        return candidate
 
     def _estimate_position_risk(self, position: Dict[str, Any]) -> Optional[float]:
         entry = _coerce_float(position.get("entry_price") or position.get("entryPrice"))
@@ -475,6 +555,11 @@ class OrderManager:
             symbol_config=symbol_info,
             slippage_factor=self.slippage_factor,
             fee_buffer_pct=self.fee_buffer_pct,
+            leverage_capital=(
+                available_margin
+                if (getattr(self.gateway, "venue", "") or "").lower() == "hyperliquid"
+                else None
+            ),
         )
         self._enforce_venue_margin_guard(
             symbol=symbol,
@@ -528,6 +613,11 @@ class OrderManager:
             symbol_config=symbol_info,
             slippage_factor=self.slippage_factor,
             fee_buffer_pct=self.fee_buffer_pct,
+            leverage_capital=(
+                available_margin
+                if (getattr(self.gateway, "venue", "") or "").lower() == "hyperliquid"
+                else None
+            ),
         )
         self._enforce_venue_margin_guard(
             symbol=symbol,
@@ -576,6 +666,49 @@ class OrderManager:
 
         order_resp = await self.gateway.place_order(payload)
         exchange_order_id = order_resp.get("exchange_order_id")
+        venue = (getattr(self.gateway, "venue", "") or "").lower()
+        if (
+            not exchange_order_id
+            and venue == "hyperliquid"
+            and self._is_hyperliquid_insufficient_margin(order_resp.get("raw"))
+        ):
+            _, refreshed_margin = await self._get_account_context()
+            retry_size = self._compute_hyperliquid_retry_size(
+                symbol_info=symbol_info,
+                sizing=sizing,
+                available_margin=refreshed_margin,
+            )
+            if retry_size and retry_size < float(sizing.size):
+                original_size = float(sizing.size)
+                retry_payload, retry_warning = await self.gateway.build_order_payload(
+                    symbol=symbol,
+                    side=sizing.side,
+                    size=retry_size,
+                    entry_price=sizing.entry_price,
+                    reduce_only=False,
+                    tp=tp,
+                    stop=stop_price,
+                )
+                if retry_warning:
+                    warnings.append(retry_warning)
+                order_resp = await self.gateway.place_order(retry_payload)
+                exchange_order_id = order_resp.get("exchange_order_id")
+                if exchange_order_id:
+                    per_unit_loss = abs(float(sizing.entry_price) - float(sizing.stop_price))
+                    resized_notional = float(retry_size) * float(sizing.entry_price)
+                    sizing = risk_engine.PositionSizingResult(
+                        side=sizing.side,
+                        size=float(retry_size),
+                        notional=float(resized_notional),
+                        estimated_loss=float(per_unit_loss * float(retry_size)),
+                        warnings=list(sizing.warnings),
+                        entry_price=float(sizing.entry_price),
+                        stop_price=float(sizing.stop_price),
+                    )
+                    warnings.append(
+                        f"Hyperliquid margin tightened at submit time; reduced size from "
+                        f"{original_size:.6f} to {float(retry_size):.6f} and retried."
+                    )
         if not exchange_order_id:
             raw = order_resp.get("raw")
             raise risk_engine.PositionSizingError(f"Order placement failed: {raw}")
@@ -601,7 +734,12 @@ class OrderManager:
         self.positions = await self._enrich_positions(positions_raw, tpsl_map=self._tpsl_targets_by_symbol)
 
         raw_orders = await self.gateway.get_open_orders()
-        self.open_orders = [self._normalize_order(order) for order in raw_orders]
+        normalized_orders: list[Dict[str, Any]] = []
+        for order in raw_orders:
+            if not self._include_in_open_orders(order):
+                continue
+            normalized_orders.append(self._normalize_order(order))
+        self.open_orders = normalized_orders
         self._rebuild_open_risk_estimates(open_orders=self.open_orders, positions=self.positions)
         # logger.info(
         #     "state_refreshed",
@@ -811,13 +949,24 @@ class OrderManager:
                 await self.gateway.get_open_orders(force_rest=True, publish=True)
             except Exception:
                 # Non-fatal; WS/next refresh will pick up the new order.
-                # logger.debug("close_position_refresh_orders_failed", exc_info=True)
-                return {
-                    "position_id": position_id,
-                    "requested_percent": close_percent,
-                    "close_size": close_size,
-                    "exchange": resp,
-                }
+                pass
+        else:
+            # For market closes, refresh both orders and positions quickly so UI
+            # reflects closure without waiting for eventual WS update.
+            try:
+                await self.gateway.get_open_orders(force_rest=True, publish=True)
+            except Exception:
+                pass
+            try:
+                await self.gateway.get_open_positions(force_rest=True, publish=True)
+            except Exception:
+                pass
+        return {
+            "position_id": position_id,
+            "requested_percent": close_percent,
+            "close_size": close_size,
+            "exchange": resp,
+        }
 
     async def modify_targets(
         self,
@@ -1066,7 +1215,53 @@ class OrderManager:
             return None
 
         tpsl: Dict[str, Dict[str, Any]] = {}
+        tpsl_meta: Dict[str, Dict[str, int]] = {}
         debug_counts = {"total": 0, "position_tpsl": 0, "tp": 0, "sl": 0, "skipped_status": 0, "skipped_trigger": 0}
+
+        def _price_hint_for_symbol(symbol: str) -> Optional[float]:
+            gateway = self.gateway
+            try:
+                ticker_cache = getattr(gateway, "_ticker_cache", None)
+                if isinstance(ticker_cache, dict):
+                    entry = ticker_cache.get(symbol) or {}
+                    if isinstance(entry, dict):
+                        value = _coerce_float(entry.get("price"))
+                        if value is not None:
+                            return value
+                ws_prices = getattr(gateway, "_ws_prices", None)
+                if isinstance(ws_prices, dict):
+                    value = _coerce_float(ws_prices.get(symbol))
+                    if value is not None:
+                        return value
+                mids_cache = getattr(gateway, "_mids_cache", None)
+                if isinstance(mids_cache, dict):
+                    coin = str(symbol or "").split("-")[0].upper()
+                    value = _coerce_float(mids_cache.get(coin))
+                    if value is not None:
+                        return value
+            except Exception:
+                return None
+            return None
+
+        def _select_target(symbol: str, field: str, value: Optional[float]) -> None:
+            if value is None:
+                return
+            entry = tpsl.setdefault(symbol, {})
+            meta = tpsl_meta.setdefault(symbol, {"take_profit_count": 0, "stop_loss_count": 0})
+            count_key = "take_profit_count" if field == "take_profit" else "stop_loss_count"
+            meta[count_key] = int(meta.get(count_key, 0)) + 1
+            chosen_val = _coerce_float(entry.get(field))
+            if chosen_val is None:
+                entry[field] = value
+                return
+            price_hint = _price_hint_for_symbol(symbol)
+            if price_hint is None:
+                return
+            old_dist = abs(chosen_val - price_hint)
+            new_dist = abs(float(value) - price_hint)
+            if new_dist < old_dist:
+                entry[field] = value
+
         for order in orders or []:
             debug_counts["total"] += 1
             if not isinstance(order, dict):
@@ -1109,19 +1304,12 @@ class OrderManager:
             sl_val = _first_number(sl_candidates)
             if tp_val is None and sl_val is None:
                 debug_counts["skipped_trigger"] += 1
-            entry = tpsl.setdefault(symbol, {})
-
-            def _update_target(field: str, value: Optional[float]) -> None:
-                if value is None:
-                    return
-                entry[field] = value
-
             if "TAKE_PROFIT" in order_type or tp_val is not None:
-                _update_target("take_profit", tp_val)
+                _select_target(symbol, "take_profit", tp_val)
                 if tp_val is not None:
                     debug_counts["tp"] += 1
             if "STOP" in order_type or sl_val is not None:
-                _update_target("stop_loss", sl_val)
+                _select_target(symbol, "stop_loss", sl_val)
                 if sl_val is not None:
                     debug_counts["sl"] += 1
 
@@ -1136,6 +1324,13 @@ class OrderManager:
                 clean_entry["stop_loss"] = sl_val
             if clean_entry:
                 cleaned[sym] = clean_entry
+        self._tpsl_order_meta_by_symbol = {
+            sym: {
+                "take_profit_count": int((tpsl_meta.get(sym) or {}).get("take_profit_count", 0)),
+                "stop_loss_count": int((tpsl_meta.get(sym) or {}).get("stop_loss_count", 0)),
+            }
+            for sym in set(list(cleaned.keys()) + list(tpsl_meta.keys()))
+        }
         #try:
             # logger.info(
             #     "tpsl_extract_summary",
@@ -1203,6 +1398,30 @@ class OrderManager:
             pnl_val = _coerce_float(candidate)
             if pnl_val is not None:
                 break
+        leverage_raw = position.get("leverage")
+        leverage_val = _coerce_float(position.get("leverageValue"))
+        if leverage_val is None:
+            if isinstance(leverage_raw, dict):
+                leverage_val = _coerce_float(leverage_raw.get("value") or leverage_raw.get("leverage"))
+            else:
+                leverage_val = _coerce_float(leverage_raw)
+        margin_candidates = (
+            position.get("marginUsed"),
+            position.get("margin"),
+            position.get("positionMargin"),
+            position.get("positionInitialMargin"),
+            position.get("initialMargin"),
+            position.get("isolatedMargin"),
+            position.get("usedMargin"),
+            position.get("positionMarginValue"),
+        )
+        margin_used_val = None
+        for candidate in margin_candidates:
+            margin_used_val = _coerce_float(candidate)
+            if margin_used_val is not None:
+                break
+        if margin_used_val is None and entry_price is not None and size_val is not None and leverage_val and leverage_val > 0:
+            margin_used_val = abs(float(entry_price) * float(size_val)) / float(leverage_val)
 
         norm = {
             "id": position.get("positionId") or position.get("id") or symbol,
@@ -1213,10 +1432,13 @@ class OrderManager:
             "take_profit": tp_raw,
             "stop_loss": sl_raw,
             "pnl": pnl_val,
+            "margin_used": margin_used_val,
+            "leverage": leverage_val,
         }
 
         map_src = tpsl_map or self._tpsl_targets_by_symbol
         sym_key = symbol or norm.get("symbol") or ""
+        meta_src = self._tpsl_order_meta_by_symbol.get(sym_key, {})
         tpsl_entry = map_src.get(sym_key) if map_src else None
         if tpsl_entry:
             if tpsl_entry.get("take_profit") is not None:
@@ -1245,6 +1467,8 @@ class OrderManager:
             kind="stop_loss",
             ws_or_cache_value=norm.get("stop_loss"),
         )
+        norm["take_profit_count"] = int(meta_src.get("take_profit_count", 0))
+        norm["stop_loss_count"] = int(meta_src.get("stop_loss_count", 0))
 
         return norm
 

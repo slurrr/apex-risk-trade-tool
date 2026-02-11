@@ -60,6 +60,9 @@ class FakeGateway:
     async def update_targets(self, **kwargs):
         return {"results": [{"payload": kwargs}]}
 
+    async def place_close_order(self, *, symbol: str, side: str, size: float, close_type: str, limit_price=None):
+        return {"exchange_order_id": "close-oid-1", "client_id": "close-cid-1", "raw": {"ok": True}}
+
     async def get_reference_price(self, symbol: str):
         return 101.25, "mid"
 
@@ -80,6 +83,46 @@ def test_execute_trade_happy_path():
     assert result["executed"] is True
     assert result["exchange_order_id"] == "order-123"
     assert result["sizing"].size > 0
+
+
+def test_close_position_market_returns_payload_and_refreshes():
+    gateway = FakeGateway(
+        positions=[
+            {"positionId": "BTC-USDT", "symbol": "BTC-USDT", "positionSide": "LONG", "size": "1", "entryPrice": "100"},
+        ]
+    )
+    manager = OrderManager(gateway)
+    result = asyncio.run(
+        manager.close_position(
+            position_id="BTC-USDT",
+            close_percent=100.0,
+            close_type="market",
+            limit_price=None,
+        )
+    )
+    assert isinstance(result, dict)
+    assert result["position_id"] == "BTC-USDT"
+    assert result["exchange"]["exchange_order_id"] == "close-oid-1"
+
+
+def test_close_position_limit_returns_payload():
+    gateway = FakeGateway(
+        positions=[
+            {"positionId": "BTC-USDT", "symbol": "BTC-USDT", "positionSide": "LONG", "size": "2", "entryPrice": "100"},
+        ]
+    )
+    manager = OrderManager(gateway)
+    result = asyncio.run(
+        manager.close_position(
+            position_id="BTC-USDT",
+            close_percent=50.0,
+            close_type="limit",
+            limit_price=101.0,
+        )
+    )
+    assert isinstance(result, dict)
+    assert result["position_id"] == "BTC-USDT"
+    assert result["close_size"] == pytest.approx(1.0)
 
 
 def test_execute_trade_unknown_symbol():
@@ -514,6 +557,91 @@ def test_execute_trade_hl_grouped_submit_no_warning_when_all_legs_accepted():
     assert not any("attached TP/SL legs" in w for w in result["warnings"])
 
 
+def test_execute_trade_hyperliquid_retries_with_reduced_size_on_margin_error():
+    class _Gateway(FakeGateway):
+        def __init__(self):
+            super().__init__(venue="hyperliquid")
+            self._summary_calls = 0
+
+        async def get_account_summary(self):
+            self._summary_calls += 1
+            if self._summary_calls == 1:
+                return {"available_margin": 1000.0, "total_equity": 1000.0, "total_upnl": 0.0}
+            # Keep margin tight but still enough for a reduced size >= minOrderSize.
+            return {"available_margin": 12.0, "total_equity": 1000.0, "total_upnl": 0.0}
+
+        async def place_order(self, payload):
+            self.placed.append(payload)
+            if len(self.placed) == 1:
+                return {
+                    "exchange_order_id": None,
+                    "raw": {
+                        "status": "ok",
+                        "response": {"type": "order", "data": {"statuses": [{"error": "Insufficient margin to place order. asset=209"}]}},
+                    },
+                }
+            return {"exchange_order_id": "order-123"}
+
+    gateway = _Gateway()
+    manager = OrderManager(gateway)
+    result = asyncio.run(
+        manager.execute_trade(
+            symbol="BTC-USDT",
+            entry_price=100,
+            stop_price=95,
+            risk_pct=1,
+        )
+    )
+    assert result["executed"] is True
+    assert len(gateway.placed) == 2
+    assert float(gateway.placed[1]["size"]) < float(gateway.placed[0]["size"])
+    assert any("margin tightened at submit time" in w for w in result["warnings"])
+
+
+def test_execute_trade_hyperliquid_fails_when_summary_unavailable():
+    class _Gateway(FakeGateway):
+        def __init__(self):
+            super().__init__(venue="hyperliquid")
+
+        async def get_account_summary(self):
+            raise RuntimeError("summary fetch failed")
+
+    gateway = _Gateway()
+    manager = OrderManager(gateway)
+    with pytest.raises(PositionSizingError, match="Unable to fetch Hyperliquid account summary"):
+        asyncio.run(
+            manager.execute_trade(
+                symbol="BTC-USDT",
+                entry_price=100,
+                stop_price=95,
+                risk_pct=1,
+            )
+        )
+    assert gateway.placed == []
+
+
+def test_execute_trade_hyperliquid_fails_when_available_margin_missing():
+    class _Gateway(FakeGateway):
+        def __init__(self):
+            super().__init__(venue="hyperliquid")
+
+        async def get_account_summary(self):
+            return {"total_equity": 1000.0, "total_upnl": 0.0}
+
+    gateway = _Gateway()
+    manager = OrderManager(gateway)
+    with pytest.raises(PositionSizingError, match="available margin is unavailable"):
+        asyncio.run(
+            manager.execute_trade(
+                symbol="BTC-USDT",
+                entry_price=100,
+                stop_price=95,
+                risk_pct=1,
+            )
+        )
+    assert gateway.placed == []
+
+
 def test_list_orders_hyperliquid_hides_tpsl_orders():
     gateway = FakeGateway(
         venue="hyperliquid",
@@ -641,7 +769,7 @@ def test_preview_trade_hyperliquid_margin_guard_uses_leverage():
     assert result.notional > 100.0
 
 
-def test_preview_trade_hyperliquid_margin_guard_blocks_when_initial_margin_too_high():
+def test_preview_trade_hyperliquid_margin_guard_caps_by_available_margin():
     class _Gateway(FakeGateway):
         async def get_account_summary(self):
             return {"available_margin": 50.0, "total_equity": self._equity, "total_upnl": 0.0}
@@ -650,15 +778,64 @@ def test_preview_trade_hyperliquid_margin_guard_blocks_when_initial_margin_too_h
     gateway.symbols["BTC-USDT"]["maxLeverage"] = 2
     manager = OrderManager(gateway, hyperliquid_min_notional_usdc=10.0)
 
-    with pytest.raises(PositionSizingError, match="Required initial margin"):
-        asyncio.run(
-            manager.preview_trade(
-                symbol="BTC-USDT",
-                entry_price=100.0,
-                stop_price=95.0,
-                risk_pct=1.0,
-            )
+    result, _warnings = asyncio.run(
+        manager.preview_trade(
+            symbol="BTC-USDT",
+            entry_price=100.0,
+            stop_price=95.0,
+            risk_pct=1.0,
         )
+    )
+    # available_margin=50 and leverage=2 => max notional should cap at 100.
+    assert result.notional <= 100.0 + 1e-9
+
+
+def test_preview_trade_hyperliquid_leverage_cap_uses_available_margin():
+    class _Gateway(FakeGateway):
+        async def get_account_summary(self):
+            # Equity is high, but free margin is much lower.
+            return {"available_margin": 100.0, "total_equity": self._equity, "total_upnl": 0.0}
+
+    gateway = _Gateway(equity=1000.0, venue="hyperliquid")
+    gateway.symbols["BTC-USDT"]["maxLeverage"] = 10
+    manager = OrderManager(gateway, hyperliquid_min_notional_usdc=10.0)
+
+    result, _warnings = asyncio.run(
+        manager.preview_trade(
+            symbol="BTC-USDT",
+            entry_price=100.0,
+            stop_price=95.0,
+            risk_pct=20.0,
+        )
+    )
+    # available_margin=100 and leverage=10 => max notional should cap at 1000.
+    assert result.notional <= 1000.0 + 1e-9
+
+
+def test_preview_trade_hyperliquid_uses_sizing_available_margin_when_present():
+    class _Gateway(FakeGateway):
+        async def get_account_summary(self):
+            return {
+                "available_margin": 1000.0,
+                "sizing_available_margin": 100.0,
+                "total_equity": self._equity,
+                "total_upnl": 0.0,
+            }
+
+    gateway = _Gateway(equity=1000.0, venue="hyperliquid")
+    gateway.symbols["BTC-USDT"]["maxLeverage"] = 10
+    manager = OrderManager(gateway, hyperliquid_min_notional_usdc=10.0)
+
+    result, _warnings = asyncio.run(
+        manager.preview_trade(
+            symbol="BTC-USDT",
+            entry_price=100.0,
+            stop_price=95.0,
+            risk_pct=20.0,
+        )
+    )
+    # Must be capped by sizing_available_margin (100 * 10 = 1000), not available_margin 1000.
+    assert result.notional <= 1000.0 + 1e-9
 
 
 def test_tpsl_local_hint_takes_precedence_then_expires_to_ws_value():

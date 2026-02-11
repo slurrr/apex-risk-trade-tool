@@ -126,6 +126,11 @@ class ApexClient:
 
         response: Any = self.public_client.klines_v3(**query)
         candles = self._normalize_candles(response)
+        if not candles and "start" in query:
+            retry_query = dict(query)
+            retry_query.pop("start", None)
+            response = self.public_client.klines_v3(**retry_query)
+            candles = self._normalize_candles(response)
         if candles:
             return candles
 
@@ -164,6 +169,11 @@ class ApexClient:
         }
         response: Any = self.public_client.klines_v3(**query)
         candles_1m = self._normalize_candles(response)
+        if not candles_1m and "start" in query:
+            retry_query = dict(query)
+            retry_query.pop("start", None)
+            response = self.public_client.klines_v3(**retry_query)
+            candles_1m = self._normalize_candles(response)
         if not candles_1m:
             return []
         candles_1m.sort(key=lambda c: c.get("open_time", 0))
@@ -231,29 +241,36 @@ class ApexClient:
         return trades
 
     def _unwrap_candle_rows(self, payload: Any) -> List[Any]:
-        if payload is None:
-            return []
-        if isinstance(payload, list):
-            return payload
-        if isinstance(payload, dict):
-            for key in ("result", "data"):
-                if key in payload:
-                    return self._unwrap_candle_rows(payload[key])
-            for key in ("list", "rows", "klines"):
-                rows = payload.get(key)
+        def _walk(node: Any, depth: int = 0) -> List[Any]:
+            if node is None or depth > 8:
+                return []
+            if isinstance(node, list):
+                return node
+            if not isinstance(node, dict):
+                return []
+
+            for key in ("result", "data", "payload"):
+                if key in node:
+                    rows = _walk(node.get(key), depth + 1)
+                    if rows:
+                        return rows
+
+            for key in ("list", "rows", "klines", "candles", "items"):
+                rows = node.get(key)
                 if isinstance(rows, list):
                     return rows
-            map_values = payload.values()
-            flattened: List[Any] = []
-            for value in map_values:
-                if isinstance(value, list):
-                    flattened.extend(value)
-            if flattened:
-                return flattened
+
             candle_keys = {"open", "high", "low", "close"}
-            if candle_keys.issubset({k.lower() for k in payload.keys()}):
-                return [payload]
-        return []
+            if candle_keys.issubset({k.lower() for k in node.keys()}):
+                return [node]
+
+            for value in node.values():
+                rows = _walk(value, depth + 1)
+                if rows:
+                    return rows
+            return []
+
+        return _walk(payload)
 
     def _normalize_candle(self, row: Union[Sequence[Any], dict]) -> Optional[Candle]:
         open_time: Optional[int] = None
@@ -264,8 +281,19 @@ class ApexClient:
         volume: Optional[float] = None
 
         if isinstance(row, dict):
-            def _get_num(key: str) -> Optional[float]:
-                value = row.get(key)
+            lowered = {str(k).lower(): v for k, v in row.items()}
+
+            def _get_first(*keys: str):
+                for key in keys:
+                    if key in row and row.get(key) is not None:
+                        return row.get(key)
+                    lowered_val = lowered.get(key.lower())
+                    if lowered_val is not None:
+                        return lowered_val
+                return None
+
+            def _get_num(*keys: str) -> Optional[float]:
+                value = _get_first(*keys)
                 if value is None:
                     return None
                 try:
@@ -273,24 +301,25 @@ class ApexClient:
                 except (TypeError, ValueError):
                     return None
 
-            open_time_candidates = (
-                row.get("startTime")
-                or row.get("openTime")
-                or row.get("time")
-                or row.get("timestamp")
-                or row.get("start")
-                or row.get("t")
+            open_time_candidates = _get_first(
+                "startTime",
+                "openTime",
+                "open_time",
+                "time",
+                "timestamp",
+                "start",
+                "t",
             )
             if open_time_candidates is not None:
                 try:
                     open_time = int(open_time_candidates)
                 except (TypeError, ValueError):
                     open_time = None
-            open_price = _get_num("open") or _get_num("o")
-            high = _get_num("high") or _get_num("h")
-            low = _get_num("low") or _get_num("l")
-            close = _get_num("close") or _get_num("c")
-            volume = _get_num("volume") or _get_num("v")
+            open_price = _get_num("open", "o", "openPrice")
+            high = _get_num("high", "h", "highPrice")
+            low = _get_num("low", "l", "lowPrice")
+            close = _get_num("close", "c", "closePrice")
+            volume = _get_num("volume", "v", "baseVolume")
         elif isinstance(row, Sequence) and len(row) >= 6:
             try:
                 open_time = int(row[0])

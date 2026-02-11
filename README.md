@@ -18,7 +18,7 @@ Backend + static UI for previewing, executing, and monitoring ApeX trades with r
 - Purpose: automatically suggests a stop price using configurable ATR timeframe, period, and multiplier whenever the trade entry price is known.
 - Backend/API details live in `specs/001-atr-stop-autofill/spec.md`; implementation steps and verification flow are in `specs/001-atr-stop-autofill/quickstart.md`.
 - Configure defaults via `.env`:
-  - `ATR_TIMEFRAME` (or legacy `TIMEFRAME`): candle size such as `5m`, `15m`, or `1h`.
+  - `ATR_TIMEFRAME`: candle size such as `5m`, `15m`, or `1h`.
   - `ATR_PERIOD`: number of candles included in the Wilder ATR calculation.
   - `ATR_MULTIPLIER`: factor applied to ATR when deriving the stop offset.
 - The UI includes an ATR timeframe selector (3m/15m/1h/4h); the selection persists in localStorage and is sent as an optional `timeframe` override to `/risk/atr-stop`.
@@ -58,6 +58,15 @@ Backend + static UI for previewing, executing, and monitoring ApeX trades with r
   - `APEX_LOCAL_HINT_TTL_SECONDS` (default `20`)
 - ApeX symbol price auto-populate is WS-first and only falls back to REST when stale/missing:
   - `APEX_WS_PRICE_STALE_SECONDS` (default `30`)
+
+## UI Whale Mock Mode
+- Purpose: run the UI with big, share-safe demo balances/orders/positions for screenshots without exposing a real account.
+- Config:
+  - `UI_MOCK_MODE_ENABLED=true`
+  - `UI_MOCK_DATA_PATH=spec/ui-whale-mock.json` (or your own JSON path)
+- Venue-aware: mock payload is split by venue key (`apex`, `hyperliquid`) and follows active venue switching.
+- Read-only safety: when mock mode is enabled, trading/order/position mutation endpoints are blocked (`503`) so no live orders are sent.
+- Included example fixture: `spec/ui-whale-mock.json`.
 
 ## Notes
 - Network is validated and defaults to testnet; unexpected networks log a warning on startup.

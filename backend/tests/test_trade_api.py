@@ -13,6 +13,7 @@ from backend.api.routes_trade import trade  # noqa: E402
 from backend.api.routes_venue import configure_venue_controller, get_venue, set_venue  # noqa: E402
 from backend.risk.risk_engine import PositionSizingResult  # noqa: E402
 from backend.trading.schemas import AtrStopRequest, TradeRequest, VenueSwitchRequest  # noqa: E402
+import backend.api.routes_risk as routes_risk  # noqa: E402
 
 
 class FakeManager:
@@ -124,6 +125,10 @@ class FakeRiskGateway:
         ]
 
 
+class FakeApexRiskGateway(FakeRiskGateway):
+    venue = "apex"
+
+
 def test_atr_stop_uses_gateway_fetch_klines(monkeypatch):
     gateway = FakeRiskGateway()
     configure_risk_gateway(gateway)
@@ -139,6 +144,59 @@ def test_atr_stop_uses_gateway_fetch_klines(monkeypatch):
     assert gateway.calls
     assert gateway.calls[0][0] == "BTC-USDT"
     assert gateway.calls[0][1] == "15m"
+    assert gateway.calls[0][2] >= 200
+
+
+def test_atr_stop_caps_limit_for_apex_default_timeframe(monkeypatch):
+    gateway = FakeApexRiskGateway()
+    configure_risk_gateway(gateway)
+    monkeypatch.setattr("backend.api.routes_risk.get_settings", lambda: FakeAtrSettings())
+
+    resp = asyncio.run(
+        atr_stop(
+            AtrStopRequest(symbol="BTC-USDT", side="long", entry_price=100.0),
+            gateway,
+        )
+    )
+    assert resp.stop_loss_price > 0
+    assert gateway.calls
+    assert gateway.calls[0][2] == 120
+
+
+def test_atr_stop_uses_minimal_limit_for_apex_3m(monkeypatch):
+    gateway = FakeApexRiskGateway()
+    configure_risk_gateway(gateway)
+    monkeypatch.setattr("backend.api.routes_risk.get_settings", lambda: FakeAtrSettings())
+
+    resp = asyncio.run(
+        atr_stop(
+            AtrStopRequest(symbol="BTC-USDT", side="long", entry_price=100.0, timeframe="3m"),
+            gateway,
+        )
+    )
+    assert resp.stop_loss_price > 0
+    assert gateway.calls
+    assert gateway.calls[0][2] == 9
+
+
+def test_drop_incomplete_tail_excludes_open_candle(monkeypatch):
+    monkeypatch.setattr("backend.api.routes_risk.time.time", lambda: 1000.0)
+    candles = [
+        {"open_time": 998_000},
+        {"open_time": 999_000},
+    ]
+    trimmed = routes_risk._drop_incomplete_tail(candles, "1m")
+    assert len(trimmed) == 1
+
+
+def test_drop_incomplete_tail_keeps_closed_candle(monkeypatch):
+    monkeypatch.setattr("backend.api.routes_risk.time.time", lambda: 1000.0)
+    candles = [
+        {"open_time": 876_000},
+        {"open_time": 938_000},
+    ]
+    trimmed = routes_risk._drop_incomplete_tail(candles, "1m")
+    assert len(trimmed) == 2
 
 
 class FakeVenueController:

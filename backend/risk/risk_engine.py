@@ -38,6 +38,7 @@ def calculate_position_size(
     symbol_config: Dict[str, float],
     slippage_factor: float = 0.0,
     fee_buffer_pct: float = 0.0,
+    leverage_capital: Optional[float] = None,
 ) -> PositionSizingResult:
     """
     Pure position sizing with exchange constraints and safety rails.
@@ -94,7 +95,12 @@ def calculate_position_size(
     warnings: List[str] = []
 
     if max_leverage is not None and max_leverage > 0:
-        max_notional = equity * max_leverage
+        leverage_base_capital = (
+            float(leverage_capital)
+            if leverage_capital is not None and float(leverage_capital) > 0
+            else float(equity)
+        )
+        max_notional = leverage_base_capital * max_leverage
         if notional > max_notional:
             allowed = max_notional / entry_price_rounded
             allowed = _round_down(allowed, step)

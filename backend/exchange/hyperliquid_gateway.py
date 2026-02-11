@@ -92,6 +92,8 @@ class HyperliquidGateway:
         self._stream_started_at = 0.0
         self._last_private_ws_event_ts = 0.0
         self._last_ws_reconnect_ts = 0.0
+        self._last_order_account_refresh_ts = 0.0
+        self._order_account_refresh_min_gap_seconds = 1.0
         self._pending_submitted_orders: dict[str, dict[str, Any]] = {}
         self._ws_orders: dict[str, dict[str, Any]] = {}
         self._ws_orders_raw: list[dict[str, Any]] = []
@@ -249,14 +251,32 @@ class HyperliquidGateway:
         oid = order.get("oid") or row.get("oid") or row.get("orderId")
         if oid is None:
             return None
-        order_type = self._normalize_order_type(order.get("orderType") or row.get("orderType") or row.get("type"))
+        raw_order_type = order.get("orderType") or row.get("orderType") or row.get("type")
+        order_type = self._normalize_order_type(raw_order_type)
+        trigger_descriptor = None
+        if isinstance(raw_order_type, dict):
+            trigger_descriptor = raw_order_type.get("trigger") if isinstance(raw_order_type.get("trigger"), dict) else None
+            tpsl_hint = str(
+                (trigger_descriptor or {}).get("tpsl")
+                or raw_order_type.get("tpsl")
+                or ""
+            ).strip().lower()
+            if tpsl_hint == "tp":
+                order_type = "TAKE_PROFIT_MARKET"
+            elif tpsl_hint == "sl":
+                order_type = "STOP_MARKET"
+            elif trigger_descriptor and order_type == "LIMIT":
+                # Trigger orders without explicit TP/SL kind are still conditional.
+                order_type = "STOP_MARKET"
         trigger_px = (
             order.get("triggerPx")
             or row.get("triggerPx")
             or row.get("triggerPrice")
             or (order.get("trigger") or {}).get("triggerPx")
+            or (trigger_descriptor or {}).get("triggerPx")
         )
         reduce_only = bool(order.get("reduceOnly") if order.get("reduceOnly") is not None else row.get("reduceOnly"))
+        has_trigger = bool(trigger_px) or bool(trigger_descriptor)
         normalized = {
             "orderId": str(oid),
             "clientOrderId": order.get("cloid") or row.get("cloid"),
@@ -272,7 +292,7 @@ class HyperliquidGateway:
             "triggerPrice": trigger_px,
             "isPositionTpsl": bool(
                 row.get("isPositionTpsl")
-                or (order.get("isTrigger") or row.get("isTrigger")) and reduce_only
+                or ((order.get("isTrigger") or row.get("isTrigger") or has_trigger) and reduce_only)
                 or order_type.startswith(("STOP", "TAKE_PROFIT"))
             ),
             "timestamp": row.get("timestamp") or order.get("timestamp"),
@@ -316,6 +336,21 @@ class HyperliquidGateway:
             self._loop.call_soon_threadsafe(lambda: asyncio.create_task(coro_factory()))
         except Exception:
             return
+
+    async def _refresh_account_summary_now(self) -> None:
+        try:
+            summary = await self.get_account_summary()
+            self._publish_event({"type": "account", "payload": summary})
+        except Exception:
+            return
+
+    def _schedule_account_summary_refresh(self) -> None:
+        now = time.time()
+        min_gap = max(0.0, float(self._order_account_refresh_min_gap_seconds or 0.0))
+        if min_gap > 0 and (now - self._last_order_account_refresh_ts) < min_gap:
+            return
+        self._last_order_account_refresh_ts = now
+        self._schedule_coro(self._refresh_account_summary_now)
 
     @staticmethod
     def _extract_statuses(response: Any) -> list[dict[str, Any]]:
@@ -447,7 +482,7 @@ class HyperliquidGateway:
 
     def _build_account_summary_from_payload(self, payload: Any) -> dict[str, Any]:
         if not isinstance(payload, dict):
-            return {"total_equity": 0.0, "total_upnl": 0.0, "available_margin": 0.0}
+            return {"total_equity": 0.0, "total_upnl": 0.0, "available_margin": 0.0, "withdrawable_amount": 0.0}
 
         margin = payload.get("marginSummary") or {}
         account_value = margin.get("accountValue")
@@ -506,10 +541,18 @@ class HyperliquidGateway:
             # value when no explicit/derived free-margin field is available.
             available_margin = max(account_value_f, withdrawable_f)
 
+        # Sizing margin should be conservative to avoid submit-time rejects.
+        # If withdrawable is present and positive, treat it as a tighter cap.
+        sizing_available_margin = available_margin
+        if withdrawable_f > 0:
+            sizing_available_margin = min(available_margin, withdrawable_f)
+
         return {
             "total_equity": account_value_f,
             "total_upnl": total_upnl,
             "available_margin": available_margin,
+            "sizing_available_margin": sizing_available_margin,
+            "withdrawable_amount": withdrawable_f,
         }
 
     def _record_reconcile_reason_event(
@@ -931,6 +974,7 @@ class HyperliquidGateway:
         rows = payload if isinstance(payload, list) else ([payload] if isinstance(payload, dict) else [])
         batch: list[dict[str, Any]] = []
         changed = False
+        terminal_update_seen = False
         for row in rows:
             if not isinstance(row, dict):
                 continue
@@ -943,6 +987,7 @@ class HyperliquidGateway:
                 continue
             self._clear_pending_order_id(oid)
             if self._is_terminal_status(parsed.get("status")):
+                terminal_update_seen = True
                 if oid in self._ws_orders:
                     self._ws_orders.pop(oid, None)
                     changed = True
@@ -954,6 +999,9 @@ class HyperliquidGateway:
         self._ws_orders_raw = list(self._ws_orders.values())
         self._publish_event({"type": "orders_raw", "payload": batch or self._ws_orders_raw})
         self._publish_event({"type": "orders", "payload": list(self._ws_orders.values())})
+        if terminal_update_seen:
+            # Cancellations/fills free reserved margin; refresh account summary immediately.
+            self._schedule_account_summary_refresh()
 
     async def list_symbols(self) -> list[Dict[str, Any]]:
         await self.ensure_configs_loaded()

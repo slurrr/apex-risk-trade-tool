@@ -15,7 +15,14 @@ Requires env vars (loaded via backend.core.config):
 
 import asyncio
 import json
+import sys
 import traceback
+from pathlib import Path
+
+# Ensure repo root is importable when executed as `python tools/inspect_apex.py`.
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 from backend.core.config import get_settings
 from backend.exchange.apex_client import ApexClient
