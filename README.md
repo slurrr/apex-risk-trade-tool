@@ -14,6 +14,21 @@ Backend + static UI for previewing, executing, and monitoring ApeX trades with r
 - Design/spec: `specs/001-constitution-aligned-spec/spec.md`, plan in `specs/001-constitution-aligned-spec/plan.md`.
 - Manual testnet checklist: `specs/001-constitution-aligned-spec/quickstart.md`.
 
+## Logging & Audit
+- Logging uses structured JSON records.
+- Console remains the primary live stream and is controlled by:
+  - `LOG_LEVEL`
+  - `LOG_CONSOLE_LEVEL`
+- File logging is configurable:
+  - `LOG_TO_FILE=true`
+  - `LOG_DIR=logs`
+  - `LOG_INCIDENT_LEVEL=WARNING` writes high-signal events to `logs/incidents.jsonl`.
+- Dedicated trade audit stream:
+  - `LOG_AUDIT_TRADE_ENABLED=true` writes to `logs/trade_audit.jsonl` via logger `audit.trade`.
+  - Trade preview/execute requests include `trace_id` for correlation across request lifecycle events.
+- Optional stream audit:
+  - `LOG_AUDIT_STREAM_ENABLED=false` (enable to write `audit.stream` records to `logs/stream_health.jsonl`).
+
 ## ATR Stop-Loss Autofill
 - Purpose: automatically suggests a stop price using configurable ATR timeframe, period, and multiplier whenever the trade entry price is known.
 - Backend/API details live in `specs/001-atr-stop-autofill/spec.md`; implementation steps and verification flow are in `specs/001-atr-stop-autofill/quickstart.md`.
@@ -25,10 +40,11 @@ Backend + static UI for previewing, executing, and monitoring ApeX trades with r
   - `ATR_SL_1`, `ATR_SL_2`, `ATR_SL_3`, `ATR_SL_4` map to the 4 UI buttons from left to right.
   - Backend exposes these via `GET /risk/atr-config`, and `/risk/atr-stop` only accepts configured options.
 - Risk presets are config-driven with the same 4-button UX:
+  - `RISK_PCT_DEFAULT` sets the startup Risk % value (default: `3`).
   - `RISK_PCT_1`, `RISK_PCT_2`, `RISK_PCT_3`, `RISK_PCT_4` map left-to-right under the Risk % field.
   - Default values: `1`, `3`, `6`, `9`.
   - Manual Risk % input remains fully editable.
-- The selected ATR timeframe persists in localStorage and is sent as an optional `timeframe` override to `/risk/atr-stop`.
+- ATR selector defaults to `ATR_TIMEFRAME` at startup and is sent as an optional `timeframe` override to `/risk/atr-stop`.
 - After editing any of the above values, restart the FastAPI service (or your process manager) so the new configuration is loaded by `backend/core/config.py`.
 
 ## Hyperliquid TP/SL Behavior

@@ -96,6 +96,7 @@ async def atr_config():
         "timeframes": options[:4],
         "default_timeframe": default_tf,
         "risk_presets": settings.risk_pct_presets()[:4],
+        "risk_default_pct": settings.risk_pct_default,
         "period": settings.atr_period,
         "multiplier": settings.atr_multiplier,
     }

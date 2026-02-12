@@ -48,6 +48,7 @@
     atrTimeframes: [...ATR_TIMEFRAMES_FALLBACK],
     atrDefaultTimeframe: ATR_TIMEFRAME_DEFAULT,
     riskPresets: [1, 3, 6, 9],
+    riskDefaultPct: 3,
   };
   let sideToggleControl = null;
 
@@ -57,6 +58,13 @@
       return clean;
     }
     return null;
+  }
+
+  function createTradeTraceId() {
+    if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+      return `trd-${crypto.randomUUID()}`;
+    }
+    return `trd-${Date.now()}-${Math.random().toString(16).slice(2, 10)}`;
   }
 
   function getPriceInputs() {
@@ -440,13 +448,22 @@
         .map(normalizeRiskPreset)
         .filter((v) => v !== null);
       state.riskPresets = risk.length ? risk.slice(0, 4) : [1, 3, 6, 9];
+      const riskDefault = normalizeRiskPreset(payload?.risk_default_pct);
+      state.riskDefaultPct = riskDefault || 3;
     } catch (err) {
       state.atrTimeframes = [...ATR_TIMEFRAMES_FALLBACK];
       state.atrDefaultTimeframe = ATR_TIMEFRAME_DEFAULT;
       state.riskPresets = [1, 3, 6, 9];
+      state.riskDefaultPct = 3;
+    }
+    const riskInput = document.getElementById("risk_pct");
+    const defaultRisk = normalizeRiskPreset(state.riskDefaultPct) || normalizeRiskPreset(state.riskPresets[1]) || 3;
+    if (riskInput) {
+      riskInput.value = Number.isInteger(defaultRisk) ? String(defaultRisk) : defaultRisk.toFixed(2);
     }
     renderAtrTimeframeButtons(state.atrTimeframes);
     renderRiskPresetButtons(state.riskPresets);
+    refreshRiskPresetState();
   }
 
   async function initAtrTimeframeSelector() {
@@ -454,8 +471,7 @@
     const input = getAtrTimeframeInput();
     const buttons = Array.from(document.querySelectorAll(".atr-timeframe-option"));
     if (!input || buttons.length === 0) return;
-    const stored = normalizeAtrTimeframe(getStoredAtrTimeframe());
-    const initial = stored || normalizeAtrTimeframe(input.value) || state.atrDefaultTimeframe || ATR_TIMEFRAME_DEFAULT;
+    const initial = state.atrDefaultTimeframe || normalizeAtrTimeframe(input.value) || ATR_TIMEFRAME_DEFAULT;
     applyAtrTimeframeSelection(initial, { persist: true, silent: true });
     buttons.forEach((btn) => {
       btn.addEventListener("click", () => {
@@ -481,6 +497,8 @@
     const input = document.getElementById("risk_pct");
     const toggle = getRiskPresetToggle();
     if (!input || !toggle) return;
+    const defaultRisk = normalizeRiskPreset(state.riskDefaultPct) || normalizeRiskPreset(state.riskPresets[1]) || 3;
+    input.value = Number.isInteger(defaultRisk) ? String(defaultRisk) : defaultRisk.toFixed(2);
     toggle.addEventListener("click", (event) => {
       const btn = event.target.closest(".risk-preset-option");
       if (!btn) return;
@@ -1438,6 +1456,7 @@
     enforceTradeDirectionConsistency,
     warnUserPopup,
     markStopInputInvalid,
+    createTradeTraceId,
   };
 
   document.addEventListener("DOMContentLoaded", () => {

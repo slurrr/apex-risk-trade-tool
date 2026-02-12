@@ -4,11 +4,17 @@ import logging
 from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect
 
 from backend.api.routes_trade import get_order_manager
+from backend.core.logging import get_logger
 from backend.core.ui_mock import get_ui_mock_section, is_ui_mock_enabled
 from backend.trading.order_manager import OrderManager
 
 router = APIRouter(tags=["stream"])
 logger = logging.getLogger(__name__)
+stream_audit_logger = get_logger("audit.stream")
+
+
+def _audit_stream(event: str, **extra) -> None:
+    stream_audit_logger.info(event, extra={"event": event, **extra})
 
 
 @router.get("/api/stream/health")
@@ -21,9 +27,18 @@ async def stream_health(manager: OrderManager = Depends(get_order_manager)) -> d
             if isinstance(health, dict):
                 payload = dict(health)
                 payload.setdefault("venue", venue)
+                _audit_stream("stream_health_snapshot", venue=venue, ws_alive=payload.get("ws_alive"))
                 return payload
             return {"venue": venue, "ws_alive": True}
-        return await manager.get_stream_health()
+        payload = await manager.get_stream_health()
+        _audit_stream(
+            "stream_health_snapshot",
+            venue=payload.get("venue"),
+            ws_alive=payload.get("ws_alive"),
+            reconcile_count=payload.get("reconcile_count"),
+            last_reconcile_reason=payload.get("last_reconcile_reason"),
+        )
+        return payload
     except Exception as exc:
         logger.warning("stream_health_failed", extra={"event": "stream_health_failed", "error": str(exc)})
         return {"venue": (getattr(manager.gateway, "venue", "unknown") or "unknown"), "error": str(exc)}
@@ -36,6 +51,7 @@ async def stream_updates(
 ) -> None:
     """Push gateway events to the UI (orders, positions, ticker/account)."""
     await websocket.accept()
+    _audit_stream("stream_ws_client_connected", venue=(getattr(manager.gateway, "venue", "unknown") or "unknown"))
     if is_ui_mock_enabled():
         venue = (getattr(manager.gateway, "venue", "apex") or "apex").lower()
         account = get_ui_mock_section(venue, "account_summary", {})
@@ -51,8 +67,10 @@ async def stream_updates(
             while True:
                 await asyncio.sleep(30)
         except WebSocketDisconnect:
+            _audit_stream("stream_ws_client_disconnected", venue=venue, reason="mock_disconnect")
             return
         except Exception:
+            _audit_stream("stream_ws_client_disconnected", venue=venue, reason="mock_error")
             return
 
     gateway = manager.gateway
@@ -242,9 +260,15 @@ async def stream_updates(
                 break
             except Exception as exc:
                 logger.warning("ws_send_failed", extra={"event": "ws_send_failed", "error": str(exc)})
+                _audit_stream(
+                    "stream_ws_send_failed",
+                    venue=(getattr(gateway, "venue", "unknown") or "unknown"),
+                    error=str(exc),
+                )
                 break
     except WebSocketDisconnect:
         # logger.info("ws_disconnect", extra={"event": "ws_disconnect"})
+        _audit_stream("stream_ws_client_disconnected", venue=(getattr(gateway, "venue", "unknown") or "unknown"), reason="disconnect")
         pass
     finally:
         gateway.unregister_subscriber(queue)

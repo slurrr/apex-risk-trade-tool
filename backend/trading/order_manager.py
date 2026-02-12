@@ -8,6 +8,7 @@ from backend.exchange.exchange_gateway import ExchangeGateway
 from backend.risk import risk_engine
 
 logger = get_logger(__name__)
+trade_audit_logger = get_logger("audit.trade")
 
 
 def _coerce_float(value: Any) -> Optional[float]:
@@ -73,6 +74,8 @@ class OrderManager:
         self._depth_summary_cache_ttl = 1.5
         self._tpsl_backfill_last_ts = 0.0
         self._tpsl_backfill_min_gap_seconds = 5.0
+        self._hl_transient_helper_hint_ttl_seconds = 20.0
+        self._hl_transient_helper_hints: list[Dict[str, Any]] = []
 
     async def _get_account_context(self) -> tuple[float, Optional[float]]:
         venue = (getattr(self.gateway, "venue", "") or "").lower()
@@ -92,6 +95,20 @@ class OrderManager:
                         )
                     else:
                         available_margin = _coerce_float(summary.get("available_margin"))
+                    if venue == "hyperliquid":
+                        trade_audit_logger.info(
+                            "hl_margin_context",
+                            extra={
+                                "event": "hl_margin_context",
+                                "total_equity": _coerce_float(summary.get("total_equity")),
+                                "available_margin": _coerce_float(summary.get("available_margin")),
+                                "sizing_available_margin": _coerce_float(summary.get("sizing_available_margin")),
+                                "selected_available_margin": available_margin,
+                                "withdrawable_amount": _coerce_float(summary.get("withdrawable_amount")),
+                                "available_margin_source": summary.get("available_margin_source"),
+                                "sizing_margin_source": summary.get("sizing_margin_source"),
+                            },
+                        )
             except Exception as exc:
                 # Hyperliquid sizing must not fall back to equity-only assumptions.
                 if venue == "hyperliquid":
@@ -269,6 +286,80 @@ class OrderManager:
             ]
         return []
 
+    @staticmethod
+    def _hl_grouped_leg_kind(order_req: Any) -> str:
+        if not isinstance(order_req, dict):
+            return "unknown"
+        order_type = order_req.get("order_type")
+        trigger = order_type.get("trigger") if isinstance(order_type, dict) else None
+        tpsl = str((trigger or {}).get("tpsl") or "").strip().lower()
+        if tpsl == "tp":
+            return "tp"
+        if tpsl == "sl":
+            return "sl"
+        if bool(order_req.get("reduce_only")):
+            return "reduce_only"
+        return "entry"
+
+    def _log_hyperliquid_grouped_submit_legs(
+        self,
+        *,
+        trace_id: Optional[str],
+        symbol: str,
+        payload: Dict[str, Any],
+        order_resp: Dict[str, Any],
+    ) -> None:
+        venue = (getattr(self.gateway, "venue", "") or "").lower()
+        order_requests = payload.get("order_requests")
+        if venue != "hyperliquid" or not isinstance(order_requests, list) or len(order_requests) <= 1:
+            return
+        raw = order_resp.get("raw") if isinstance(order_resp, dict) else None
+        response = raw.get("response") if isinstance(raw, dict) else None
+        data = response.get("data") if isinstance(response, dict) else None
+        statuses = data.get("statuses") if isinstance(data, dict) else None
+
+        legs: list[dict[str, Any]] = []
+        expected = len(order_requests)
+        for idx in range(expected):
+            req = order_requests[idx] if idx < len(order_requests) else {}
+            status = statuses[idx] if isinstance(statuses, list) and idx < len(statuses) else None
+            resting = status.get("resting") if isinstance(status, dict) and isinstance(status.get("resting"), dict) else None
+            filled = status.get("filled") if isinstance(status, dict) and isinstance(status.get("filled"), dict) else None
+            success = status.get("success") if isinstance(status, dict) else None
+            error = status.get("error") if isinstance(status, dict) else None
+            oid = None
+            if isinstance(resting, dict):
+                oid = resting.get("oid") or resting.get("orderId")
+            if oid is None and isinstance(filled, dict):
+                oid = filled.get("oid") or filled.get("orderId")
+            trigger = req.get("order_type", {}).get("trigger") if isinstance(req, dict) and isinstance(req.get("order_type"), dict) else None
+            legs.append(
+                {
+                    "index": idx + 1,
+                    "kind": self._hl_grouped_leg_kind(req),
+                    "request_reduce_only": bool(req.get("reduce_only")) if isinstance(req, dict) else None,
+                    "request_tpsl": (trigger or {}).get("tpsl") if isinstance(trigger, dict) else None,
+                    "request_trigger_px": (trigger or {}).get("triggerPx") if isinstance(trigger, dict) else None,
+                    "request_limit_px": req.get("limit_px") if isinstance(req, dict) else None,
+                    "status_has_entry": isinstance(status, dict),
+                    "status_success": success,
+                    "status_error": error,
+                    "status_oid": str(oid) if oid is not None else None,
+                }
+            )
+
+        trade_audit_logger.info(
+            "hl_grouped_submit_legs",
+            extra={
+                "event": "hl_grouped_submit_legs",
+                "trace_id": trace_id,
+                "symbol": symbol,
+                "expected_legs": expected,
+                "status_count": len(statuses) if isinstance(statuses, list) else None,
+                "legs": legs,
+            },
+        )
+
     def _rebuild_open_risk_estimates(
         self,
         *,
@@ -375,20 +466,280 @@ class OrderManager:
         """Detect TP/SL reduce-only orders even when isPositionTpsl flag is missing."""
         if not isinstance(order, dict):
             return False
+        if bool(order.get("isPositionTpsl")):
+            return True
         order_type = (order.get("type") or order.get("orderType") or order.get("order_type") or "").upper()
         if not (order_type.startswith("STOP") or order_type.startswith("TAKE_PROFIT")):
             return False
-        if bool(order.get("isPositionTpsl")):
-            return True
         reduce_only = order.get("reduceOnly")
         if reduce_only is None:
             reduce_only = order.get("reduce_only")
         return bool(reduce_only)
 
+    def _prune_hl_transient_helper_hints(self, now: Optional[float] = None) -> None:
+        ts = float(now if now is not None else time.time())
+        self._hl_transient_helper_hints = [
+            hint for hint in self._hl_transient_helper_hints if float(hint.get("expires_at") or 0.0) > ts
+        ]
+
+    def _record_hl_transient_helper_hints(self, payload: Dict[str, Any]) -> None:
+        venue = (getattr(self.gateway, "venue", "") or "").strip().lower()
+        if venue != "hyperliquid":
+            return
+        order_requests = payload.get("order_requests")
+        if not isinstance(order_requests, list) or not order_requests:
+            return
+        now = time.time()
+        self._prune_hl_transient_helper_hints(now)
+        ttl = max(1.0, float(self._hl_transient_helper_hint_ttl_seconds or 20.0))
+        for req in order_requests:
+            if not isinstance(req, dict):
+                continue
+            if not bool(req.get("reduce_only")):
+                continue
+            coin = str(req.get("coin") or "").strip().upper()
+            if not coin:
+                continue
+            size = _coerce_float(req.get("sz") if req.get("sz") is not None else req.get("size"))
+            if size is None or size <= 0:
+                continue
+            order_type = req.get("order_type") if isinstance(req.get("order_type"), dict) else {}
+            trigger = order_type.get("trigger") if isinstance(order_type.get("trigger"), dict) else {}
+            trigger_px = _coerce_float(trigger.get("triggerPx"))
+            trigger_tpsl = str(trigger.get("tpsl") or "").strip().lower()
+            if trigger_px is None or trigger_tpsl not in {"tp", "sl"}:
+                continue
+            limit_px = _coerce_float(req.get("limit_px"))
+            self._hl_transient_helper_hints.append(
+                {
+                    "symbol": f"{coin}-USDC",
+                    "side": "BUY" if bool(req.get("is_buy")) else "SELL",
+                    "size": float(size),
+                    "trigger_price": trigger_px,
+                    "limit_price": limit_px,
+                    "expires_at": now + ttl,
+                }
+            )
+
+    def _record_hl_transient_helper_hints_for_targets(
+        self,
+        *,
+        symbol: str,
+        side: str,
+        size: float,
+        take_profit: Optional[float] = None,
+        stop_loss: Optional[float] = None,
+    ) -> None:
+        venue = (getattr(self.gateway, "venue", "") or "").strip().lower()
+        if venue != "hyperliquid":
+            return
+        symbol_raw = str(symbol or "").strip().upper()
+        if not symbol_raw:
+            return
+        coin = symbol_raw.split("-")[0]
+        if not coin:
+            return
+        try:
+            size_val = abs(float(size))
+        except Exception:
+            return
+        if size_val <= 0:
+            return
+        close_is_buy = str(side or "").strip().upper() in {"SHORT", "SELL"}
+        requests: list[Dict[str, Any]] = []
+        if take_profit is not None:
+            tp_px = _coerce_float(take_profit)
+            if tp_px is not None:
+                requests.append(
+                    {
+                        "coin": coin,
+                        "is_buy": bool(close_is_buy),
+                        "sz": size_val,
+                        "limit_px": tp_px,
+                        "reduce_only": True,
+                        "order_type": {"trigger": {"isMarket": True, "triggerPx": tp_px, "tpsl": "tp"}},
+                    }
+                )
+        if stop_loss is not None:
+            sl_px = _coerce_float(stop_loss)
+            if sl_px is not None:
+                requests.append(
+                    {
+                        "coin": coin,
+                        "is_buy": bool(close_is_buy),
+                        "sz": size_val,
+                        "limit_px": sl_px,
+                        "reduce_only": True,
+                        "order_type": {"trigger": {"isMarket": True, "triggerPx": sl_px, "tpsl": "sl"}},
+                    }
+                )
+        if requests:
+            self._record_hl_transient_helper_hints({"order_requests": requests})
+
+    def _matches_hl_transient_helper_hint(self, order: Dict[str, Any]) -> bool:
+        venue = (getattr(self.gateway, "venue", "") or "").strip().lower()
+        if venue != "hyperliquid":
+            return False
+        self._prune_hl_transient_helper_hints()
+        if not self._hl_transient_helper_hints:
+            return False
+        symbol = self._normalize_symbol_value(order.get("symbol"))
+        side = str(order.get("side") or "").strip().upper()
+        size = _coerce_float(order.get("size"))
+        order_type = str(order.get("type") or order.get("orderType") or order.get("order_type") or "").upper()
+        reduce_only = order.get("reduceOnly")
+        if reduce_only is None:
+            reduce_only = order.get("reduce_only")
+        trigger_price = _coerce_float(order.get("triggerPrice") or order.get("triggerPx"))
+        entry_price = _coerce_float(order.get("entry_price") or order.get("entryPrice") or order.get("price"))
+        client_id = str(order.get("client_id") or order.get("clientOrderId") or order.get("clientId") or "").strip()
+        triggerish = bool(
+            trigger_price is not None
+            or order_type.startswith(("STOP", "TAKE_PROFIT", "TRIGGER"))
+            or (
+                isinstance(order.get("orderType"), dict)
+                and isinstance(order.get("orderType", {}).get("trigger"), dict)
+            )
+        )
+
+        for hint in self._hl_transient_helper_hints:
+            if self._normalize_symbol_value(hint.get("symbol")) != symbol:
+                continue
+            hint_side = str(hint.get("side") or "").upper()
+            if side and hint_side and side != hint_side:
+                continue
+            hint_size = _coerce_float(hint.get("size"))
+            size_match = False
+            size_mismatch = False
+            if hint_size is not None and size is not None:
+                if abs(abs(size) - abs(hint_size)) <= max(1e-6, abs(hint_size) * 2e-2):
+                    size_match = True
+                else:
+                    size_mismatch = True
+            hint_trigger = _coerce_float(hint.get("trigger_price"))
+            hint_limit = _coerce_float(hint.get("limit_price"))
+            price_match = False
+            for observed in (trigger_price, entry_price):
+                if observed is None:
+                    continue
+                for expected in (hint_trigger, hint_limit):
+                    if expected is None:
+                        continue
+                    if abs(float(observed) - float(expected)) <= max(1e-9, abs(float(expected)) * 1e-5):
+                        price_match = True
+                        break
+                if price_match:
+                    break
+            weak_helper_shape = (not bool(reduce_only)) and (not triggerish) and (not client_id)
+            if size_mismatch and not weak_helper_shape:
+                continue
+            if bool(reduce_only) or triggerish or price_match or size_match or weak_helper_shape:
+                return True
+        return False
+
     def _include_in_open_orders(self, order: Dict[str, Any]) -> bool:
         """Hide venue-specific conditional TP/SL orders from open-orders UI feed."""
+        status_raw = str(order.get("status") or order.get("state") or order.get("orderStatus") or "").strip().lower()
+        if status_raw:
+            terminal_exact = {
+                "filled",
+                "triggered",
+                "canceled",
+                "cancelled",
+                "rejected",
+                "expired",
+                "failed",
+                "closed",
+                "done",
+                "perpmarginrejected",
+            }
+            if status_raw in terminal_exact:
+                return False
+            if any(token in status_raw for token in ("cancel", "reject", "expire", "fail", "closed")):
+                return False
+            if status_raw.startswith("fill"):
+                return False
+            if status_raw == "triggered":
+                return False
+        venue = (getattr(self.gateway, "venue", "") or "").strip().lower()
+        if venue == "hyperliquid":
+            if self._matches_hl_known_target_helper(order):
+                return False
+            if self._matches_hl_transient_helper_hint(order):
+                return False
+            reduce_only = order.get("reduceOnly")
+            if reduce_only is None:
+                reduce_only = order.get("reduce_only")
+            order_type = str(order.get("type") or order.get("orderType") or order.get("order_type") or "").upper()
+            triggerish = bool(
+                order.get("isTrigger")
+                or order.get("triggerPrice")
+                or order.get("triggerPx")
+                or order_type.startswith(("STOP", "TAKE_PROFIT", "TRIGGER"))
+                or (
+                    isinstance(order.get("orderType"), dict)
+                    and isinstance(order.get("orderType", {}).get("trigger"), dict)
+                )
+            )
+            # Hyperliquid can briefly emit TP/SL legs without isPositionTpsl=true immediately after submit.
+            # If it is reduce-only and trigger-like, treat it as a conditional helper and hide from open orders.
+            if bool(reduce_only) and triggerish:
+                return False
         if self._is_tpsl_order(order):
             return False
+        return True
+
+    def _matches_hl_known_target_helper(self, order: Dict[str, Any]) -> bool:
+        venue = (getattr(self.gateway, "venue", "") or "").strip().lower()
+        if venue != "hyperliquid":
+            return False
+        symbol = self._normalize_symbol_value(order.get("symbol"))
+        if not symbol:
+            return False
+        client_id = str(order.get("client_id") or order.get("clientOrderId") or order.get("clientId") or "").strip()
+        if client_id:
+            return False
+        tracked = {}
+        tracked.update(self._tpsl_targets_by_symbol.get(symbol) or {})
+        tracked.update(self.position_targets.get(symbol) or {})
+        if not tracked:
+            return False
+        order_price = _coerce_float(
+            order.get("triggerPrice")
+            or order.get("triggerPx")
+            or order.get("entry_price")
+            or order.get("entryPrice")
+            or order.get("price")
+        )
+        if order_price is None:
+            return False
+        price_candidates = [tracked.get("take_profit"), tracked.get("stop_loss")]
+        price_match = False
+        for candidate in price_candidates:
+            c = _coerce_float(candidate)
+            if c is None:
+                continue
+            if abs(float(order_price) - float(c)) <= max(1e-6, abs(float(c)) * 5e-4):
+                price_match = True
+                break
+        if not price_match:
+            return False
+
+        # If we have a cached position, require that helper side/size are plausible closing attributes.
+        side = str(order.get("side") or "").strip().upper()
+        size = _coerce_float(order.get("size"))
+        for pos in self.positions:
+            if self._normalize_symbol_value(pos.get("symbol")) != symbol:
+                continue
+            pos_side = str(pos.get("side") or "").strip().upper()
+            pos_size = _coerce_float(pos.get("size"))
+            expected_close_side = "SELL" if pos_side in {"LONG", "BUY"} else "BUY"
+            if side and expected_close_side and side != expected_close_side:
+                return False
+            if size is not None and pos_size is not None and abs(float(size)) > abs(float(pos_size)) * 1.2:
+                return False
+            return True
+        # No cached position yet; still hide known target helper by price match + no client id.
         return True
 
     def _merge_tpsl_map(self, new_map: Dict[str, Dict[str, Optional[float]]], *, replace: bool = False) -> None:
@@ -539,6 +890,7 @@ class OrderManager:
         risk_pct: float,
         side: Optional[str] = None,
         tp: Optional[float] = None,
+        trace_id: Optional[str] = None,
     ) -> Tuple[risk_engine.PositionSizingResult, list[str]]:
         """Run sizing without placing an order."""
         await self.gateway.ensure_configs_loaded()
@@ -566,6 +918,24 @@ class OrderManager:
             sizing=result,
             available_margin=available_margin,
         )
+        requested_side = (side or "").upper() or None
+        trade_audit_logger.info(
+            "trade_side_resolution",
+            extra={
+                "event": "trade_side_resolution",
+                "trace_id": trace_id,
+                "symbol": symbol,
+                "requested_side": requested_side,
+                "implied_side_from_entry_stop": result.side,
+                "final_side_used": result.side,
+                "mismatch": bool(requested_side and requested_side != result.side),
+                "entry_price": entry_price,
+                "stop_price": stop_price,
+                "risk_pct": risk_pct,
+                "phase": "preview",
+                "venue": (getattr(self.gateway, "venue", "") or "").lower(),
+            },
+        )
         # logger.info(
         #     "preview_trade",
         #     extra={
@@ -591,6 +961,7 @@ class OrderManager:
         risk_pct: float,
         side: Optional[str] = None,
         tp: Optional[float] = None,
+        trace_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Re-run sizing and place order when safe."""
         await self.gateway.ensure_configs_loaded()
@@ -624,6 +995,24 @@ class OrderManager:
             sizing=sizing,
             available_margin=available_margin,
         )
+        requested_side = (side or "").upper() or None
+        trade_audit_logger.info(
+            "trade_side_resolution",
+            extra={
+                "event": "trade_side_resolution",
+                "trace_id": trace_id,
+                "symbol": symbol,
+                "requested_side": requested_side,
+                "implied_side_from_entry_stop": sizing.side,
+                "final_side_used": sizing.side,
+                "mismatch": bool(requested_side and requested_side != sizing.side),
+                "entry_price": entry_price,
+                "stop_price": stop_price,
+                "risk_pct": risk_pct,
+                "phase": "execute",
+                "venue": (getattr(self.gateway, "venue", "") or "").lower(),
+            },
+        )
 
         if self.daily_loss_cap_pct is not None:
             daily_limit = equity * (self.daily_loss_cap_pct / 100.0)
@@ -649,6 +1038,36 @@ class OrderManager:
         warnings = list(sizing.warnings)
         if payload_warning:
             warnings.append(payload_warning)
+        venue = (getattr(self.gateway, "venue", "") or "").lower()
+        payload_summary = {
+            "type": str(payload.get("type") or payload.get("orderType") or "LIMIT"),
+            "reduce_only": bool(payload.get("reduceOnly") if payload.get("reduceOnly") is not None else payload.get("reduce_only")),
+            "has_tp": tp is not None,
+            "has_sl": stop_price is not None,
+        }
+        if venue == "hyperliquid":
+            payload_summary.update(
+                {
+                    "is_buy": bool(payload.get("is_buy")),
+                    "grouping": str(payload.get("grouping") or "na"),
+                    "order_requests_count": len(payload.get("order_requests") or []),
+                }
+            )
+        trade_audit_logger.info(
+            "trade_order_payload_built",
+            extra={
+                "event": "trade_order_payload_built",
+                "trace_id": trace_id,
+                "symbol": symbol,
+                "requested_side": requested_side,
+                "resolved_side": sizing.side,
+                "entry_price": sizing.entry_price,
+                "stop_price": sizing.stop_price,
+                "size": sizing.size,
+                "payload": payload_summary,
+                "venue": venue,
+            },
+        )
 
         # logger.info(
         #     "execute_trade",
@@ -664,9 +1083,9 @@ class OrderManager:
         #     },
         # )
 
+        self._record_hl_transient_helper_hints(payload)
         order_resp = await self.gateway.place_order(payload)
         exchange_order_id = order_resp.get("exchange_order_id")
-        venue = (getattr(self.gateway, "venue", "") or "").lower()
         if (
             not exchange_order_id
             and venue == "hyperliquid"
@@ -691,6 +1110,7 @@ class OrderManager:
                 )
                 if retry_warning:
                     warnings.append(retry_warning)
+                self._record_hl_transient_helper_hints(retry_payload)
                 order_resp = await self.gateway.place_order(retry_payload)
                 exchange_order_id = order_resp.get("exchange_order_id")
                 if exchange_order_id:
@@ -711,12 +1131,43 @@ class OrderManager:
                     )
         if not exchange_order_id:
             raw = order_resp.get("raw")
+            trade_audit_logger.warning(
+                "trade_submit_failed_exchange",
+                extra={
+                    "event": "trade_submit_failed_exchange",
+                    "trace_id": trace_id,
+                    "symbol": symbol,
+                    "requested_side": requested_side,
+                    "resolved_side": sizing.side,
+                    "venue": venue,
+                    "raw": raw,
+                },
+            )
             raise risk_engine.PositionSizingError(f"Order placement failed: {raw}")
+        self._log_hyperliquid_grouped_submit_legs(
+            trace_id=trace_id,
+            symbol=symbol,
+            payload=payload,
+            order_resp=order_resp,
+        )
         warnings.extend(
             self._verify_hyperliquid_grouped_submit(
                 payload=payload,
                 order_resp=order_resp,
             )
+        )
+        trade_audit_logger.info(
+            "trade_submit_result",
+            extra={
+                "event": "trade_submit_result",
+                "trace_id": trace_id,
+                "symbol": symbol,
+                "requested_side": requested_side,
+                "resolved_side": sizing.side,
+                "exchange_order_id": exchange_order_id,
+                "warning_count": len(warnings),
+                "venue": venue,
+            },
         )
 
         self.open_risk_estimates[exchange_order_id] = sizing.estimated_loss
@@ -1053,6 +1504,13 @@ class OrderManager:
                 )
 
         if take_profit is not None or stop_loss is not None:
+            self._record_hl_transient_helper_hints_for_targets(
+                symbol=symbol,
+                side=side,
+                size=size_val,
+                take_profit=take_profit,
+                stop_loss=stop_loss,
+            )
             resp = await self.gateway.update_targets(
                 symbol=symbol,
                 side=side,
@@ -1064,6 +1522,29 @@ class OrderManager:
                 cancel_sl=False,
             )
             response["exchange"] = resp
+            if (getattr(self.gateway, "venue", "") or "").strip().lower() == "hyperliquid":
+                placements = (resp or {}).get("placed") if isinstance(resp, dict) else None
+                trade_audit_logger.info(
+                    "hl_update_targets_submit",
+                    extra={
+                        "event": "hl_update_targets_submit",
+                        "symbol": symbol,
+                        "side": side,
+                        "size": size_val,
+                        "take_profit": _coerce_float(take_profit),
+                        "stop_loss": _coerce_float(stop_loss),
+                        "placed_count": len(placements) if isinstance(placements, list) else 0,
+                        "placed": [
+                            {
+                                "kind": p.get("kind"),
+                                "trigger_price": _coerce_float(p.get("trigger_price")),
+                                "order_id": p.get("order_id"),
+                            }
+                            for p in (placements or [])
+                            if isinstance(p, dict)
+                        ],
+                    },
+                )
 
             current = self.position_targets.get(symbol_key, {})
             if existing_tp is not None and "take_profit" not in current:

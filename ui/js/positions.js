@@ -429,6 +429,7 @@
     try {
       const positions = await fetchPositions(forceResync);
       renderPositions(positions);
+      window.dispatchEvent(new CustomEvent("positions:update", { detail: { positions } }));
     } catch (err) {
       errorBox.textContent = err.message;
     } finally {
@@ -465,6 +466,7 @@
           const msg = JSON.parse(event.data);
           if (msg.type === "positions" && Array.isArray(msg.payload)) {
             renderPositions(msg.payload);
+            window.dispatchEvent(new CustomEvent("positions:update", { detail: { positions: msg.payload } }));
           }
         } catch (err) {
           // ignore malformed frames

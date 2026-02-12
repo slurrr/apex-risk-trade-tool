@@ -67,68 +67,72 @@
         <button type="button" class="btn ghost" id="clear-trade-form">Clear</button>
       </div>
       <form id="preview-form" class="trade-grid">
-        <label class="field symbol-field">
-          <span>Symbol</span>
-          <div class="dropdown">
-            <input type="text" id="symbol-input" autocomplete="off" placeholder="BTC-USDT" required />
-            <button type="button" class="clear-input hidden" id="symbol-clear" aria-label="Clear symbol input">&times;</button>
-            <div class="dropdown-list symbol-options-list" id="symbol-options"></div>
-          </div>
-        </label>
-        <label class="field">
-          <span>Risk %</span>
-          <input type="number" step="0.01" id="risk_pct" required value="8" />
-          <div class="risk-preset">
-            <div class="risk-preset-label">Risk Presets</div>
-            <div class="risk-preset-toggle" role="group" aria-label="Risk preset selector"></div>
-          </div>
-        </label>
-        <label class="field">
-          <span>Entry</span>
-          <input type="number" step="any" id="entry_price" required />
-          <div class="liquidity-panel" id="liquidity-panel" aria-live="polite">
-            <div class="liquidity-header">
-              <div class="liquidity-title">Liquidity</div>
-              <div class="liquidity-chips" role="group" aria-label="Slippage tolerance">
-                <button type="button" class="liquidity-chip" data-bps="5">5 bps</button>
-                <button type="button" class="liquidity-chip" data-bps="10">10 bps</button>
-                <button type="button" class="liquidity-chip" data-bps="25">25 bps</button>
+        <div class="trade-grid-column">
+          <label class="field symbol-field">
+            <span>Symbol</span>
+            <div class="dropdown">
+              <input type="text" id="symbol-input" autocomplete="off" placeholder="BTC-USDT" required />
+              <button type="button" class="clear-input hidden" id="symbol-clear" aria-label="Clear symbol input">&times;</button>
+              <div class="dropdown-list symbol-options-list" id="symbol-options"></div>
+            </div>
+          </label>
+          <label class="field">
+            <span>Entry</span>
+            <input type="number" step="any" id="entry_price" required />
+            <div class="liquidity-panel" id="liquidity-panel" aria-live="polite">
+              <div class="liquidity-header">
+                <div class="liquidity-title">Liquidity</div>
+                <div class="liquidity-chips" role="group" aria-label="Slippage tolerance">
+                  <button type="button" class="liquidity-chip" data-bps="5">5 bps</button>
+                  <button type="button" class="liquidity-chip" data-bps="10">10 bps</button>
+                  <button type="button" class="liquidity-chip" data-bps="25">25 bps</button>
+                </div>
+              </div>
+              <div class="liquidity-body">
+                <div class="liquidity-line is-primary" id="liquidity-headline">--</div>
+                <div class="liquidity-line is-secondary" id="liquidity-headline-buy">--</div>
+                <div class="liquidity-line is-secondary" id="liquidity-headline-sell">--</div>
+              </div>
+              <div class="liquidity-meta">
+                <div><span>Spread</span> <span id="liquidity-spread">--</span></div>
+                <div><span>Top-of-book</span> <span id="liquidity-top">--</span></div>
+              </div>
+              <div class="liquidity-status" id="liquidity-status"></div>
+            </div>
+          </label>
+          <label class="field side-field">
+            <span>Side (Optional)</span>
+            <div class="side-toggle" role="group" aria-label="Position side selector">
+              <input type="hidden" id="side" value="BUY" />
+              <button type="button" class="side-option is-active" data-value="BUY" aria-pressed="true">Long</button>
+              <button type="button" class="side-option" data-value="SELL" aria-pressed="false">Short</button>
+            </div>
+          </label>
+        </div>
+        <div class="trade-grid-column">
+          <label class="field">
+            <span>Risk %</span>
+            <input type="number" step="0.01" id="risk_pct" required value="3" />
+            <div class="risk-preset">
+              <div class="risk-preset-label">Risk Presets</div>
+              <div class="risk-preset-toggle" role="group" aria-label="Risk preset selector"></div>
+            </div>
+          </label>
+          <label class="field">
+            <span>Stop</span>
+            <input type="number" step="any" id="stop_price" required />
+            <div class="atr-timeframe">
+              <div class="atr-timeframe-label">ATR Timeframe</div>
+              <div class="atr-timeframe-toggle" role="group" aria-label="ATR timeframe selector">
+                <input type="hidden" id="atr_timeframe" value="" />
               </div>
             </div>
-            <div class="liquidity-body">
-              <div class="liquidity-line is-primary" id="liquidity-headline">--</div>
-              <div class="liquidity-line is-secondary" id="liquidity-headline-buy">--</div>
-              <div class="liquidity-line is-secondary" id="liquidity-headline-sell">--</div>
-            </div>
-            <div class="liquidity-meta">
-              <div><span>Spread</span> <span id="liquidity-spread">--</span></div>
-              <div><span>Top-of-book</span> <span id="liquidity-top">--</span></div>
-            </div>
-            <div class="liquidity-status" id="liquidity-status"></div>
-          </div>
-        </label>
-        <label class="field">
-          <span>Stop</span>
-          <input type="number" step="any" id="stop_price" required />
-          <div class="atr-timeframe">
-            <div class="atr-timeframe-label">ATR Timeframe</div>
-            <div class="atr-timeframe-toggle" role="group" aria-label="ATR timeframe selector">
-              <input type="hidden" id="atr_timeframe" value="" />
-            </div>
-          </div>
-        </label>
-        <label class="field side-field">
-          <span>Side (Optional)</span>
-          <div class="side-toggle" role="group" aria-label="Position side selector">
-            <input type="hidden" id="side" value="BUY" />
-            <button type="button" class="side-option is-active" data-value="BUY" aria-pressed="true">Long</button>
-            <button type="button" class="side-option" data-value="SELL" aria-pressed="false">Short</button>
-          </div>
-        </label>
-        <label class="field">
-          <span>Take Profit (Optional)</span>
-          <input type="number" step="any" id="tp" />
-        </label>
+          </label>
+          <label class="field">
+            <span>Take Profit (Optional)</span>
+            <input type="number" step="any" id="tp" />
+          </label>
+        </div>
         <div class="grid-actions">
           <button type="submit" class="btn primary">Calculate</button>
           <button id="execute-button" type="button" class="btn ghost">Place Order</button>

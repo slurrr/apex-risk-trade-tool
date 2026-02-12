@@ -260,6 +260,18 @@ body {
   margin-bottom: 1rem;
 }
 
+#trade-form .trade-grid-column {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  align-self: stretch;
+  min-height: 100%;
+}
+
+#trade-form .trade-grid-column > .field:last-of-type {
+  margin-top: auto;
+}
+
 .field {
   display: flex;
   flex-direction: column;
@@ -860,6 +872,51 @@ html[data-theme="light"] .liquidity-chip.is-active {
   color: var(--muted);
 }
 
+.trade-status-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.28rem;
+  margin-left: 0.28rem;
+  font-weight: 700;
+  color: var(--muted);
+}
+
+.trade-status-pill.is-filled {
+  color: var(--positive);
+}
+
+.trade-status-check {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1rem;
+  height: 1rem;
+  border-radius: 999px;
+  border: 1px solid rgba(62, 207, 142, 0.45);
+  background: rgba(62, 207, 142, 0.16);
+  font-size: 0.74rem;
+  line-height: 1;
+}
+
+.trade-status-check.is-pop {
+  animation: tradeStatusPop 320ms ease-out;
+}
+
+@keyframes tradeStatusPop {
+  0% {
+    transform: scale(0.68);
+    opacity: 0.25;
+  }
+  65% {
+    transform: scale(1.08);
+    opacity: 1;
+  }
+  100% {
+    transform: scale(1);
+    opacity: 1;
+  }
+}
+
 .trade-warnings {
   display: flex;
   flex-direction: column;
@@ -1326,6 +1383,15 @@ html[data-theme="light"] .venue-switch-btn:not(.is-active):hover {
   }
   .trade-grid {
     grid-template-columns: 1fr;
+  }
+  #trade-form .trade-grid-column {
+    min-height: 0;
+  }
+  #trade-form .trade-grid-column > .field:first-of-type {
+    min-height: 0;
+  }
+  #trade-form .trade-grid-column > .field:last-of-type {
+    margin-top: 0;
   }
   .results-row {
     grid-template-columns: 1fr;

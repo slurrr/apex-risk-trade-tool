@@ -105,6 +105,7 @@ class HyperliquidGateway:
         self._last_account_summary: Optional[dict[str, Any]] = None
         self._last_account_summary_ts: float = 0.0
         self._last_account_summary_error: Optional[str] = None
+        self._last_margin_divergence_warn_ts: float = 0.0
         self._info = info_client or Info(base_url=self._base_url, skip_ws=True, timeout=8)
         self._ws_info = ws_info_client
         self._exchange: Optional[Any] = exchange_client
@@ -526,6 +527,25 @@ class HyperliquidGateway:
             or margin.get("availableBalance")
             or margin.get("freeCollateral")
         )
+        explicit_available_source = (
+            "payload.availableMargin"
+            if payload.get("availableMargin") is not None
+            else "payload.available_margin"
+            if payload.get("available_margin") is not None
+            else "payload.availableBalance"
+            if payload.get("availableBalance") is not None
+            else "payload.freeCollateral"
+            if payload.get("freeCollateral") is not None
+            else "marginSummary.availableMargin"
+            if margin.get("availableMargin") is not None
+            else "marginSummary.available_margin"
+            if margin.get("available_margin") is not None
+            else "marginSummary.availableBalance"
+            if margin.get("availableBalance") is not None
+            else "marginSummary.freeCollateral"
+            if margin.get("freeCollateral") is not None
+            else None
+        )
         explicit_available_f = self._to_float(explicit_available)
         total_margin_used_f = self._to_float(
             margin.get("totalMarginUsed")
@@ -538,18 +558,20 @@ class HyperliquidGateway:
 
         if explicit_available_f is not None:
             available_margin = max(0.0, float(explicit_available_f))
+            available_margin_source = explicit_available_source or "explicit_available"
         elif derived_available_f is not None:
             available_margin = derived_available_f
+            available_margin_source = "accountValue-totalMarginUsed"
         else:
             # Fallback: withdrawable can understate opening capacity; use the larger
             # value when no explicit/derived free-margin field is available.
             available_margin = max(account_value_f, withdrawable_f)
+            available_margin_source = "max(accountValue,withdrawable)"
 
-        # Sizing margin should be conservative to avoid submit-time rejects.
-        # If withdrawable is present and positive, treat it as a tighter cap.
+        # For Hyperliquid, `withdrawable` can diverge from trading capacity.
+        # Keep sizing on available/free margin and rely on submit-time fallback/retry.
         sizing_available_margin = available_margin
-        if withdrawable_f > 0:
-            sizing_available_margin = min(available_margin, withdrawable_f)
+        sizing_margin_source = available_margin_source
 
         return {
             "total_equity": account_value_f,
@@ -557,6 +579,8 @@ class HyperliquidGateway:
             "available_margin": available_margin,
             "sizing_available_margin": sizing_available_margin,
             "withdrawable_amount": withdrawable_f,
+            "available_margin_source": available_margin_source,
+            "sizing_margin_source": sizing_margin_source,
         }
 
     def _record_reconcile_reason_event(
@@ -1060,6 +1084,25 @@ class HyperliquidGateway:
             self._last_account_summary = dict(summary)
             self._last_account_summary_ts = time.time()
             self._last_account_summary_error = None
+            available_margin = self._to_float(summary.get("available_margin")) or 0.0
+            withdrawable_amount = self._to_float(summary.get("withdrawable_amount")) or 0.0
+            sizing_available = self._to_float(summary.get("sizing_available_margin")) or 0.0
+            diff = abs(available_margin - withdrawable_amount)
+            threshold = max(25.0, available_margin * 0.4)
+            now = time.time()
+            if diff >= threshold and now - self._last_margin_divergence_warn_ts >= 60.0:
+                self._last_margin_divergence_warn_ts = now
+                logger.warning(
+                    "hl_margin_sources_diverged",
+                    extra={
+                        "event": "hl_margin_sources_diverged",
+                        "available_margin": available_margin,
+                        "sizing_available_margin": sizing_available,
+                        "withdrawable_amount": withdrawable_amount,
+                        "available_margin_source": summary.get("available_margin_source"),
+                        "sizing_margin_source": summary.get("sizing_margin_source"),
+                    },
+                )
         except Exception as exc:
             self._last_account_summary_error = str(exc)
             if self._last_account_summary is None:

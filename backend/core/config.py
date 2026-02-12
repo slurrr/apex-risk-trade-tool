@@ -28,6 +28,12 @@ class Settings(BaseSettings):
     app_host: str = Field("127.0.0.1", env="APP_HOST")
     app_port: int = Field(8000, env="APP_PORT")
     log_level: str = Field("INFO", env="LOG_LEVEL")
+    log_to_file: bool = Field(True, env="LOG_TO_FILE")
+    log_dir: str = Field("logs", env="LOG_DIR")
+    log_console_level: str = Field("INFO", env="LOG_CONSOLE_LEVEL")
+    log_incident_level: str = Field("WARNING", env="LOG_INCIDENT_LEVEL")
+    log_audit_trade_enabled: bool = Field(True, env="LOG_AUDIT_TRADE_ENABLED")
+    log_audit_stream_enabled: bool = Field(False, env="LOG_AUDIT_STREAM_ENABLED")
     per_trade_risk_cap_pct: Optional[float] = Field(None, env="PER_TRADE_RISK_CAP_PCT")
     daily_loss_cap_pct: Optional[float] = Field(None, env="DAILY_LOSS_CAP_PCT")
     open_risk_cap_pct: Optional[float] = Field(None, env="OPEN_RISK_CAP_PCT")
@@ -93,7 +99,7 @@ class Settings(BaseSettings):
     slippage_factor: float = Field(0.0, env="SLIPPAGE_FACTOR")
     fee_buffer_pct: float = Field(0.0, env="FEE_BUFFER_PCT")
     atr_timeframe: str = Field(
-        "5m",
+        "15m",
         env="ATR_TIMEFRAME",
         description="ATR candle timeframe (e.g., '5m', '15m', '1h').",
     )
@@ -105,6 +111,7 @@ class Settings(BaseSettings):
     risk_pct_2: float = Field(3.0, env="RISK_PCT_2")
     risk_pct_3: float = Field(6.0, env="RISK_PCT_3")
     risk_pct_4: float = Field(9.0, env="RISK_PCT_4")
+    risk_pct_default: float = Field(3.0, env="RISK_PCT_DEFAULT")
     atr_period: int = Field(
         14,
         env="ATR_PERIOD",
@@ -148,6 +155,13 @@ class Settings(BaseSettings):
     def validate_atr_multiplier(cls, value: float) -> float:
         if value <= 0:
             raise ValueError("ATR_MULTIPLIER must be greater than zero")
+        return value
+
+    @field_validator("risk_pct_default")
+    @classmethod
+    def validate_risk_pct_default(cls, value: float) -> float:
+        if value <= 0:
+            raise ValueError("RISK_PCT_DEFAULT must be greater than zero")
         return value
 
     @field_validator("atr_timeframe", "atr_sl_1", "atr_sl_2", "atr_sl_3", "atr_sl_4")
