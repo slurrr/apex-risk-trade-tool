@@ -1,8 +1,10 @@
 import asyncio
+import math
 import random
+import threading
 import time
 from collections import defaultdict, deque
-from decimal import Decimal, ROUND_HALF_UP
+from decimal import Decimal, ROUND_DOWN, ROUND_HALF_UP
 from typing import Any, Dict, Optional
 
 from eth_account import Account
@@ -68,6 +70,8 @@ class HyperliquidGateway:
         self._ws_monitor_task: Optional[asyncio.Task] = None
         self._account_refresh_task: Optional[asyncio.Task] = None
         self._account_refresh_interval = 15.0
+        self._ws_pnl_publish_min_interval = 0.25
+        self._last_ws_pnl_publish_ts = 0.0
         self._rest_max_retries = 2
         self._rest_retry_backoff = 0.35
         self._rest_retry_backoff_max = 1.5
@@ -98,9 +102,11 @@ class HyperliquidGateway:
         self._ws_orders: dict[str, dict[str, Any]] = {}
         self._ws_orders_raw: list[dict[str, Any]] = []
         self._ws_positions: dict[str, dict[str, Any]] = {}
+        self._state_lock = threading.Lock()
         self._last_account_summary: Optional[dict[str, Any]] = None
         self._last_account_summary_ts: float = 0.0
         self._last_account_summary_error: Optional[str] = None
+        self._last_margin_divergence_warn_ts: float = 0.0
         self._info = info_client or Info(base_url=self._base_url, skip_ws=True, timeout=8)
         self._ws_info = ws_info_client
         self._exchange: Optional[Any] = exchange_client
@@ -213,6 +219,27 @@ class HyperliquidGateway:
         except Exception:
             return self._wire_safe_float(px)
 
+    def _normalize_order_size(self, symbol: str, size: Any) -> float:
+        """
+        Snap order size to venue step size and enforce min order size.
+        Rounds down to avoid accidental oversizing/reduce-only rejects.
+        """
+        sz = float(size or 0.0)
+        if sz <= 0:
+            return self._wire_safe_float(sz)
+        cfg = self._configs.get(symbol) if isinstance(self._configs, dict) else None
+        step = self._to_float((cfg or {}).get("stepSize")) if isinstance(cfg, dict) else None
+        min_size = self._to_float((cfg or {}).get("minOrderSize")) if isinstance(cfg, dict) else None
+        if not step or step <= 0:
+            return self._wire_safe_float(sz)
+        try:
+            quantized = float((Decimal(str(sz)) / Decimal(str(step))).to_integral_value(rounding=ROUND_DOWN) * Decimal(str(step)))
+        except Exception:
+            quantized = math.floor(sz / step) * step
+        if min_size and min_size > 0 and quantized < min_size:
+            quantized = 0.0
+        return self._wire_safe_float(quantized)
+
     @classmethod
     def _is_terminal_status(cls, status: Any) -> bool:
         text = str(status or "").strip().lower()
@@ -241,17 +268,38 @@ class HyperliquidGateway:
             return "sl"
         return None
 
+    @staticmethod
+    def _extract_order_layers(row: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
+        """
+        Normalize endpoint shape differences for frontendOpenOrders/orderStatus.
+
+        Returns:
+        - base: envelope containing status/statusTimestamp/isPositionTpsl/etc
+        - order: innermost order object carrying coin/oid/side/sz/limitPx
+        """
+        base = row
+        order = row
+        inner = row.get("order")
+        if isinstance(inner, dict):
+            # orderStatus can return {"order": {...status...}} or {"order": {"order": {...}}}
+            base = inner
+            order = inner
+            nested = inner.get("order")
+            if isinstance(nested, dict):
+                order = nested
+        return base, order
+
     def _normalize_order_row(self, row: dict[str, Any]) -> Optional[dict[str, Any]]:
         if not isinstance(row, dict):
             return None
-        order = row.get("order") if isinstance(row.get("order"), dict) else row
-        coin = str(order.get("coin") or row.get("coin") or "").upper().strip()
+        base, order = self._extract_order_layers(row)
+        coin = str(order.get("coin") or base.get("coin") or row.get("coin") or "").upper().strip()
         if not coin:
             return None
-        oid = order.get("oid") or row.get("oid") or row.get("orderId")
+        oid = order.get("oid") or base.get("oid") or row.get("oid") or row.get("orderId")
         if oid is None:
             return None
-        raw_order_type = order.get("orderType") or row.get("orderType") or row.get("type")
+        raw_order_type = order.get("orderType") or base.get("orderType") or row.get("orderType") or row.get("type")
         order_type = self._normalize_order_type(raw_order_type)
         trigger_descriptor = None
         if isinstance(raw_order_type, dict):
@@ -268,34 +316,62 @@ class HyperliquidGateway:
             elif trigger_descriptor and order_type == "LIMIT":
                 # Trigger orders without explicit TP/SL kind are still conditional.
                 order_type = "STOP_MARKET"
-        trigger_px = (
+        trigger_px_raw = (
             order.get("triggerPx")
+            or base.get("triggerPx")
             or row.get("triggerPx")
+            or base.get("triggerPrice")
             or row.get("triggerPrice")
             or (order.get("trigger") or {}).get("triggerPx")
             or (trigger_descriptor or {}).get("triggerPx")
         )
-        reduce_only = bool(order.get("reduceOnly") if order.get("reduceOnly") is not None else row.get("reduceOnly"))
-        has_trigger = bool(trigger_px) or bool(trigger_descriptor)
+        trigger_condition = str(
+            order.get("triggerCondition")
+            or base.get("triggerCondition")
+            or row.get("triggerCondition")
+            or ""
+        ).strip()
+        trigger_px = trigger_px_raw
+        trigger_px_val = self._to_float(trigger_px_raw)
+        reduce_only_raw = order.get("reduceOnly")
+        if reduce_only_raw is None:
+            reduce_only_raw = base.get("reduceOnly")
+        if reduce_only_raw is None:
+            reduce_only_raw = row.get("reduceOnly")
+        reduce_only = bool(reduce_only_raw)
+        explicit_is_trigger = bool(order.get("isTrigger") or base.get("isTrigger") or row.get("isTrigger"))
+        # HL sometimes emits limit close orders with triggerPx="0.0" and triggerCondition="N/A".
+        # Treat that shape as non-triggered so discretionary reduce-only closes are not mislabeled helper.
+        if (
+            not explicit_is_trigger
+            and str(order_type or "").upper() in {"LIMIT", "MARKET"}
+            and trigger_condition.upper() in {"", "N/A"}
+            and (trigger_px_val is None or abs(float(trigger_px_val)) <= 1e-12)
+        ):
+            trigger_px = None
+        has_trigger = bool(explicit_is_trigger) or bool(trigger_px) or bool(trigger_descriptor)
+        explicit_tpsl_flag = bool(order.get("isPositionTpsl") or base.get("isPositionTpsl") or row.get("isPositionTpsl"))
         normalized = {
             "orderId": str(oid),
-            "clientOrderId": order.get("cloid") or row.get("cloid"),
+            "clientOrderId": order.get("cloid") or base.get("cloid") or row.get("cloid"),
             "symbol": self._symbol_from_coin(coin),
             "coin": coin,
-            "side": self._normalize_hl_side(str(order.get("side") or row.get("side") or "")),
-            "size": order.get("sz") or row.get("sz") or order.get("origSz") or row.get("origSz"),
-            "price": order.get("limitPx") or row.get("limitPx"),
-            "status": row.get("status") or order.get("status") or "OPEN",
+            "side": self._normalize_hl_side(str(order.get("side") or base.get("side") or row.get("side") or "")),
+            "size": order.get("sz") or base.get("sz") or row.get("sz") or order.get("origSz") or base.get("origSz") or row.get("origSz"),
+            "price": order.get("limitPx") or base.get("limitPx") or row.get("limitPx"),
+            "status": base.get("status") or row.get("status") or order.get("status") or "OPEN",
             "reduceOnly": reduce_only,
             "type": order_type,
             "orderType": order_type,
             "triggerPrice": trigger_px,
             "isPositionTpsl": bool(
-                row.get("isPositionTpsl")
-                or ((order.get("isTrigger") or row.get("isTrigger") or has_trigger) and reduce_only)
+                explicit_tpsl_flag
+                or (explicit_is_trigger and reduce_only)
                 or order_type.startswith(("STOP", "TAKE_PROFIT"))
             ),
-            "timestamp": row.get("timestamp") or order.get("timestamp"),
+            "isTrigger": explicit_is_trigger,
+            "timestamp": base.get("timestamp") or row.get("timestamp") or order.get("timestamp"),
+            "statusTimestamp": base.get("statusTimestamp") or row.get("statusTimestamp"),
             "raw": row,
         }
         return normalized
@@ -522,6 +598,25 @@ class HyperliquidGateway:
             or margin.get("availableBalance")
             or margin.get("freeCollateral")
         )
+        explicit_available_source = (
+            "payload.availableMargin"
+            if payload.get("availableMargin") is not None
+            else "payload.available_margin"
+            if payload.get("available_margin") is not None
+            else "payload.availableBalance"
+            if payload.get("availableBalance") is not None
+            else "payload.freeCollateral"
+            if payload.get("freeCollateral") is not None
+            else "marginSummary.availableMargin"
+            if margin.get("availableMargin") is not None
+            else "marginSummary.available_margin"
+            if margin.get("available_margin") is not None
+            else "marginSummary.availableBalance"
+            if margin.get("availableBalance") is not None
+            else "marginSummary.freeCollateral"
+            if margin.get("freeCollateral") is not None
+            else None
+        )
         explicit_available_f = self._to_float(explicit_available)
         total_margin_used_f = self._to_float(
             margin.get("totalMarginUsed")
@@ -534,18 +629,20 @@ class HyperliquidGateway:
 
         if explicit_available_f is not None:
             available_margin = max(0.0, float(explicit_available_f))
+            available_margin_source = explicit_available_source or "explicit_available"
         elif derived_available_f is not None:
             available_margin = derived_available_f
+            available_margin_source = "accountValue-totalMarginUsed"
         else:
             # Fallback: withdrawable can understate opening capacity; use the larger
             # value when no explicit/derived free-margin field is available.
             available_margin = max(account_value_f, withdrawable_f)
+            available_margin_source = "max(accountValue,withdrawable)"
 
-        # Sizing margin should be conservative to avoid submit-time rejects.
-        # If withdrawable is present and positive, treat it as a tighter cap.
+        # For Hyperliquid, `withdrawable` can diverge from trading capacity.
+        # Keep sizing on available/free margin and rely on submit-time fallback/retry.
         sizing_available_margin = available_margin
-        if withdrawable_f > 0:
-            sizing_available_margin = min(available_margin, withdrawable_f)
+        sizing_margin_source = available_margin_source
 
         return {
             "total_equity": account_value_f,
@@ -553,6 +650,8 @@ class HyperliquidGateway:
             "available_margin": available_margin,
             "sizing_available_margin": sizing_available_margin,
             "withdrawable_amount": withdrawable_f,
+            "available_margin_source": available_margin_source,
+            "sizing_margin_source": sizing_margin_source,
         }
 
     def _record_reconcile_reason_event(
@@ -968,6 +1067,43 @@ class HyperliquidGateway:
             changed = True
         if changed:
             self._mids_cached_at = now
+            if self._recompute_ws_positions_pnl_from_mids():
+                if (now - self._last_ws_pnl_publish_ts) >= self._ws_pnl_publish_min_interval:
+                    self._last_ws_pnl_publish_ts = now
+                    self._publish_event({"type": "positions", "payload": list(self._ws_positions.values())})
+                    self._schedule_account_summary_refresh()
+
+    def _recompute_ws_positions_pnl_from_mids(self) -> bool:
+        if not self._ws_positions or not self._mids_cache:
+            return False
+        changed = False
+        with self._state_lock:
+            for pos in self._ws_positions.values():
+                if not isinstance(pos, dict):
+                    continue
+                coin = str(pos.get("positionId") or "").upper().strip()
+                if not coin:
+                    symbol = str(pos.get("symbol") or "").upper().strip()
+                    if "-" in symbol:
+                        coin = symbol.split("-")[0]
+                if not coin:
+                    continue
+                mid = self._mids_cache.get(coin)
+                if mid is None:
+                    continue
+                entry = self._to_float(pos.get("entryPrice"))
+                size = self._to_float(pos.get("size"))
+                if entry is None or size is None or size <= 0:
+                    continue
+                side = str(pos.get("positionSide") or pos.get("side") or "").upper()
+                pnl = (float(mid) - float(entry)) * float(size)
+                if side in {"SHORT", "SELL"}:
+                    pnl = -pnl
+                prev = self._to_float(pos.get("unrealizedPnl"))
+                pos["unrealizedPnl"] = pnl
+                if prev is None or abs(float(prev) - float(pnl)) > 1e-9:
+                    changed = True
+        return changed
 
     def _on_ws_order_updates(self, ws_msg: dict[str, Any]) -> None:
         payload = ws_msg.get("data")
@@ -1019,6 +1155,25 @@ class HyperliquidGateway:
             self._last_account_summary = dict(summary)
             self._last_account_summary_ts = time.time()
             self._last_account_summary_error = None
+            available_margin = self._to_float(summary.get("available_margin")) or 0.0
+            withdrawable_amount = self._to_float(summary.get("withdrawable_amount")) or 0.0
+            sizing_available = self._to_float(summary.get("sizing_available_margin")) or 0.0
+            diff = abs(available_margin - withdrawable_amount)
+            threshold = max(25.0, available_margin * 0.4)
+            now = time.time()
+            if diff >= threshold and now - self._last_margin_divergence_warn_ts >= 60.0:
+                self._last_margin_divergence_warn_ts = now
+                logger.warning(
+                    "hl_margin_sources_diverged",
+                    extra={
+                        "event": "hl_margin_sources_diverged",
+                        "available_margin": available_margin,
+                        "sizing_available_margin": sizing_available,
+                        "withdrawable_amount": withdrawable_amount,
+                        "available_margin_source": summary.get("available_margin_source"),
+                        "sizing_margin_source": summary.get("sizing_margin_source"),
+                    },
+                )
         except Exception as exc:
             self._last_account_summary_error = str(exc)
             if self._last_account_summary is None:
@@ -1124,6 +1279,7 @@ class HyperliquidGateway:
             return []
         positions = payload.get("assetPositions") or []
         normalized: list[Dict[str, Any]] = []
+        next_ws_positions: dict[str, dict[str, Any]] = {}
         for row in positions:
             if not isinstance(row, dict):
                 continue
@@ -1144,9 +1300,21 @@ class HyperliquidGateway:
                 "size": abs(size_val),
                 "entryPrice": pos.get("entryPx"),
                 "unrealizedPnl": pos.get("unrealizedPnl"),
+                # Preserve margin/leverage hints so ROE-style UI metrics can use
+                # initial margin instead of notional fallback.
+                "leverage": pos.get("leverage"),
+                "leverageValue": (pos.get("leverage") or {}).get("value") if isinstance(pos.get("leverage"), dict) else pos.get("leverage"),
+                "marginUsed": pos.get("marginUsed"),
+                "positionInitialMargin": pos.get("positionInitialMargin"),
+                "initialMargin": pos.get("initialMargin"),
+                "positionValue": pos.get("positionValue"),
             }
             normalized.append(item)
-            self._ws_positions[coin] = item
+            next_ws_positions[coin] = item
+        # Authoritative replacement: remove coins absent from latest snapshot so
+        # closed positions cannot linger in cache and reappear in UI.
+        self._ws_positions.clear()
+        self._ws_positions.update(next_ws_positions)
         if publish:
             self._publish_event({"type": "positions", "payload": normalized})
         return normalized
@@ -1171,6 +1339,30 @@ class HyperliquidGateway:
 
     async def refresh_account_orders_from_rest(self) -> list[Dict[str, Any]]:
         return await self.get_open_orders(force_rest=True, publish=False)
+
+    async def query_order_status_by_oid(self, oid: Any) -> Optional[Dict[str, Any]]:
+        user = self._require_user_address()
+        try:
+            oid_int = int(oid)
+        except Exception:
+            return None
+        fetcher = getattr(self._info, "query_order_by_oid", None)
+        if not callable(fetcher):
+            return None
+        payload = await asyncio.to_thread(fetcher, user, oid_int)
+        if not isinstance(payload, dict):
+            return None
+        parsed = self._normalize_order_row(payload)
+        if not parsed:
+            return None
+        parsed["statusTimestamp"] = (
+            parsed.get("statusTimestamp")
+            or payload.get("statusTimestamp")
+            or (payload.get("order") or {}).get("statusTimestamp")
+            or ((payload.get("order") or {}).get("order") or {}).get("statusTimestamp")
+        )
+        parsed["__enriched_order_status"] = True
+        return parsed
 
     async def _get_all_mids(self, force: bool = False) -> dict[str, float]:
         now = time.time()
@@ -1312,12 +1504,15 @@ class HyperliquidGateway:
         exchange = self._require_exchange()
         if size <= 0:
             raise ValueError("Close size must be greater than 0.")
+        await self.ensure_configs_loaded()
         coin = self._coin_from_symbol(symbol)
+        safe_size = self._normalize_order_size(symbol, size)
+        if safe_size <= 0:
+            raise ValueError("Close size is below minimum step/size constraints for this symbol.")
         side_norm = (side or "").upper()
         is_buy = side_norm in {"SHORT", "SELL"}
         close_type_norm = (close_type or "").lower()
         if close_type_norm == "market":
-            safe_size = self._wire_safe_float(size)
             safe_price = self._normalize_limit_price(coin, limit_price) if limit_price is not None else None
             resp = await asyncio.to_thread(exchange.market_close, coin, safe_size, safe_price)
             self._track_submitted_order_ids(resp, fallback_coin=coin)
@@ -1328,7 +1523,7 @@ class HyperliquidGateway:
             exchange.order,
             coin,
             bool(is_buy),
-            self._wire_safe_float(size),
+            safe_size,
             self._normalize_limit_price(coin, limit_price),
             {"limit": {"tif": "Gtc"}},
             True,

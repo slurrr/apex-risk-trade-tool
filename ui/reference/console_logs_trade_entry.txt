@@ -1,0 +1,134 @@
+
+INFO:     127.0.0.1:47780 - "GET /api/market/depth-summary/BTC-USDC?tolerance_bps=5&levels=25 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:47780 - "OPTIONS /api/trade HTTP/1.1" 200 OK
+INFO:     127.0.0.1:47780 - "POST /api/trade HTTP/1.1" 200 OK
+INFO:     127.0.0.1:47780 - "GET /api/venue HTTP/1.1" 200 OK
+INFO:     127.0.0.1:47780 - "GET /api/account/summary HTTP/1.1" 200 OK
+INFO:     127.0.0.1:40948 - "GET /api/market/depth-summary/BTC-USDC?tolerance_bps=5&levels=25 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:47780 - "GET /api/positions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:47780 - "GET /api/market/depth-summary/BTC-USDC?tolerance_bps=5&levels=25 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:40948 - "GET /api/venue HTTP/1.1" 200 OK
+INFO:     127.0.0.1:47780 - "GET /api/market/depth-summary/BTC-USDC?tolerance_bps=5&levels=25 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:47780 - "GET /api/market/depth-summary/BTC-USDC?tolerance_bps=5&levels=25 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:47780 - "GET /api/market/depth-summary/BTC-USDC?tolerance_bps=5&levels=25 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:47780 - "GET /api/venue HTTP/1.1" 200 OK
+INFO:     127.0.0.1:40956 - "GET /api/positions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:40956 - "GET /api/market/depth-summary/BTC-USDC?tolerance_bps=5&levels=25 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:40956 - "GET /api/market/depth-summary/BTC-USDC?tolerance_bps=5&levels=25 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:40956 - "GET /api/venue HTTP/1.1" 200 OK
+INFO:     127.0.0.1:40956 - "GET /api/market/depth-summary/BTC-USDC?tolerance_bps=5&levels=25 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:40956 - "GET /api/market/depth-summary/BTC-USDC?tolerance_bps=5&levels=25 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:40956 - "GET /api/venue HTTP/1.1" 200 OK
+INFO:     127.0.0.1:40968 - "GET /api/positions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:40968 - "GET /api/market/depth-summary/BTC-USDC?tolerance_bps=5&levels=25 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:40956 - "GET /api/venue HTTP/1.1" 200 OK
+INFO:     127.0.0.1:40968 - "GET /api/market/depth-summary/BTC-USDC?tolerance_bps=5&levels=25 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:40972 - "GET /api/account/summary HTTP/1.1" 200 OK
+INFO:     127.0.0.1:40956 - "GET /api/positions HTTP/1.1" 200 OK
+{"timestamp": "2026-02-11 11:13:47,195", "level": "INFO", "logger": "backend.exchange.hyperliquid_gateway", "message": "hl_reconcile_completed", "event": "hl_reconcile_completed", "extra": {"reason": "order_lifecycle_timeout", "duration_ms": 409.66, "orders_count": 4, "positions_count": 0, "last_private_ws_event_age_seconds": 23.952290058135986, "pending_submitted_orders": 1}}
+INFO:     127.0.0.1:40956 - "GET /api/venue HTTP/1.1" 200 OK
+INFO:     127.0.0.1:40956 - "GET /api/market/depth-summary/BTC-USDC?tolerance_bps=5&levels=25 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:40956 - "GET /api/market/depth-summary/BTC-USDC?tolerance_bps=5&levels=25 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44648 - "GET /api/venue HTTP/1.1" 200 OK
+INFO:     127.0.0.1:40956 - "GET /api/market/depth-summary/BTC-USDC?tolerance_bps=5&levels=25 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44648 - "GET /api/account/summary HTTP/1.1" 200 OK
+INFO:     127.0.0.1:40956 - "GET /api/positions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:40956 - "GET /api/market/depth-summary/BTC-USDC?tolerance_bps=5&levels=25 HTTP/1.1" 200 OK
+{"timestamp": "2026-02-11 11:13:57,560", "level": "INFO", "logger": "backend.exchange.hyperliquid_gateway", "message": "hl_reconcile_completed", "event": "hl_reconcile_completed", "extra": {"reason": "order_lifecycle_timeout", "duration_ms": 364.54, "orders_count": 4, "positions_count": 0, "last_private_ws_event_age_seconds": 34.316733837127686, "pending_submitted_orders": 1}}
+INFO:     127.0.0.1:40956 - "GET /api/market/depth-summary/BTC-USDC?tolerance_bps=5&levels=25 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:40956 - "GET /api/venue HTTP/1.1" 200 OK
+INFO:     127.0.0.1:40956 - "GET /api/market/depth-summary/BTC-USDC?tolerance_bps=5&levels=25 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:40956 - "GET /api/market/depth-summary/BTC-USDC?tolerance_bps=5&levels=25 HTTP/1.1" 200 OK
+{"timestamp": "2026-02-11 11:14:03,170", "level": "WARNING", "logger": "backend.exchange.hyperliquid_gateway", "message": "hl_reconcile_alert_order_timeout", "event": "hl_reconcile_alert_order_timeout", "extra": {"reason": "order_lifecycle_timeout", "count": 3, "window_seconds": 300.0, "threshold": 3}}
+{"timestamp": "2026-02-11 11:14:03,170", "level": "WARNING", "logger": "backend.exchange.hyperliquid_gateway", "message": "hl_reconcile_alert_order_timeout_symbol", "event": "hl_reconcile_alert_order_timeout_symbol", "extra": {"reason": "order_lifecycle_timeout", "count": 3, "window_seconds": 300.0, "threshold": 3}}
+{"timestamp": "2026-02-11 11:14:03,170", "level": "INFO", "logger": "backend.exchange.hyperliquid_gateway", "message": "hl_reconcile_completed", "event": "hl_reconcile_completed", "extra": {"reason": "order_lifecycle_timeout", "duration_ms": 609.73, "orders_count": 4, "positions_count": 0, "last_private_ws_event_age_seconds": 39.92739129066467, "pending_submitted_orders": 1}}
+INFO:     127.0.0.1:40956 - "GET /api/venue HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53084 - "GET /api/positions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53084 - "GET /api/market/depth-summary/BTC-USDC?tolerance_bps=5&levels=25 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53084 - "GET /api/market/depth-summary/BTC-USDC?tolerance_bps=5&levels=25 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53084 - "GET /api/venue HTTP/1.1" 200 OK
+{"timestamp": "2026-02-11 11:14:08,755", "level": "INFO", "logger": "backend.exchange.hyperliquid_gateway", "message": "hl_reconcile_completed", "event": "hl_reconcile_completed", "extra": {"reason": "order_lifecycle_timeout", "duration_ms": 585.06, "orders_count": 4, "positions_count": 0, "last_private_ws_event_age_seconds": 45.51233720779419, "pending_submitted_orders": 1}}
+INFO:     127.0.0.1:53084 - "GET /api/market/depth-summary/BTC-USDC?tolerance_bps=5&levels=25 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53084 - "GET /api/market/depth-summary/BTC-USDC?tolerance_bps=5&levels=25 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53084 - "GET /api/venue HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53084 - "GET /api/market/depth-summary/BTC-USDC?tolerance_bps=5&levels=25 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53098 - "GET /api/positions HTTP/1.1" 200 OK
+{"timestamp": "2026-02-11 11:14:14,173", "level": "INFO", "logger": "backend.exchange.hyperliquid_gateway", "message": "hl_reconcile_completed", "event": "hl_reconcile_completed", "extra": {"reason": "order_lifecycle_timeout", "duration_ms": 417.88, "orders_count": 4, "positions_count": 0, "last_private_ws_event_age_seconds": 50.93045735359192, "pending_submitted_orders": 1}}
+INFO:     127.0.0.1:53098 - "GET /api/market/depth-summary/BTC-USDC?tolerance_bps=5&levels=25 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53098 - "GET /api/market/depth-summary/BTC-USDC?tolerance_bps=5&levels=25 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53098 - "GET /api/venue HTTP/1.1" 200 OK
+{"timestamp": "2026-02-11 11:14:19,669", "level": "INFO", "logger": "backend.exchange.hyperliquid_gateway", "message": "hl_reconcile_completed", "event": "hl_reconcile_completed", "extra": {"reason": "order_lifecycle_timeout", "duration_ms": 494.41, "orders_count": 4, "positions_count": 0, "last_private_ws_event_age_seconds": 56.425814151763916, "pending_submitted_orders": 1}}
+INFO:     127.0.0.1:53098 - "GET /api/market/depth-summary/BTC-USDC?tolerance_bps=5&levels=25 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53098 - "GET /api/market/depth-summary/BTC-USDC?tolerance_bps=5&levels=25 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53098 - "GET /api/venue HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53098 - "GET /api/account/summary HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53098 - "GET /api/positions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:42732 - "GET /api/market/depth-summary/BTC-USDC?tolerance_bps=5&levels=25 HTTP/1.1" 200 OK
+{"timestamp": "2026-02-11 11:14:25,059", "level": "INFO", "logger": "backend.exchange.hyperliquid_gateway", "message": "hl_reconcile_completed", "event": "hl_reconcile_completed", "extra": {"reason": "order_lifecycle_timeout", "duration_ms": 389.74, "orders_count": 4, "positions_count": 0, "last_private_ws_event_age_seconds": 61.81576585769653, "pending_submitted_orders": 1}}
+INFO:     127.0.0.1:42732 - "GET /api/market/depth-summary/BTC-USDC?tolerance_bps=5&levels=25 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:42732 - "GET /api/venue HTTP/1.1" 200 OK
+INFO:     127.0.0.1:42732 - "GET /api/market/depth-summary/BTC-USDC?tolerance_bps=5&levels=25 HTTP/1.1" 200 OK
+{"timestamp": "2026-02-11 11:14:30,605", "level": "INFO", "logger": "backend.exchange.hyperliquid_gateway", "message": "hl_reconcile_completed", "event": "hl_reconcile_completed", "extra": {"reason": "order_lifecycle_timeout", "duration_ms": 545.32, "orders_count": 4, "positions_count": 0, "last_private_ws_event_age_seconds": 67.36171364784241, "pending_submitted_orders": 1}}
+INFO:     127.0.0.1:42732 - "GET /api/market/depth-summary/BTC-USDC?tolerance_bps=5&levels=25 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:42742 - "GET /api/venue HTTP/1.1" 200 OK
+INFO:     127.0.0.1:42732 - "GET /api/market/depth-summary/BTC-USDC?tolerance_bps=5&levels=25 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:42742 - "GET /api/positions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:42742 - "GET /api/market/depth-summary/BTC-USDC?tolerance_bps=5&levels=25 HTTP/1.1" 200 OK
+{"timestamp": "2026-02-11 11:14:36,032", "level": "INFO", "logger": "backend.exchange.hyperliquid_gateway", "message": "hl_reconcile_completed", "event": "hl_reconcile_completed", "extra": {"reason": "order_lifecycle_timeout", "duration_ms": 427.53, "orders_count": 4, "positions_count": 0, "last_private_ws_event_age_seconds": 72.78949666023254, "pending_submitted_orders": 1}}
+INFO:     127.0.0.1:42742 - "GET /api/market/depth-summary/BTC-USDC?tolerance_bps=5&levels=25 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:42742 - "GET /api/venue HTTP/1.1" 200 OK
+INFO:     127.0.0.1:42742 - "GET /api/market/depth-summary/BTC-USDC?tolerance_bps=5&levels=25 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:42742 - "GET /api/venue HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44010 - "GET /api/market/depth-summary/ASTER-USDC?tolerance_bps=5&levels=25 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:42742 - "GET /api/account/summary HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44018 - "GET /api/positions HTTP/1.1" 200 OK
+{"timestamp": "2026-02-11 11:14:41,466", "level": "INFO", "logger": "backend.exchange.hyperliquid_gateway", "message": "hl_reconcile_completed", "event": "hl_reconcile_completed", "extra": {"reason": "order_lifecycle_timeout", "duration_ms": 433.01, "orders_count": 4, "positions_count": 0, "last_private_ws_event_age_seconds": 78.22349214553833, "pending_submitted_orders": 1}}
+INFO:     127.0.0.1:44018 - "GET /api/venue HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44018 - "GET /api/venue HTTP/1.1" 200 OK
+INFO:     127.0.0.1:42742 - "GET /api/positions HTTP/1.1" 200 OK
+{"timestamp": "2026-02-11 11:14:46,807", "level": "INFO", "logger": "backend.exchange.hyperliquid_gateway", "message": "hl_reconcile_completed", "event": "hl_reconcile_completed", "extra": {"reason": "order_lifecycle_timeout", "duration_ms": 339.78, "orders_count": 4, "positions_count": 0, "last_private_ws_event_age_seconds": 83.56438755989075, "pending_submitted_orders": 1}}
+INFO:     127.0.0.1:42742 - "GET /api/venue HTTP/1.1" 200 OK
+INFO:     127.0.0.1:42742 - "GET /api/venue HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44018 - "GET /api/market/depth-summary/ASTER-USDC?tolerance_bps=5&levels=25 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44022 - "GET /api/positions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44022 - "GET /api/venue HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44018 - "GET /api/market/depth-summary/BTC-USDC?tolerance_bps=5&levels=25 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44018 - "GET /api/market/depth-summary/BTC-USDC?tolerance_bps=5&levels=25 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44018 - "GET /api/venue HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44018 - "GET /api/venue HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44022 - "GET /api/positions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44022 - "GET /api/market/depth-summary/BTC-USDC?tolerance_bps=5&levels=25 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44022 - "GET /api/market/depth-summary/BTC-USDC?tolerance_bps=5&levels=25 HTTP/1.1" 200 OK
+{"timestamp": "2026-02-11 11:14:57,210", "level": "INFO", "logger": "backend.exchange.hyperliquid_gateway", "message": "hl_reconcile_completed", "event": "hl_reconcile_completed", "extra": {"reason": "ws_stale", "duration_ms": 403.69, "orders_count": 4, "positions_count": 0, "last_private_ws_event_age_seconds": 93.96765851974487, "pending_submitted_orders": 1}}
+INFO:     127.0.0.1:44022 - "GET /api/venue HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44022 - "GET /api/venue HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44022 - "GET /api/positions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44022 - "GET /api/market/depth-summary/BTC-USDC?tolerance_bps=5&levels=25 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44022 - "GET /api/market/depth-summary/BTC-USDC?tolerance_bps=5&levels=25 HTTP/1.1" 200 OK
+{"timestamp": "2026-02-11 11:15:02,667", "level": "INFO", "logger": "backend.exchange.hyperliquid_gateway", "message": "hl_reconcile_completed", "event": "hl_reconcile_completed", "extra": {"reason": "ws_stale", "duration_ms": 456.29, "orders_count": 4, "positions_count": 0, "last_private_ws_event_age_seconds": 99.42444729804993, "pending_submitted_orders": 1}}
+INFO:     127.0.0.1:44022 - "GET /api/venue HTTP/1.1" 200 OK
+INFO:     127.0.0.1:32892 - "GET /api/venue HTTP/1.1" 200 OK
+INFO:     127.0.0.1:45662 - "GET /api/account/summary HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44022 - "GET /api/positions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:32892 - "GET /api/market/depth-summary/BTC-USDC?tolerance_bps=5&levels=25 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:32892 - "GET /api/market/depth-summary/BTC-USDC?tolerance_bps=5&levels=25 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44022 - "GET /api/venue HTTP/1.1" 200 OK
+{"timestamp": "2026-02-11 11:15:08,253", "level": "WARNING", "logger": "backend.exchange.hyperliquid_gateway", "message": "hl_reconcile_alert_ws_stale", "event": "hl_reconcile_alert_ws_stale", "extra": {"reason": "ws_stale", "count": 3, "window_seconds": 300.0, "threshold": 3}}
+{"timestamp": "2026-02-11 11:15:08,253", "level": "INFO", "logger": "backend.exchange.hyperliquid_gateway", "message": "hl_reconcile_completed", "event": "hl_reconcile_completed", "extra": {"reason": "ws_stale", "duration_ms": 585.08, "orders_count": 4, "positions_count": 0, "last_private_ws_event_age_seconds": 105.01014876365662, "pending_submitted_orders": 1}}
+INFO:     127.0.0.1:44022 - "GET /api/venue HTTP/1.1" 200 OK
+INFO:     127.0.0.1:32892 - "GET /api/market/depth-summary/BTC-USDC?tolerance_bps=5&levels=25 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:45662 - "GET /api/positions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:45662 - "GET /api/market/depth-summary/BTC-USDC?tolerance_bps=5&levels=25 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:45662 - "GET /api/market/depth-summary/BTC-USDC?tolerance_bps=5&levels=25 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:45662 - "GET /api/venue HTTP/1.1" 200 OK
+INFO:     127.0.0.1:45662 - "GET /api/venue HTTP/1.1" 200 OK
+INFO:     127.0.0.1:32892 - "GET /api/positions HTTP/1.1" 200 OK
+{"timestamp": "2026-02-11 11:15:13,644", "level": "INFO", "logger": "backend.exchange.hyperliquid_gateway", "message": "hl_reconcile_completed", "event": "hl_reconcile_completed", "extra": {"reason": "ws_stale", "duration_ms": 391.14, "orders_count": 4, "positions_count": 0, "last_private_ws_event_age_seconds": 110.40150856971741, "pending_submitted_orders": 1}}
+INFO:     127.0.0.1:32892 - "GET /api/market/depth-summary/BTC-USDC?tolerance_bps=5&levels=25 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:32892 - "GET /api/market/depth-summary/BTC-USDC?tolerance_bps=5&levels=25 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:32892 - "GET /api/venue HTTP/1.1" 200 OK
+INFO:     127.0.0.1:32892 - "GET /api/venue HTTP/1.1" 200 OK
+INFO:     127.0.0.1:45662 - "GET /api/account/summary HTTP/1.1" 200 OK
+INFO:     127.0.0.1:32894 - "GET /api/positions HTTP/1.1" 200 OK
+{"timestamp": "2026-02-11 11:15:19,107", "level": "INFO", "logger": "backend.exchange.hyperliquid_gateway", "message": "hl_reconcile_completed", "event": "hl_reconcile_completed", "extra": {"reason": "ws_stale", "duration_ms": 462.07, "orders_count": 4, "positions_count": 0, "last_private_ws_event_age_seconds": 115.86401438713074, "pending_submitted_orders": 1}}
+INFO:     127.0.0.1:32894 - "GET /api/market/depth-summary/BTC-USDC?tolerance_bps=5&levels=25 HTTP/1.1" 200 OK

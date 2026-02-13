@@ -28,6 +28,12 @@ class Settings(BaseSettings):
     app_host: str = Field("127.0.0.1", env="APP_HOST")
     app_port: int = Field(8000, env="APP_PORT")
     log_level: str = Field("INFO", env="LOG_LEVEL")
+    log_to_file: bool = Field(True, env="LOG_TO_FILE")
+    log_dir: str = Field("logs", env="LOG_DIR")
+    log_console_level: str = Field("INFO", env="LOG_CONSOLE_LEVEL")
+    log_incident_level: str = Field("WARNING", env="LOG_INCIDENT_LEVEL")
+    log_audit_trade_enabled: bool = Field(True, env="LOG_AUDIT_TRADE_ENABLED")
+    log_audit_stream_enabled: bool = Field(False, env="LOG_AUDIT_STREAM_ENABLED")
     per_trade_risk_cap_pct: Optional[float] = Field(None, env="PER_TRADE_RISK_CAP_PCT")
     daily_loss_cap_pct: Optional[float] = Field(None, env="DAILY_LOSS_CAP_PCT")
     open_risk_cap_pct: Optional[float] = Field(None, env="OPEN_RISK_CAP_PCT")
@@ -93,10 +99,19 @@ class Settings(BaseSettings):
     slippage_factor: float = Field(0.0, env="SLIPPAGE_FACTOR")
     fee_buffer_pct: float = Field(0.0, env="FEE_BUFFER_PCT")
     atr_timeframe: str = Field(
-        "5m",
+        "15m",
         env="ATR_TIMEFRAME",
         description="ATR candle timeframe (e.g., '5m', '15m', '1h').",
     )
+    atr_sl_1: str = Field("3m", env="ATR_SL_1")
+    atr_sl_2: str = Field("15m", env="ATR_SL_2")
+    atr_sl_3: str = Field("1h", env="ATR_SL_3")
+    atr_sl_4: str = Field("4h", env="ATR_SL_4")
+    risk_pct_1: float = Field(1.0, env="RISK_PCT_1")
+    risk_pct_2: float = Field(3.0, env="RISK_PCT_2")
+    risk_pct_3: float = Field(6.0, env="RISK_PCT_3")
+    risk_pct_4: float = Field(9.0, env="RISK_PCT_4")
+    risk_pct_default: float = Field(3.0, env="RISK_PCT_DEFAULT")
     atr_period: int = Field(
         14,
         env="ATR_PERIOD",
@@ -106,6 +121,77 @@ class Settings(BaseSettings):
         1.5,
         env="ATR_MULTIPLIER",
         description="ATR multiplier applied when deriving stop offsets.",
+    )
+    order_classification_mode: str = Field("legacy", env="ORDER_CLASSIFICATION_MODE")
+    order_classification_orders_raw_fresh_seconds: float = Field(
+        5.0,
+        env="ORDER_CLASSIFICATION_ORDERS_RAW_FRESH_SECONDS",
+    )
+    order_classification_orders_raw_stale_cutoff_seconds: float = Field(
+        30.0,
+        env="ORDER_CLASSIFICATION_ORDERS_RAW_STALE_CUTOFF_SECONDS",
+    )
+    order_classification_unknown_threshold_count_60s: int = Field(
+        3,
+        env="ORDER_CLASSIFICATION_UNKNOWN_THRESHOLD_COUNT_60S",
+    )
+    order_classification_unknown_threshold_rate_5m: float = Field(
+        0.005,
+        env="ORDER_CLASSIFICATION_UNKNOWN_THRESHOLD_RATE_5M",
+    )
+    order_classification_unknown_threshold_min_total_5m: int = Field(
+        200,
+        env="ORDER_CLASSIFICATION_UNKNOWN_THRESHOLD_MIN_TOTAL_5M",
+    )
+    order_classification_unknown_persist_seconds: float = Field(
+        20.0,
+        env="ORDER_CLASSIFICATION_UNKNOWN_PERSIST_SECONDS",
+    )
+    order_classification_recovery_min_gap_seconds: float = Field(
+        5.0,
+        env="ORDER_CLASSIFICATION_RECOVERY_MIN_GAP_SECONDS",
+    )
+    order_classification_auto_shadow_seconds: float = Field(
+        600.0,
+        env="ORDER_CLASSIFICATION_AUTO_SHADOW_SECONDS",
+    )
+    order_classification_auto_shadow_cooldown_seconds: float = Field(
+        1800.0,
+        env="ORDER_CLASSIFICATION_AUTO_SHADOW_COOLDOWN_SECONDS",
+    )
+    order_classification_trigger_epsilon_ratio: float = Field(
+        0.0005,
+        env="ORDER_CLASSIFICATION_TRIGGER_EPSILON_RATIO",
+    )
+    order_classification_size_epsilon_ratio: float = Field(
+        0.02,
+        env="ORDER_CLASSIFICATION_SIZE_EPSILON_RATIO",
+    )
+    hl_disamb_unknown_ttl_seconds: float = Field(20.0, env="HL_DISAMB_UNKNOWN_TTL_SECONDS")
+    hl_disamb_order_status_cache_ttl_seconds: float = Field(
+        20.0,
+        env="HL_DISAMB_ORDER_STATUS_CACHE_TTL_SECONDS",
+    )
+    hl_disamb_order_status_global_min_gap_seconds: float = Field(
+        0.5,
+        env="HL_DISAMB_ORDER_STATUS_GLOBAL_MIN_GAP_SECONDS",
+    )
+    hl_disamb_order_status_symbol_min_gap_seconds: float = Field(
+        1.0,
+        env="HL_DISAMB_ORDER_STATUS_SYMBOL_MIN_GAP_SECONDS",
+    )
+    hl_disamb_frontend_snapshot_global_min_gap_seconds: float = Field(
+        10.0,
+        env="HL_DISAMB_FRONTEND_SNAPSHOT_GLOBAL_MIN_GAP_SECONDS",
+    )
+    hl_disamb_frontend_snapshot_symbol_min_gap_seconds: float = Field(
+        20.0,
+        env="HL_DISAMB_FRONTEND_SNAPSHOT_SYMBOL_MIN_GAP_SECONDS",
+    )
+    hl_disamb_sl_confirm_ws_seconds: float = Field(2.0, env="HL_DISAMB_SL_CONFIRM_WS_SECONDS")
+    hl_disamb_sl_confirm_degraded_seconds: float = Field(
+        10.0,
+        env="HL_DISAMB_SL_CONFIRM_DEGRADED_SECONDS",
     )
     ui_mock_mode_enabled: bool = Field(False, env="UI_MOCK_MODE_ENABLED")
     ui_mock_data_path: str = Field("spec/ui-whale-mock.json", env="UI_MOCK_DATA_PATH")
@@ -128,6 +214,15 @@ class Settings(BaseSettings):
             raise ValueError(f"Unsupported ACTIVE_VENUE '{value}'. Use one of {sorted(allowed)}")
         return normalized
 
+    @field_validator("order_classification_mode")
+    @classmethod
+    def validate_order_classification_mode(cls, value: str) -> str:
+        normalized = (value or "legacy").strip().lower()
+        allowed = {"legacy", "shadow", "v2"}
+        if normalized not in allowed:
+            raise ValueError(f"Unsupported ORDER_CLASSIFICATION_MODE '{value}'. Use one of {sorted(allowed)}")
+        return normalized
+
     @field_validator("atr_period")
     @classmethod
     def validate_atr_period(cls, value: int) -> int:
@@ -142,7 +237,14 @@ class Settings(BaseSettings):
             raise ValueError("ATR_MULTIPLIER must be greater than zero")
         return value
 
-    @field_validator("atr_timeframe")
+    @field_validator("risk_pct_default")
+    @classmethod
+    def validate_risk_pct_default(cls, value: float) -> float:
+        if value <= 0:
+            raise ValueError("RISK_PCT_DEFAULT must be greater than zero")
+        return value
+
+    @field_validator("atr_timeframe", "atr_sl_1", "atr_sl_2", "atr_sl_3", "atr_sl_4")
     @classmethod
     def validate_atr_timeframe(cls, value: str) -> str:
         normalized = (value or "").strip()
@@ -156,6 +258,26 @@ class Settings(BaseSettings):
                 "ATR_TIMEFRAME must include a unit suffix in minutes or hours (examples: 3m, 15m, 1h, 4h)"
             )
         return compact
+
+    def atr_sl_timeframes(self) -> list[str]:
+        ordered = [self.atr_sl_1, self.atr_sl_2, self.atr_sl_3, self.atr_sl_4]
+        out: list[str] = []
+        for tf in ordered:
+            if tf and tf not in out:
+                out.append(tf)
+        return out
+
+    def risk_pct_presets(self) -> list[float]:
+        ordered = [self.risk_pct_1, self.risk_pct_2, self.risk_pct_3, self.risk_pct_4]
+        out: list[float] = []
+        for value in ordered:
+            try:
+                parsed = float(value)
+            except Exception:
+                continue
+            if parsed > 0:
+                out.append(parsed)
+        return out or [1.0, 3.0, 6.0, 9.0]
 
     @field_validator(
         "apex_rest_timeout_seconds",
@@ -182,6 +304,22 @@ class Settings(BaseSettings):
         "hyperliquid_reconcile_alert_window_seconds",
         "hyperliquid_reconcile_alert_max_per_window",
         "hyperliquid_order_timeout_alert_max_per_window",
+        "order_classification_orders_raw_fresh_seconds",
+        "order_classification_orders_raw_stale_cutoff_seconds",
+        "order_classification_unknown_persist_seconds",
+        "order_classification_recovery_min_gap_seconds",
+        "order_classification_auto_shadow_seconds",
+        "order_classification_auto_shadow_cooldown_seconds",
+        "order_classification_trigger_epsilon_ratio",
+        "order_classification_size_epsilon_ratio",
+        "hl_disamb_unknown_ttl_seconds",
+        "hl_disamb_order_status_cache_ttl_seconds",
+        "hl_disamb_order_status_global_min_gap_seconds",
+        "hl_disamb_order_status_symbol_min_gap_seconds",
+        "hl_disamb_frontend_snapshot_global_min_gap_seconds",
+        "hl_disamb_frontend_snapshot_symbol_min_gap_seconds",
+        "hl_disamb_sl_confirm_ws_seconds",
+        "hl_disamb_sl_confirm_degraded_seconds",
     )
     @classmethod
     def validate_non_negative(cls, value: float) -> float:
