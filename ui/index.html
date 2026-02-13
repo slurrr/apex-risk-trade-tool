@@ -156,7 +156,10 @@
           <h2>Stream Health (Dev)</h2>
           <p class="muted">Enable with <code>localStorage.dev_stream_health = "1"</code></p>
         </div>
-        <button id="stream-health-refresh" type="button" class="btn ghost">Refresh</button>
+        <div class="positions-header-actions">
+          <button id="stream-health-refresh" type="button" class="btn ghost">Refresh</button>
+          <button id="orders-debug-refresh" type="button" class="btn ghost">Orders Debug</button>
+        </div>
       </div>
       <div class="stream-health-grid">
         <div class="summary-item">
@@ -186,6 +189,8 @@
       </div>
       <div class="stream-health-status muted" id="stream-health-status">Waiting for first poll...</div>
       <pre class="stream-health-raw" id="stream-health-raw"></pre>
+      <div class="stream-health-status muted" id="orders-debug-status">Unknown orders debug not loaded yet.</div>
+      <pre class="stream-health-raw" id="orders-debug-raw"></pre>
     </section>
 
     <section id="orders-section" class="card">

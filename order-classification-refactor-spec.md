@@ -93,9 +93,9 @@ From `orders_raw`:
 - Open Orders stream/payload = **only** `intent=discretionary`
 - Positions TP/SL derivation = **only** `intent=tpsl_helper` (plus local hints while pending confirmation)
 - Unknown orders:
-  - must not appear in Open Orders
-  - must not overwrite last-known-good TP/SL
-  - may be exposed in debug-only diagnostics
+  - MUST NOT appear in Open Orders during normal operation
+  - MUST NOT overwrite last-known-good TP/SL
+  - MUST have an operator escape hatch + escalation policy (see §6.5)
 
 ## 5) Canonical Internal Order Model
 
@@ -175,9 +175,9 @@ Signals that indicate discretionary intent:
 
 To handle short windows where WS rows are missing markers:
 - Maintain a local hint store keyed by:
-  - `client_order_id` (preferred)
-  - `order_id` (fallback)
-  - `(symbol, side, trigger_price)` (last resort, risky—must be time-bounded)
+  - `order_id` (preferred when present; e.g., Hyperliquid `oid`)
+  - `client_order_id` (useful when present, but not reliably available on HL helper legs across the full lifecycle)
+  - **stable fingerprint** (last resort; strictly time-bounded): `(venue, symbol, side, tpsl_kind_if_known, trigger_price≈, size≈)`
 
 Hints are created when:
 - placing a new trade with attached TP/SL legs
@@ -197,18 +197,66 @@ If a row cannot be classified with high confidence:
 - Mark `intent=unknown`
 - Do not publish to Open Orders
 - Do not clear TP/SL representation based on unknowns
-- Increment health counters and (optionally) expose debug stream/panel
+- Increment health counters and expose a required debug/escape hatch path (see §6.5)
+
+### 6.5 Unknown Escalation Policy (Mandatory)
+
+Unknown orders are hidden from Open Orders by default, but they MUST NOT become “silent losses” of real user orders.
+
+Define the following escalation policy:
+
+**Health counters (required)**
+- `order_classification_mode_configured` (`legacy|shadow|v2`)
+- `order_classification_mode_effective` (`legacy|shadow|v2`) (may differ during automatic temporary fallback)
+- `order_classification_auto_switch_until` (unix ms|null)
+- `order_classification_auto_switch_cooldown_until` (unix ms|null)
+- `order_classification_auto_switch_reason` (string|null)
+- `unknown_orders_count`
+- `unknown_orders_rate_5m` (unknown / total, last 5 minutes)
+- `unknown_orders_last_seen_age_seconds`
+- `unknown_orders_last_recovery_action` (string|null)
+
+**Thresholds (initial defaults; tunable)**
+- Trigger escalation if either:
+  - `unknown_orders_count >= 3` within 60 seconds, OR
+  - `unknown_orders_rate_5m >= 0.5%` with at least 200 observed orders, OR
+  - any `unknown` order persists (still unknown) for `>= 20 seconds`
+
+**Automatic recovery actions (in order)**
+1) Force a bounded “freshness recovery” to obtain a newer `orders_raw` snapshot (WS resubscribe if available).
+2) If `orders_raw` is stale or missing after the recovery attempt, run a single REST snapshot recovery (bounded, anti-stormed).
+3) If unknowns persist after recovery, emit a structured warning log and expose them through the debug endpoint contract below.
+4) If `ORDER_CLASSIFICATION_MODE=v2` and unknown escalation persists, automatically and temporarily switch **effective** behavior to `shadow`:
+   - duration: **10 minutes**
+   - cooldown: **30 minutes** before another auto-switch can trigger
+   - continue computing v2 classification/counters for debugging, but publish legacy outputs while in auto-shadow
+   - record `order_classification_auto_switch_*` fields and `unknown_orders_last_recovery_action="auto_switch_to_shadow"`
+
+**Debug endpoint contract (required escape hatch)**
+- `GET /api/orders/debug`
+  - Query params:
+    - `intent=unknown|tpsl_helper|discretionary` (default `unknown`)
+    - `limit` (default 200)
+  - Response includes:
+    - `orders`: list of `CanonicalOrder` (redacted `raw`)
+    - `meta`: counters and last recovery action
+
+This endpoint is required even if it is gated behind “dev mode” or operator auth later; the contract must exist.
 
 ## 7) Dataflow Refactor (Where the Classifier Runs)
 
+**Single owner requirement**:
+- `OrderManager` owns the **classification + publication** pipeline for UI-facing streams.
+- Venue adapters own only **normalization** into `CanonicalOrder` and publication of `orders_raw` (and other raw feeds).
+
 Recommended flow:
 1) Adapter emits `orders_raw` as a list of `CanonicalOrder` (not venue-native dicts).
-2) Shared classifier runs once per `orders_raw` event:
-   - updates internal classification cache
+2) `OrderManager` ingests `orders_raw` and runs the shared classifier once per event:
+   - updates internal classification cache with monotonic apply rules (see §11.2)
    - updates TP/SL targets model
-3) Adapter (or OrderManager) publishes derived streams:
+3) `OrderManager` publishes derived streams:
    - `orders` = discretionary-only canonical orders (for Open Orders UI)
-   - `positions` = positions enriched with TP/SL targets (from classified helper orders + hints)
+   - `positions` enrichment uses TP/SL targets derived from classified helper orders + hints
 
 Migration constraint:
 - During rollout, keep existing behavior behind a flag until verified (see §9).
@@ -233,6 +281,32 @@ Health counters exist for:
 - unknown classification count and rate
 - hint usage count and “hint unconfirmed” count
 - reconcile reason counts and last reconcile reason
+
+## 8.1 SLOs and Ship-Block Gates (Numeric)
+
+These numeric gates are required to prevent regressions during rollout.
+
+**Helper leakage SLO**
+- `helper_leakage_count == 0` over a continuous **8-hour** run under normal operation (per venue).
+
+**Unknown rate SLO**
+- `unknown_orders_rate_5m < 0.5%` in steady state (excluding the first 60 seconds after startup / venue switch).
+- Ship-block if `unknown_orders_rate_5m >= 2%` for any 5-minute window during testing.
+
+**TP/SL convergence SLO**
+- After a modify-targets request:
+  - p95 time-to-correct-positions-display ≤ **2 seconds** (WS healthy)
+  - p95 ≤ **10 seconds** (WS disabled / degraded)
+
+**Reconcile posture SLO**
+- Under WS healthy conditions, reconcile frequency ≤ **1 per 15 minutes** (verification only).
+
+**Temporary rollout guard SLO (TBD removal gate)**
+- While v2 is tuning, a temporary safety guard may suppress helper leakage even when classifier output is ambiguous.
+- Track `classification_guard_block_count` and `classification_guard_block_reasons` in health.
+- Guard removal remains **TBD** until:
+  - `order_classification_mode_effective="v2"` remains stable through soak windows, and
+  - `classification_guard_block_count` stays flat at **0** for the agreed soak interval.
 
 ## 9) Migration Plan (Safe Rollout)
 
@@ -260,12 +334,13 @@ Deliverables:
 Deliverables:
 - ApeX adapter emits canonical `orders_raw` (including explicit isPositionTpsl evidence).
 - Same routing rules for `orders`.
-- Optional: `/v3/history-orders` integrated as supplemental verification input for removal confirmation only.
+- Optional: `/v3/history-orders` integrated as **advisory-only** corroboration/backfill (never a sole removal trigger).
 
 ### Phase 4 — Remove old classification paths
 Deliverables:
 - Remove scattered venue-specific classification hacks.
 - Keep compatibility shims only where necessary for UI schema.
+- Temporary v2 safety guard removal is **TBD** pending soak evidence (see §8.1).
 
 ## 10) Testing Strategy
 
@@ -280,11 +355,64 @@ Deliverables:
 ### Integration scripts
 - Record WS `orders_raw` sequences for both venues and replay into classifier to validate stable output.
 
-## 11) Open Questions / Inputs Needed
+## 11) Event Ordering, Idempotency, and Dedupe Rules (Required)
 
-1) For Hyperliquid: what stable identifiers are always present for helper legs (e.g., `cloid` patterns, parent linkage, grouping metadata)?
-2) For ApeX: confirm `GET /v3/history-orders` response shape and whether it reliably carries TP/SL lifecycle fields needed for supplemental verification.
-3) Do we want unknown orders visible anywhere:
-   - health-only counters (default), or
-   - optional debug UI panel / endpoint?
+WS and REST events can arrive out-of-order. The classification cache must be monotonic.
 
+### 11.1 Dedupe key
+
+Define a canonical key per order:
+1) `order_id` (preferred)
+2) `client_order_id` (fallback)
+3) stable fingerprint hash of (`venue`, `symbol`, `side`, `tpsl_kind_if_known`, `trigger_price≈`, `size≈`) (last resort; time-bounded)
+
+### 11.2 Monotonic apply rule (“latest wins”)
+
+For a given canonical key:
+- Prefer the record with the greatest `updated_at_ms`.
+- If `updated_at_ms` missing on either side, fall back to `created_at_ms`.
+- If both missing, fall back to ingestion time `observed_at_ms`.
+- Tie-breaker: prefer `orders_raw` source over REST snapshot when timestamps tie.
+
+Deletion/removal rule:
+- Do not remove an order from the cache purely because it is missing from a partial/delta payload.
+- Only remove when:
+  - a full snapshot asserts absence, OR
+  - an authoritative terminal status is observed.
+
+## 12) Open Questions / Inputs Needed
+
+1) Specify exact fingerprint “≈” rules:
+   - trigger price rounding/epsilon
+   - size rounding/epsilon
+   - maximum TTL (default 20s) and whether to use per-venue defaults
+2) For ApeX: confirm `GET /v3/history-orders` response shape and the subset of fields used for advisory corroboration/backfill.
+3) Confirm if we want an optional UI dev panel for `/api/orders/debug` (endpoint remains mandatory either way).
+
+## 13) Source-of-Truth Precedence When orders_raw Is Missing/Late/Partial (Required)
+
+`orders_raw` is the authoritative input when it is available and fresh, but the system must define behavior when it is not.
+
+### 13.1 Freshness windows
+
+Define `orders_raw_fresh_seconds` (default: **5 seconds**) as the maximum acceptable age of the last `orders_raw` event when WS is expected to be healthy.
+
+### 13.2 Precedence order (best → worst)
+
+1) **WS `orders_raw` (fresh)**: classify and publish from `orders_raw`.
+2) **WS `orders` only (no `orders_raw`)**: enter *degraded* classification mode:
+   - do not clear TP/SL from positions based on missing helper evidence
+   - publish discretionary orders only when classification confidence is high
+   - trigger escalation/recovery if unknown thresholds are exceeded (see §6.5)
+3) **REST snapshot recovery**: if WS `orders_raw` is stale beyond a cutoff, force one bounded REST refresh to reconstruct a synthetic `orders_raw` snapshot for classification.
+
+### 13.3 Stale cutoff and forced recovery trigger
+
+Define `orders_raw_stale_cutoff_seconds` (default: **30 seconds**).
+
+If:
+- WS is enabled and the last `orders_raw` age exceeds `orders_raw_stale_cutoff_seconds`, OR
+- unknown escalation triggers recovery and WS cannot deliver a fresh `orders_raw`,
+
+Then:
+- run a forced recovery action (WS resubscribe, then one bounded REST snapshot if needed), anti-stormed by a minimum gap (default: **5 seconds**).

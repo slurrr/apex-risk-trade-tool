@@ -2,8 +2,8 @@
 
 **ID**: 0001-canonical-order-schema  
 **Date**: 2026-02-06  
-**Status**: Proposed  
-**Owners**: <fill>  
+**Status**: Accepted  
+**Owners**: Backend team  
 
 ## Context
 
@@ -41,4 +41,3 @@ Adapters must map raw WS/REST order rows into this schema.
 
 - Unit tests for adapter mapping (raw → canonical).
 - Replay captured WS sequences to ensure stable canonicalization.
-

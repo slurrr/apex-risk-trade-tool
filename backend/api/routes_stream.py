@@ -97,19 +97,23 @@ async def stream_updates(
 
     async def _emit_positions_from_cache() -> None:
         cached_positions = list(getattr(gateway, "_ws_positions", {}).values())
-        if not cached_positions:
-            return
         normalized_positions = []
         for pos in cached_positions:
             norm = manager._normalize_position(pos, tpsl_map=manager._tpsl_targets_by_symbol)
             if norm:
                 normalized_positions.append(norm)
-        if normalized_positions:
-            await _send_event("positions", normalized_positions)
+        # Always emit a snapshot (including empty) so the UI can clear rows when
+        # the last open position disappears.
+        await _send_event("positions", normalized_positions)
 
     def _normalize_orders_for_ui(orders_payload) -> list[dict]:
+        if not isinstance(orders_payload, list):
+            return []
+        normalize_fn = getattr(manager, "normalize_open_orders_payload", None)
+        if callable(normalize_fn):
+            return normalize_fn(orders_payload)
         normalized: list[dict] = []
-        for order in orders_payload or []:
+        for order in orders_payload:
             if not isinstance(order, dict):
                 continue
             include_fn = getattr(manager, "_include_in_open_orders", None)
@@ -164,6 +168,9 @@ async def stream_updates(
             initial_orders = list(getattr(gateway, "_ws_orders", {}).values() or [])
         # reconcile TP/SL map from current account raw orders (authoritative on connect)
         try:
+            ingest_fn = getattr(manager, "ingest_orders_raw", None)
+            if callable(ingest_fn):
+                await ingest_fn(initial_orders, source="ws")
             manager._reconcile_tpsl(initial_orders)
         except Exception:
             pass
@@ -224,6 +231,9 @@ async def stream_updates(
                 # )
                 refresh_needed = False
                 try:
+                    ingest_fn = getattr(manager, "ingest_orders_raw", None)
+                    if callable(ingest_fn):
+                        await ingest_fn(raw_orders, source="ws")
                     refresh_needed = manager._reconcile_tpsl(raw_orders)
                 except Exception:
                     refresh_needed = False
@@ -250,6 +260,12 @@ async def stream_updates(
                 # )
             elif event.get("type") == "orders":
                 # Forward orders event without touching TP/SL map (no TP/SL data here)
+                try:
+                    ingest_fn = getattr(manager, "ingest_orders_raw", None)
+                    if callable(ingest_fn):
+                        await ingest_fn(event.get("payload") or [], source="orders")
+                except Exception:
+                    pass
                 msg = {"type": "orders", "payload": _normalize_orders_for_ui(event.get("payload"))}
             elif event.get("type") == "account":
                 msg = {"type": "account", "payload": event.get("payload")}

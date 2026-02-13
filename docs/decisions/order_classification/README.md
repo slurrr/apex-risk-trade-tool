@@ -14,4 +14,5 @@ This folder contains decision records for the cross-venue order classification r
 - **0002** Intent classifier precedence + hints + unknown policy
 - **0003** Publication rules (orders_raw authoritative; discretionary-only open orders)
 - **0004** Migration plan and feature flags
-
+- **0005** Hyperliquid endpoint precedence for intent (frontendOpenOrders + orderStatus enrichment)
+- **0006** Snapshot-authoritative state + WS-accelerated updates (authority flip)

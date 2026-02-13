@@ -51,6 +51,30 @@
     riskDefaultPct: 3,
   };
   let sideToggleControl = null;
+  const symbolSwitchState = {
+    active: false,
+    side: null,
+    token: 0,
+  };
+
+  function beginSymbolSwitchSidePreserve(sideValue) {
+    symbolSwitchState.active = true;
+    symbolSwitchState.side = (sideValue || "").toString().trim().toUpperCase() || null;
+    symbolSwitchState.token += 1;
+    return symbolSwitchState.token;
+  }
+
+  function endSymbolSwitchSidePreserve(token) {
+    if (!symbolSwitchState.active) return;
+    if (token !== symbolSwitchState.token) return;
+    symbolSwitchState.active = false;
+    symbolSwitchState.side = null;
+  }
+
+  function getSymbolSwitchSideLock() {
+    if (!symbolSwitchState.active) return null;
+    return symbolSwitchState.side;
+  }
 
   function normalizeSymbolCode(value) {
     const clean = (value || "").trim().toUpperCase();
@@ -440,9 +464,12 @@
         .filter((v) => /^\d+[mh]$/.test(v));
       state.atrTimeframes = options.length ? options.slice(0, 4) : [...ATR_TIMEFRAMES_FALLBACK];
       const def = (payload?.default_timeframe || "").toString().trim().toLowerCase();
+      const fallbackDefault = state.atrTimeframes.includes(ATR_TIMEFRAME_DEFAULT)
+        ? ATR_TIMEFRAME_DEFAULT
+        : (state.atrTimeframes[1] || state.atrTimeframes[0] || ATR_TIMEFRAME_DEFAULT);
       state.atrDefaultTimeframe = state.atrTimeframes.includes(def)
         ? def
-        : (state.atrTimeframes[0] || ATR_TIMEFRAME_DEFAULT);
+        : fallbackDefault;
       const riskRaw = Array.isArray(payload?.risk_presets) ? payload.risk_presets : [];
       const risk = riskRaw
         .map(normalizeRiskPreset)
@@ -947,6 +974,19 @@
     }
   }
 
+  async function loadOrdersDebug(intent = "unknown") {
+    try {
+      const payload = await fetchJson(
+        `${API_BASE}/api/orders/debug?intent=${encodeURIComponent(intent)}&limit=50&include_raw=1`
+      );
+      setTextContent("orders-debug-raw", JSON.stringify(payload, null, 2));
+      setTextContent("orders-debug-status", `Updated ${new Date().toLocaleTimeString()}`);
+    } catch (err) {
+      const message = err?.message || "Request failed";
+      setTextContent("orders-debug-status", `Failed: ${message}`);
+    }
+  }
+
   function initStreamHealthDiagnostics() {
     const panel = document.getElementById("stream-health-panel");
     if (!panel) return;
@@ -961,10 +1001,17 @@
         loadStreamHealth();
       });
     }
+    const debugBtn = document.getElementById("orders-debug-refresh");
+    if (debugBtn) {
+      debugBtn.addEventListener("click", () => {
+        loadOrdersDebug("unknown");
+      });
+    }
     if (streamHealthTimerId) {
       window.clearInterval(streamHealthTimerId);
     }
     loadStreamHealth();
+    loadOrdersDebug("unknown");
     streamHealthTimerId = window.setInterval(loadStreamHealth, STREAM_HEALTH_POLL_INTERVAL_MS);
   }
 
@@ -1019,13 +1066,16 @@
       selectBtn.className = "symbol-option-btn";
       selectBtn.textContent = sym.code;
       selectBtn.addEventListener("click", () => {
+        const sideInput = document.getElementById("side");
+        const preservedSide = sideInput ? sideInput.value : null;
         symbolDropdownState.suppressOpen = true;
         input.value = sym.code;
         list.classList.remove("open");
         applySymbolPrecision(sym.code);
-        prefillEntryPrice(sym.code);
+        prefillEntryPrice(sym.code, { preserveSide: true, preservedSide });
         updateSymbolClearState();
         input.dispatchEvent(new Event("input", { bubbles: true }));
+        input.dispatchEvent(new Event("change", { bubbles: true }));
         window.setTimeout(() => {
           symbolDropdownState.suppressOpen = false;
         }, 0);
@@ -1330,7 +1380,12 @@
       if (evt?.isTrusted) {
         showInvalidState = true;
       }
-      enforceTradeDirectionConsistency({ autoFlip: true, animate: true });
+      const symbolSwitchLockedSide = getSymbolSwitchSideLock();
+      const shouldAutoFlip = !symbolSwitchLockedSide;
+      enforceTradeDirectionConsistency({ autoFlip: shouldAutoFlip, animate: shouldAutoFlip });
+      if (symbolSwitchLockedSide) {
+        setSideValue(symbolSwitchLockedSide, { silent: true, force: true });
+      }
       const current = assessTradeDirection(entryInput.value, stopInput.value, sideInput.value);
       refreshInvalidState(current);
     };
@@ -1404,18 +1459,41 @@
     }
   }
 
-  async function prefillEntryPrice(symbol) {
+  async function prefillEntryPrice(symbol, options = {}) {
+    const { preserveSide = false, preservedSide = null } = options;
     const entryInput = document.getElementById("entry_price");
     if (!entryInput || !symbol) return;
     const normalized = normalizeSymbolCode(symbol);
+    const lockSide = preserveSide ? (preservedSide || getSymbolSwitchSideLock()) : null;
+    let lockToken = null;
     if (normalized) {
       applySymbolPrecision(normalized);
     }
-    const price = await fetchSymbolPrice(symbol);
-    if (price !== null && price !== undefined) {
-      const snapped = snapToInputStep(price, entryInput);
-      entryInput.value = snapped;
-      entryInput.dispatchEvent(new Event("input", { bubbles: true }));
+    try {
+      const price = await fetchSymbolPrice(symbol);
+      if (lockSide) {
+        lockToken = beginSymbolSwitchSidePreserve(lockSide);
+      }
+      if (price !== null && price !== undefined) {
+        const snapped = snapToInputStep(price, entryInput);
+        entryInput.value = snapped;
+        entryInput.dispatchEvent(new Event("input", { bubbles: true }));
+      }
+      if (lockSide) {
+        setSideValue(lockSide, { silent: true, force: true });
+      }
+      window.dispatchEvent(
+        new CustomEvent("trade:symbol-entry-prefilled", {
+          detail: {
+            symbol: normalized || symbol,
+            side: lockSide || null,
+          },
+        })
+      );
+    } finally {
+      if (lockToken !== null) {
+        window.setTimeout(() => endSymbolSwitchSidePreserve(lockToken), 0);
+      }
     }
   }
 

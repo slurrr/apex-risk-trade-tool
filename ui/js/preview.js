@@ -8,6 +8,7 @@
   const getAtrTimeframe = window.TradeApp && window.TradeApp.getAtrTimeframe;
   const enforceTradeDirectionConsistency =
     (window.TradeApp && window.TradeApp.enforceTradeDirectionConsistency) || (() => ({ valid: true }));
+  const setSideValue = (window.TradeApp && window.TradeApp.setSideValue) || null;
   const warnUserPopup = (window.TradeApp && window.TradeApp.warnUserPopup) || ((msg) => window.alert(msg));
   const markStopInputInvalid = (window.TradeApp && window.TradeApp.markStopInputInvalid) || (() => {});
   const snapToStep = (window.TradeApp && window.TradeApp.snapToInputStep) || ((value) => value);
@@ -219,6 +220,27 @@
       clearManualOverride();
       atrState.lastAutoPrice = null;
       schedule();
+    });
+    window.addEventListener("trade:symbol-entry-prefilled", (evt) => {
+      const detail = evt?.detail || {};
+      const currentSymbol = validateSymbol(symbolInput.value);
+      const eventSymbol = validateSymbol(detail.symbol);
+      if (!currentSymbol || !eventSymbol || currentSymbol !== eventSymbol) {
+        return;
+      }
+      const preservedSide = normalizedSide(detail.side);
+      if (preservedSide) {
+        const preservedRaw = preservedSide === "long" ? "BUY" : "SELL";
+        if (setSideValue) {
+          setSideValue(preservedRaw, { force: true });
+        } else {
+          sideSelect.value = preservedRaw;
+          sideSelect.dispatchEvent(new Event("change", { bubbles: true }));
+        }
+      }
+      clearManualOverride();
+      atrState.lastAutoPrice = null;
+      runAtrAutofill(symbolInput, entryInput, sideSelect, stopInput, { force: true });
     });
 
     stopInput.addEventListener("input", () => {

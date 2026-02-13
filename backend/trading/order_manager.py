@@ -1,11 +1,19 @@
 from decimal import Decimal, InvalidOperation
+from collections import deque
 from typing import Any, Dict, Optional, Tuple
 import re
 import time
 
 from backend.core.logging import get_logger
+from backend.core.config import get_settings
 from backend.exchange.exchange_gateway import ExchangeGateway
 from backend.risk import risk_engine
+from backend.trading.order_classification import (
+    build_canonical_order,
+    canonical_order_key,
+    classify_intent,
+    is_terminal_canonical,
+)
 
 logger = get_logger(__name__)
 trade_audit_logger = get_logger("audit.trade")
@@ -65,7 +73,7 @@ class OrderManager:
         self._tpsl_targets_by_symbol: Dict[str, Dict[str, float]] = {}
         self._tpsl_order_meta_by_symbol: Dict[str, Dict[str, int]] = {}
         self._tpsl_local_hints: Dict[str, Dict[str, Any]] = {}
-        settings = getattr(gateway, "settings", None)
+        settings = getattr(gateway, "settings", None) or get_settings()
         self._tpsl_hint_ttl_seconds = max(
             0.0,
             float(getattr(settings, "apex_local_hint_ttl_seconds", 20.0) or 20.0),
@@ -76,6 +84,737 @@ class OrderManager:
         self._tpsl_backfill_min_gap_seconds = 5.0
         self._hl_transient_helper_hint_ttl_seconds = 20.0
         self._hl_transient_helper_hints: list[Dict[str, Any]] = []
+        self._discretionary_hint_ttl_seconds = 120.0
+        self._discretionary_intent_hints: list[Dict[str, Any]] = []
+        self._hl_disamb_unknown_ttl_seconds = 20.0
+        self._hl_order_status_cache_ttl_seconds = 20.0
+        self._hl_order_status_global_min_gap_seconds = 0.5
+        self._hl_order_status_symbol_min_gap_seconds = 1.0
+        self._hl_snapshot_global_min_gap_seconds = 10.0
+        self._hl_snapshot_symbol_min_gap_seconds = 20.0
+        self._hl_sl_confirm_ws_seconds = 2.0
+        self._hl_sl_confirm_degraded_seconds = 10.0
+        self._hl_order_status_cache: Dict[str, Dict[str, Any]] = {}
+        self._hl_order_status_last_global_ts = 0.0
+        self._hl_order_status_last_symbol_ts: Dict[str, float] = {}
+        self._hl_snapshot_last_global_ts = 0.0
+        self._hl_snapshot_last_symbol_ts: Dict[str, float] = {}
+        self._hl_disamb_ambiguous_observed_count = 0
+        self._hl_disamb_enrich_attempts = 0
+        self._hl_disamb_enrich_success = 0
+        self._hl_disamb_enrich_failure = 0
+        self._hl_disamb_enrich_rate_limited = 0
+        self._hl_disamb_enrich_cache_hit = 0
+        self._hl_disamb_enrich_no_oid = 0
+        self._hl_disamb_snapshot_fallback_attempts = 0
+        self._hl_disamb_snapshot_fallback_success = 0
+        self._hl_disamb_snapshot_fallback_failure = 0
+        self._hl_disamb_snapshot_fallback_rate_limited = 0
+        self._hl_disamb_sl_hint_timeout_count = 0
+        self._order_classification_mode_configured = "legacy"
+        self._order_classification_mode_effective = "legacy"
+        self._orders_raw_fresh_seconds = 5.0
+        self._orders_raw_stale_cutoff_seconds = 30.0
+        self._unknown_threshold_count_60s = 3
+        self._unknown_threshold_rate_5m = 0.005
+        self._unknown_threshold_min_total_5m = 200
+        self._unknown_persist_seconds = 20.0
+        self._classification_recovery_min_gap_seconds = 5.0
+        self._auto_shadow_seconds = 600.0
+        self._auto_shadow_cooldown_seconds = 1800.0
+        self._trigger_epsilon_ratio = 0.0005
+        self._size_epsilon_ratio = 0.02
+        self._classification_cache: Dict[str, Dict[str, Any]] = {}
+        self._unknown_first_seen_by_key: Dict[str, float] = {}
+        self._classification_window_total_5m: deque[float] = deque()
+        self._classification_window_unknown_5m: deque[float] = deque()
+        self._classification_window_unknown_60s: deque[float] = deque()
+        self._unknown_orders_last_seen_ts: Optional[float] = None
+        self._unknown_orders_last_recovery_action: Optional[str] = None
+        self._last_orders_raw_ts: float = 0.0
+        self._last_classification_recovery_ts: float = 0.0
+        self._order_classification_auto_switch_until: Optional[float] = None
+        self._order_classification_auto_switch_cooldown_until: Optional[float] = None
+        self._order_classification_auto_switch_reason: Optional[str] = None
+        self._recent_debug_orders: Dict[str, Dict[str, Any]] = {}
+        self._classification_guard_block_count = 0
+        self._classification_guard_block_reasons: Dict[str, int] = {}
+        self._configure_order_classification(settings)
+
+    def _configure_order_classification(self, settings: Any) -> None:
+        if settings is None:
+            return
+        self._order_classification_mode_configured = str(
+            getattr(settings, "order_classification_mode", "legacy") or "legacy"
+        ).strip().lower()
+        self._order_classification_mode_effective = self._order_classification_mode_configured
+        self._orders_raw_fresh_seconds = max(
+            0.0,
+            float(getattr(settings, "order_classification_orders_raw_fresh_seconds", 5.0) or 0.0),
+        )
+        self._orders_raw_stale_cutoff_seconds = max(
+            0.0,
+            float(getattr(settings, "order_classification_orders_raw_stale_cutoff_seconds", 30.0) or 0.0),
+        )
+        self._unknown_threshold_count_60s = max(
+            1,
+            int(getattr(settings, "order_classification_unknown_threshold_count_60s", 3) or 3),
+        )
+        self._unknown_threshold_rate_5m = max(
+            0.0,
+            float(getattr(settings, "order_classification_unknown_threshold_rate_5m", 0.005) or 0.0),
+        )
+        self._unknown_threshold_min_total_5m = max(
+            1,
+            int(getattr(settings, "order_classification_unknown_threshold_min_total_5m", 200) or 200),
+        )
+        self._unknown_persist_seconds = max(
+            0.0,
+            float(getattr(settings, "order_classification_unknown_persist_seconds", 20.0) or 0.0),
+        )
+        self._classification_recovery_min_gap_seconds = max(
+            0.0,
+            float(getattr(settings, "order_classification_recovery_min_gap_seconds", 5.0) or 0.0),
+        )
+        self._auto_shadow_seconds = max(
+            0.0,
+            float(getattr(settings, "order_classification_auto_shadow_seconds", 600.0) or 0.0),
+        )
+        self._auto_shadow_cooldown_seconds = max(
+            0.0,
+            float(getattr(settings, "order_classification_auto_shadow_cooldown_seconds", 1800.0) or 0.0),
+        )
+        self._trigger_epsilon_ratio = max(
+            0.0,
+            float(getattr(settings, "order_classification_trigger_epsilon_ratio", 0.0005) or 0.0),
+        )
+        self._size_epsilon_ratio = max(
+            0.0,
+            float(getattr(settings, "order_classification_size_epsilon_ratio", 0.02) or 0.0),
+        )
+        self._hl_disamb_unknown_ttl_seconds = max(
+            1.0,
+            float(getattr(settings, "hl_disamb_unknown_ttl_seconds", 20.0) or 20.0),
+        )
+        self._hl_order_status_cache_ttl_seconds = max(
+            1.0,
+            float(getattr(settings, "hl_disamb_order_status_cache_ttl_seconds", 20.0) or 20.0),
+        )
+        self._hl_order_status_global_min_gap_seconds = max(
+            0.0,
+            float(getattr(settings, "hl_disamb_order_status_global_min_gap_seconds", 0.5) or 0.0),
+        )
+        self._hl_order_status_symbol_min_gap_seconds = max(
+            0.0,
+            float(getattr(settings, "hl_disamb_order_status_symbol_min_gap_seconds", 1.0) or 0.0),
+        )
+        self._hl_snapshot_global_min_gap_seconds = max(
+            0.0,
+            float(getattr(settings, "hl_disamb_frontend_snapshot_global_min_gap_seconds", 10.0) or 0.0),
+        )
+        self._hl_snapshot_symbol_min_gap_seconds = max(
+            0.0,
+            float(getattr(settings, "hl_disamb_frontend_snapshot_symbol_min_gap_seconds", 20.0) or 0.0),
+        )
+        self._hl_sl_confirm_ws_seconds = max(
+            0.5,
+            float(getattr(settings, "hl_disamb_sl_confirm_ws_seconds", 2.0) or 2.0),
+        )
+        self._hl_sl_confirm_degraded_seconds = max(
+            self._hl_sl_confirm_ws_seconds,
+            float(getattr(settings, "hl_disamb_sl_confirm_degraded_seconds", 10.0) or 10.0),
+        )
+
+    def _resolve_order_classification_mode_effective(self) -> str:
+        now = time.time()
+        configured = self._order_classification_mode_configured
+        if configured != "v2":
+            self._order_classification_mode_effective = configured
+            return self._order_classification_mode_effective
+        if self._order_classification_auto_switch_until and now < self._order_classification_auto_switch_until:
+            self._order_classification_mode_effective = "shadow"
+            return self._order_classification_mode_effective
+        self._order_classification_mode_effective = "v2"
+        if self._order_classification_auto_switch_until and now >= self._order_classification_auto_switch_until:
+            self._order_classification_auto_switch_until = None
+        return self._order_classification_mode_effective
+
+    def _cleanup_classification_windows(self, now: Optional[float] = None) -> None:
+        ts = float(now if now is not None else time.time())
+        while self._classification_window_total_5m and (ts - self._classification_window_total_5m[0]) > 300.0:
+            self._classification_window_total_5m.popleft()
+        while self._classification_window_unknown_5m and (ts - self._classification_window_unknown_5m[0]) > 300.0:
+            self._classification_window_unknown_5m.popleft()
+        while self._classification_window_unknown_60s and (ts - self._classification_window_unknown_60s[0]) > 60.0:
+            self._classification_window_unknown_60s.popleft()
+        for key, first_seen in list(self._unknown_first_seen_by_key.items()):
+            if (ts - float(first_seen or 0.0)) > max(600.0, self._unknown_persist_seconds * 4):
+                self._unknown_first_seen_by_key.pop(key, None)
+        venue = (getattr(self.gateway, "venue", "") or "").strip().lower()
+        if venue == "hyperliquid":
+            unknown_ttl_ms = int(float(self._hl_disamb_unknown_ttl_seconds) * 1000)
+            for key, record in list(self._classification_cache.items()):
+                if str(record.get("intent") or "").lower() != "unknown":
+                    continue
+                if record.get("order_id"):
+                    continue
+                observed_at = int(record.get("observed_at_ms") or 0)
+                if observed_at <= 0:
+                    continue
+                if int(ts * 1000) - observed_at > unknown_ttl_ms:
+                    self._classification_cache.pop(key, None)
+                    self._recent_debug_orders.pop(key, None)
+            for oid, cached in list(self._hl_order_status_cache.items()):
+                if float(cached.get("expires_at") or 0.0) <= ts:
+                    self._hl_order_status_cache.pop(oid, None)
+            for symbol, last_ts in list(self._hl_order_status_last_symbol_ts.items()):
+                if (ts - float(last_ts or 0.0)) > 300.0:
+                    self._hl_order_status_last_symbol_ts.pop(symbol, None)
+            for symbol, last_ts in list(self._hl_snapshot_last_symbol_ts.items()):
+                if (ts - float(last_ts or 0.0)) > 300.0:
+                    self._hl_snapshot_last_symbol_ts.pop(symbol, None)
+
+    @staticmethod
+    def _is_hl_ambiguous_reduce_only(canonical: Dict[str, Any]) -> bool:
+        if str(canonical.get("venue") or "").lower() != "hyperliquid":
+            return False
+        if not bool(canonical.get("reduce_only")):
+            return False
+        if str(canonical.get("order_kind") or "").upper() not in {"LIMIT", "MARKET"}:
+            return False
+        if canonical.get("trigger_price") is not None:
+            return False
+        if bool(canonical.get("is_tpsl_flag")):
+            return False
+        if canonical.get("client_order_id"):
+            return False
+        return True
+
+    def _get_symbol_tick_step(self, symbol: Optional[str]) -> tuple[Optional[float], Optional[float]]:
+        if not symbol:
+            return None, None
+        info = self.gateway.get_symbol_info(symbol)
+        if not isinstance(info, dict):
+            return None, None
+        tick = _coerce_float(info.get("tickSize") or info.get("tick_size"))
+        step = _coerce_float(info.get("stepSize") or info.get("step_size"))
+        return tick, step
+
+    def _helper_hint_for_canonical(self, canonical: Dict[str, Any]) -> bool:
+        symbol = self._normalize_symbol_value(canonical.get("symbol"))
+        if not symbol:
+            return False
+        tracked = {}
+        tracked.update(self._tpsl_targets_by_symbol.get(symbol) or {})
+        tracked.update(self.position_targets.get(symbol) or {})
+        if not tracked:
+            return False
+        trigger_price = _coerce_float(canonical.get("trigger_price") or canonical.get("limit_price"))
+        if trigger_price is None:
+            return False
+        tick, step = self._get_symbol_tick_step(symbol)
+        trigger_eps = max(
+            float(tick or 0.0),
+            abs(float(trigger_price)) * float(self._trigger_epsilon_ratio or 0.0005),
+            1e-6,
+        )
+        size_val = _coerce_float(canonical.get("size"))
+        size_eps = max(
+            float(step or 0.0),
+            abs(float(size_val or 0.0)) * float(self._size_epsilon_ratio or 0.02),
+            1e-6,
+        )
+        for target_key in ("take_profit", "stop_loss"):
+            target = _coerce_float(tracked.get(target_key))
+            if target is None:
+                continue
+            if abs(float(trigger_price) - float(target)) > trigger_eps:
+                continue
+            if size_val is not None:
+                pos = next(
+                    (
+                        p
+                        for p in self.positions
+                        if self._normalize_symbol_value(p.get("symbol")) == symbol
+                    ),
+                    None,
+                )
+                if pos:
+                    pos_size = _coerce_float(pos.get("size"))
+                    if pos_size is not None and abs(abs(float(size_val)) - abs(float(pos_size))) > size_eps:
+                        continue
+            return True
+        return False
+
+    def _select_more_recent_record(self, current: Dict[str, Any], incoming: Dict[str, Any]) -> Dict[str, Any]:
+        def _is_enriched(record: Dict[str, Any]) -> bool:
+            evidence = record.get("evidence") or {}
+            if isinstance(evidence, dict) and bool(evidence.get("enriched_order_status")):
+                return True
+            if bool(record.get("__enriched_order_status")):
+                return True
+            return str(record.get("source") or "").strip().lower() == "enrichment"
+
+        def _order_time(record: Dict[str, Any]) -> int:
+            return int(
+                record.get("updated_at_ms")
+                or record.get("created_at_ms")
+                or record.get("observed_at_ms")
+                or 0
+            )
+
+        current_intent = str(current.get("intent") or "").strip().lower()
+        incoming_intent = str(incoming.get("intent") or "").strip().lower()
+        current_enriched = _is_enriched(current)
+        incoming_enriched = _is_enriched(incoming)
+        same_hl_order = (
+            str(current.get("venue") or "").strip().lower() == "hyperliquid"
+            and str(incoming.get("venue") or "").strip().lower() == "hyperliquid"
+            and str(current.get("order_id") or "").strip()
+            and str(current.get("order_id") or "").strip() == str(incoming.get("order_id") or "").strip()
+        )
+        # Hyperliquid disambiguation precedence: if WS is still unknown/ambiguous and an
+        # orderStatus-enriched record arrives for the same order key, keep enriched.
+        if same_hl_order and incoming_enriched and not current_enriched:
+            if current_intent == "unknown" or incoming_intent in {"discretionary", "tpsl_helper"}:
+                return incoming
+
+        cur_t = _order_time(current)
+        in_t = _order_time(incoming)
+        if in_t > cur_t:
+            return incoming
+        if in_t < cur_t:
+            if same_hl_order and incoming_enriched and current_intent == "unknown":
+                return incoming
+            return current
+        in_src = str(incoming.get("source") or "")
+        cur_src = str(current.get("source") or "")
+        if incoming_enriched and not current_enriched:
+            return incoming
+        if in_src == "ws" and cur_src != "ws":
+            return incoming
+        return current
+
+    def _ingest_canonical_orders(
+        self,
+        raw_orders: list[Dict[str, Any]],
+        *,
+        source: str,
+        observed_at_ms: Optional[int] = None,
+    ) -> Dict[str, int]:
+        observed = int(observed_at_ms if observed_at_ms is not None else time.time() * 1000)
+        now = time.time()
+        total = 0
+        unknown = 0
+        ambiguous = 0
+        processed_keys: set[str] = set()
+        venue = (getattr(self.gateway, "venue", "") or "unknown").lower()
+        for order in raw_orders or []:
+            if not isinstance(order, dict):
+                continue
+            total += 1
+            canonical = build_canonical_order(order, venue=venue, source=source, observed_at_ms=observed)
+            key = canonical_order_key(canonical)
+            helper_hint = self._helper_hint_for_canonical(canonical)
+            if self._matches_discretionary_intent_hint(canonical):
+                intent, confidence, reasons = "discretionary", "high", ["local_discretionary_hint"]
+            else:
+                intent, confidence, reasons = classify_intent(canonical, helper_hint=helper_hint)
+            canonical["intent"] = intent
+            canonical["confidence"] = confidence
+            canonical["reasons"] = reasons
+            canonical["classification_key"] = key
+            if self._is_hl_ambiguous_reduce_only(canonical):
+                ambiguous += 1
+            existing = self._classification_cache.get(key)
+            if existing:
+                canonical = self._select_more_recent_record(existing, canonical)
+            final_intent = str(canonical.get("intent") or "unknown")
+            if is_terminal_canonical(canonical):
+                self._classification_cache.pop(key, None)
+                self._unknown_first_seen_by_key.pop(key, None)
+                self._recent_debug_orders[key] = canonical
+                continue
+            self._classification_cache[key] = canonical
+            self._recent_debug_orders[key] = canonical
+            if len(self._recent_debug_orders) > 1000:
+                stale = next(iter(self._recent_debug_orders.keys()))
+                self._recent_debug_orders.pop(stale, None)
+            processed_keys.add(key)
+            self._classification_window_total_5m.append(now)
+            if final_intent == "unknown":
+                unknown += 1
+                self._classification_window_unknown_5m.append(now)
+                self._classification_window_unknown_60s.append(now)
+                self._unknown_orders_last_seen_ts = now
+                is_first_seen_unknown = key not in self._unknown_first_seen_by_key
+                self._unknown_first_seen_by_key.setdefault(key, now)
+                if is_first_seen_unknown:
+                    logger.warning(
+                        "order_classification_unknown_observed",
+                        extra={
+                            "event": "order_classification_unknown_observed",
+                            "key": key,
+                            "venue": canonical.get("venue"),
+                            "symbol": canonical.get("symbol"),
+                            "order_id": canonical.get("order_id"),
+                            "client_order_id": canonical.get("client_order_id"),
+                            "order_kind": canonical.get("order_kind"),
+                            "status": canonical.get("status"),
+                            "side": canonical.get("side"),
+                            "reduce_only": canonical.get("reduce_only"),
+                            "trigger_price": canonical.get("trigger_price"),
+                            "limit_price": canonical.get("limit_price"),
+                            "is_tpsl_flag": canonical.get("is_tpsl_flag"),
+                            "reasons": canonical.get("reasons"),
+                            "raw": canonical.get("raw"),
+                        },
+                    )
+            else:
+                self._unknown_first_seen_by_key.pop(key, None)
+        if source == "ws":
+            self._last_orders_raw_ts = now
+        self._cleanup_classification_windows(now)
+        self._resolve_order_classification_mode_effective()
+        return {"total": total, "unknown": unknown, "ambiguous": ambiguous, "processed": len(processed_keys)}
+
+    def _unknown_rate_5m(self) -> float:
+        total = len(self._classification_window_total_5m)
+        if total <= 0:
+            return 0.0
+        return float(len(self._classification_window_unknown_5m)) / float(total)
+
+    def _has_persistent_unknown(self, *, now: Optional[float] = None) -> bool:
+        ts = float(now if now is not None else time.time())
+        if self._unknown_persist_seconds <= 0:
+            return False
+        for first_seen in self._unknown_first_seen_by_key.values():
+            if ts - float(first_seen or 0.0) >= self._unknown_persist_seconds:
+                return True
+        return False
+
+    def _should_escalate_unknowns(self, *, now: Optional[float] = None) -> bool:
+        ts = float(now if now is not None else time.time())
+        self._cleanup_classification_windows(ts)
+        if len(self._classification_window_unknown_60s) >= self._unknown_threshold_count_60s:
+            return True
+        total_5m = len(self._classification_window_total_5m)
+        if total_5m >= self._unknown_threshold_min_total_5m and self._unknown_rate_5m() >= self._unknown_threshold_rate_5m:
+            return True
+        if self._has_persistent_unknown(now=ts):
+            return True
+        return False
+
+    async def _recover_unknown_orders(self) -> bool:
+        now = time.time()
+        if (
+            self._last_classification_recovery_ts > 0
+            and (now - self._last_classification_recovery_ts) < self._classification_recovery_min_gap_seconds
+        ):
+            return False
+        self._last_classification_recovery_ts = now
+        self._unknown_orders_last_recovery_action = "rest_snapshot_recovery"
+        refresher = getattr(self.gateway, "refresh_account_orders_from_rest", None)
+        if not callable(refresher):
+            return False
+        try:
+            snapshot = await refresher()
+        except Exception as exc:
+            logger.warning(
+                "order_classification_recovery_failed",
+                extra={"event": "order_classification_recovery_failed", "error": str(exc)},
+            )
+            return False
+        if not snapshot:
+            return False
+        self._ingest_canonical_orders(snapshot, source="rest")
+        return True
+
+    def _maybe_auto_switch_to_shadow(self) -> None:
+        now = time.time()
+        if self._order_classification_mode_configured != "v2":
+            return
+        cooldown_until = self._order_classification_auto_switch_cooldown_until
+        if cooldown_until and now < cooldown_until:
+            return
+        self._order_classification_auto_switch_until = now + self._auto_shadow_seconds
+        self._order_classification_auto_switch_cooldown_until = now + self._auto_shadow_cooldown_seconds
+        self._order_classification_auto_switch_reason = "unknown_escalation"
+        self._unknown_orders_last_recovery_action = "auto_switch_to_shadow"
+        self._resolve_order_classification_mode_effective()
+
+    def _hl_ambiguous_candidates_from_rows(self, raw_orders: list[Dict[str, Any]], *, source: str) -> list[Dict[str, Any]]:
+        venue = (getattr(self.gateway, "venue", "") or "").strip().lower()
+        if venue != "hyperliquid":
+            return []
+        out: list[Dict[str, Any]] = []
+        for row in raw_orders or []:
+            if not isinstance(row, dict):
+                continue
+            canonical = build_canonical_order(row, venue=venue, source=source)
+            if not self._is_hl_ambiguous_reduce_only(canonical):
+                continue
+            out.append(
+                {
+                    "oid": str(canonical.get("order_id") or "").strip(),
+                    "symbol": self._normalize_symbol_value(canonical.get("symbol")),
+                    "raw": row,
+                }
+            )
+        return out
+
+    async def _enrich_hl_ambiguous_orders(self, candidates: list[Dict[str, Any]]) -> None:
+        venue = (getattr(self.gateway, "venue", "") or "").strip().lower()
+        if venue != "hyperliquid" or not candidates:
+            return
+        now = time.time()
+        self._cleanup_classification_windows(now)
+        status_getter = getattr(self.gateway, "query_order_status_by_oid", None)
+        if not callable(status_getter):
+            return
+        seen: set[str] = set()
+        for candidate in candidates:
+            oid = str(candidate.get("oid") or "").strip()
+            symbol = self._normalize_symbol_value(candidate.get("symbol"))
+            if not oid:
+                self._hl_disamb_enrich_no_oid += 1
+                continue
+            if oid in seen:
+                continue
+            seen.add(oid)
+            self._hl_disamb_ambiguous_observed_count += 1
+            cached = self._hl_order_status_cache.get(oid)
+            if cached and float(cached.get("expires_at") or 0.0) > now:
+                cached_row = cached.get("order")
+                if isinstance(cached_row, dict):
+                    self._hl_disamb_enrich_cache_hit += 1
+                    self._ingest_canonical_orders([cached_row], source="enrichment")
+                continue
+            if (
+                self._hl_order_status_global_min_gap_seconds > 0
+                and (now - self._hl_order_status_last_global_ts) < self._hl_order_status_global_min_gap_seconds
+            ):
+                self._hl_disamb_enrich_rate_limited += 1
+                continue
+            symbol_last = float(self._hl_order_status_last_symbol_ts.get(symbol, 0.0) or 0.0)
+            if (
+                symbol
+                and self._hl_order_status_symbol_min_gap_seconds > 0
+                and (now - symbol_last) < self._hl_order_status_symbol_min_gap_seconds
+            ):
+                self._hl_disamb_enrich_rate_limited += 1
+                continue
+            self._hl_order_status_last_global_ts = now
+            if symbol:
+                self._hl_order_status_last_symbol_ts[symbol] = now
+            self._hl_disamb_enrich_attempts += 1
+            try:
+                enriched = await status_getter(oid)
+            except Exception as exc:
+                self._hl_disamb_enrich_failure += 1
+                logger.warning(
+                    "hl_disamb_enrich_order_status_failed",
+                    extra={
+                        "event": "hl_disamb_enrich_order_status_failed",
+                        "oid": oid,
+                        "symbol": symbol,
+                        "error": str(exc),
+                    },
+                )
+                continue
+            if not isinstance(enriched, dict):
+                self._hl_disamb_enrich_failure += 1
+                logger.warning(
+                    "hl_disamb_enrich_order_status_empty",
+                    extra={
+                        "event": "hl_disamb_enrich_order_status_empty",
+                        "oid": oid,
+                        "symbol": symbol,
+                        "response_type": type(enriched).__name__,
+                    },
+                )
+                continue
+            enriched["__enriched_order_status"] = True
+            self._hl_order_status_cache[oid] = {
+                "expires_at": now + self._hl_order_status_cache_ttl_seconds,
+                "order": enriched,
+            }
+            self._hl_disamb_enrich_success += 1
+            self._ingest_canonical_orders([enriched], source="enrichment")
+
+    async def process_orders_raw_event(self, raw_orders: list[Dict[str, Any]], *, source: str = "ws") -> Dict[str, int]:
+        stats = self._ingest_canonical_orders(raw_orders, source=source)
+        venue = (getattr(self.gateway, "venue", "") or "").strip().lower()
+        candidates = self._hl_ambiguous_candidates_from_rows(raw_orders, source=source)
+        if candidates:
+            await self._enrich_hl_ambiguous_orders(candidates)
+            # Hyperliquid ambiguous rows are resolved via orderStatus enrichment;
+            # avoid immediate generic REST recovery loops for this path.
+            if venue == "hyperliquid":
+                return stats
+        if not self._should_escalate_unknowns():
+            return stats
+        recovered = await self._recover_unknown_orders()
+        if not recovered or self._should_escalate_unknowns():
+            self._maybe_auto_switch_to_shadow()
+        return stats
+
+    def _intent_for_order(self, order: Dict[str, Any]) -> str:
+        venue = (getattr(self.gateway, "venue", "") or "unknown").lower()
+        canonical = build_canonical_order(order, venue=venue, source="view")
+        if self._matches_discretionary_intent_hint(canonical):
+            return "discretionary"
+        key = canonical_order_key(canonical)
+        cached = self._classification_cache.get(key)
+        if cached:
+            return str(cached.get("intent") or "unknown")
+        helper_hint = self._helper_hint_for_canonical(canonical)
+        intent, _confidence, _reasons = classify_intent(canonical, helper_hint=helper_hint)
+        return intent
+
+    def _legacy_include_in_open_orders(self, order: Dict[str, Any]) -> bool:
+        status_raw = str(order.get("status") or order.get("state") or order.get("orderStatus") or "").strip().lower()
+        if status_raw:
+            terminal_exact = {
+                "filled",
+                "triggered",
+                "canceled",
+                "cancelled",
+                "rejected",
+                "expired",
+                "failed",
+                "closed",
+                "done",
+                "perpmarginrejected",
+            }
+            if status_raw in terminal_exact:
+                return False
+            if any(token in status_raw for token in ("cancel", "reject", "expire", "fail", "closed")):
+                return False
+            if status_raw.startswith("fill"):
+                return False
+            if status_raw == "triggered":
+                return False
+        venue = (getattr(self.gateway, "venue", "") or "").strip().lower()
+        if venue == "hyperliquid":
+            canonical = build_canonical_order(order, venue="hyperliquid", source="legacy_filter")
+            helper_hint = self._helper_hint_for_canonical(canonical)
+            legacy_intent, _legacy_confidence, _legacy_reasons = classify_intent(canonical, helper_hint=helper_hint)
+            if legacy_intent == "tpsl_helper":
+                self._classification_guard_block_count += 1
+                self._classification_guard_block_reasons["legacy_classifier_tpsl_helper"] = (
+                    self._classification_guard_block_reasons.get("legacy_classifier_tpsl_helper", 0) + 1
+                )
+                return False
+            if self._matches_hl_known_target_helper(order):
+                return False
+            if self._matches_hl_transient_helper_hint(order):
+                return False
+            reduce_only = order.get("reduceOnly")
+            if reduce_only is None:
+                reduce_only = order.get("reduce_only")
+            order_type = str(order.get("type") or order.get("orderType") or order.get("order_type") or "").upper()
+            triggerish = bool(
+                order.get("isTrigger")
+                or order.get("triggerPrice")
+                or order.get("triggerPx")
+                or order_type.startswith(("STOP", "TAKE_PROFIT", "TRIGGER"))
+                or (
+                    isinstance(order.get("orderType"), dict)
+                    and isinstance(order.get("orderType", {}).get("trigger"), dict)
+                )
+            )
+            if bool(reduce_only) and triggerish:
+                return False
+        if self._is_tpsl_order(order):
+            return False
+        return True
+
+    def get_orders_debug(
+        self,
+        *,
+        intent: str = "unknown",
+        limit: int = 200,
+        include_raw: bool = False,
+    ) -> Dict[str, Any]:
+        wanted = (intent or "unknown").strip().lower()
+        if wanted not in {"unknown", "tpsl_helper", "discretionary"}:
+            wanted = "unknown"
+        cap = max(1, min(int(limit or 200), 1000))
+        rows = [
+            record
+            for record in self._recent_debug_orders.values()
+            if str(record.get("intent") or "").lower() == wanted
+        ]
+        rows.sort(key=lambda row: int(row.get("observed_at_ms") or 0), reverse=True)
+        redacted = []
+        for row in rows[:cap]:
+            payload = dict(row)
+            if "raw" in payload and not include_raw:
+                payload["raw"] = {"present": True}
+            redacted.append(payload)
+        now = time.time()
+        self._cleanup_classification_windows(now)
+        total_5m = len(self._classification_window_total_5m)
+        unknown_5m = len(self._classification_window_unknown_5m)
+        return {
+            "orders": redacted,
+            "meta": {
+                "order_classification_mode_configured": self._order_classification_mode_configured,
+                "order_classification_mode_effective": self._resolve_order_classification_mode_effective(),
+                "unknown_orders_count": len(self._unknown_first_seen_by_key),
+                "unknown_orders_rate_5m": (float(unknown_5m) / float(total_5m)) if total_5m else 0.0,
+                "unknown_orders_last_seen_age_seconds": (
+                    (now - self._unknown_orders_last_seen_ts) if self._unknown_orders_last_seen_ts else None
+                ),
+                "unknown_orders_last_recovery_action": self._unknown_orders_last_recovery_action,
+            },
+        }
+
+    def get_order_classification_health(self) -> Dict[str, Any]:
+        now = time.time()
+        self._cleanup_classification_windows(now)
+        total_5m = len(self._classification_window_total_5m)
+        unknown_5m = len(self._classification_window_unknown_5m)
+        self._resolve_order_classification_mode_effective()
+        return {
+            "order_classification_mode_configured": self._order_classification_mode_configured,
+            "order_classification_mode_effective": self._order_classification_mode_effective,
+            "order_classification_auto_switch_until": (
+                int(self._order_classification_auto_switch_until * 1000)
+                if self._order_classification_auto_switch_until
+                else None
+            ),
+            "order_classification_auto_switch_cooldown_until": (
+                int(self._order_classification_auto_switch_cooldown_until * 1000)
+                if self._order_classification_auto_switch_cooldown_until
+                else None
+            ),
+            "order_classification_auto_switch_reason": self._order_classification_auto_switch_reason,
+            "unknown_orders_count": len(self._unknown_first_seen_by_key),
+            "unknown_orders_rate_5m": (float(unknown_5m) / float(total_5m)) if total_5m else 0.0,
+            "unknown_orders_last_seen_age_seconds": (
+                (now - self._unknown_orders_last_seen_ts) if self._unknown_orders_last_seen_ts else None
+            ),
+            "unknown_orders_last_recovery_action": self._unknown_orders_last_recovery_action,
+            "orders_raw_last_age_seconds": (now - self._last_orders_raw_ts) if self._last_orders_raw_ts else None,
+            "orders_raw_fresh_seconds": self._orders_raw_fresh_seconds,
+            "orders_raw_stale_cutoff_seconds": self._orders_raw_stale_cutoff_seconds,
+            "classification_guard_block_count": int(self._classification_guard_block_count),
+            "classification_guard_block_reasons": dict(self._classification_guard_block_reasons),
+            "hl_disamb_ambiguous_observed_count": int(self._hl_disamb_ambiguous_observed_count),
+            "hl_disamb_enrich_attempts": int(self._hl_disamb_enrich_attempts),
+            "hl_disamb_enrich_success": int(self._hl_disamb_enrich_success),
+            "hl_disamb_enrich_failure": int(self._hl_disamb_enrich_failure),
+            "hl_disamb_enrich_rate_limited": int(self._hl_disamb_enrich_rate_limited),
+            "hl_disamb_enrich_cache_hit": int(self._hl_disamb_enrich_cache_hit),
+            "hl_disamb_enrich_no_oid": int(self._hl_disamb_enrich_no_oid),
+            "hl_disamb_snapshot_fallback_attempts": int(self._hl_disamb_snapshot_fallback_attempts),
+            "hl_disamb_snapshot_fallback_success": int(self._hl_disamb_snapshot_fallback_success),
+            "hl_disamb_snapshot_fallback_failure": int(self._hl_disamb_snapshot_fallback_failure),
+            "hl_disamb_snapshot_fallback_rate_limited": int(self._hl_disamb_snapshot_fallback_rate_limited),
+            "hl_disamb_sl_hint_timeout_count": int(self._hl_disamb_sl_hint_timeout_count),
+        }
 
     async def _get_account_context(self) -> tuple[float, Optional[float]]:
         venue = (getattr(self.gateway, "venue", "") or "").lower()
@@ -461,6 +1200,113 @@ class OrderManager:
                 pass
         return ws_or_cache_value
 
+    def _clear_local_tpsl_hint_kind(self, *, symbol: str, kind: str) -> None:
+        sym_key = self._normalize_symbol_value(symbol)
+        if not sym_key:
+            return
+        hint = self._tpsl_local_hints.get(sym_key)
+        if not isinstance(hint, dict):
+            return
+        hint.pop(kind, None)
+        hint.pop(f"{kind}_observed_at", None)
+        if not hint:
+            self._tpsl_local_hints.pop(sym_key, None)
+
+    def _hl_ws_hint_confirm_timeout_seconds(self) -> float:
+        getter = getattr(self.gateway, "get_stream_health_snapshot", None)
+        if not callable(getter):
+            return float(self._hl_sl_confirm_degraded_seconds)
+        try:
+            snapshot = getter() or {}
+        except Exception:
+            return float(self._hl_sl_confirm_degraded_seconds)
+        if bool(snapshot.get("ws_alive")):
+            age = _coerce_float(snapshot.get("last_private_ws_event_age_seconds"))
+            if age is not None and age <= max(2.0, float(self._orders_raw_fresh_seconds or 5.0)):
+                return float(self._hl_sl_confirm_ws_seconds)
+        return float(self._hl_sl_confirm_degraded_seconds)
+
+    def _hl_symbols_requiring_hint_fallback(self, *, now: Optional[float] = None) -> list[str]:
+        venue = (getattr(self.gateway, "venue", "") or "").strip().lower()
+        if venue != "hyperliquid":
+            return []
+        ts = float(now if now is not None else time.time())
+        timeout = self._hl_ws_hint_confirm_timeout_seconds()
+        due: list[str] = []
+        for symbol, hint in (self._tpsl_local_hints or {}).items():
+            if not isinstance(hint, dict):
+                continue
+            stop_obs = _coerce_float(hint.get("stop_loss_observed_at"))
+            if stop_obs is None or stop_obs <= 0:
+                continue
+            age = ts - float(stop_obs)
+            if age < timeout:
+                continue
+            if age > max(float(self._tpsl_hint_ttl_seconds), float(self._hl_disamb_unknown_ttl_seconds)):
+                continue
+            due.append(self._normalize_symbol_value(symbol))
+        return due
+
+    async def _maybe_hl_tpsl_hint_fallback_snapshot(self) -> None:
+        due_symbols = self._hl_symbols_requiring_hint_fallback()
+        if not due_symbols:
+            return
+        now = time.time()
+        if (
+            self._hl_snapshot_global_min_gap_seconds > 0
+            and (now - self._hl_snapshot_last_global_ts) < self._hl_snapshot_global_min_gap_seconds
+        ):
+            self._hl_disamb_snapshot_fallback_rate_limited += 1
+            return
+        eligible = []
+        for symbol in due_symbols:
+            last = float(self._hl_snapshot_last_symbol_ts.get(symbol, 0.0) or 0.0)
+            if (
+                self._hl_snapshot_symbol_min_gap_seconds > 0
+                and (now - last) < self._hl_snapshot_symbol_min_gap_seconds
+            ):
+                continue
+            eligible.append(symbol)
+        if not eligible:
+            self._hl_disamb_snapshot_fallback_rate_limited += 1
+            return
+        refresher = getattr(self.gateway, "refresh_account_orders_from_rest", None)
+        if not callable(refresher):
+            return
+        self._hl_disamb_snapshot_fallback_attempts += 1
+        self._hl_snapshot_last_global_ts = now
+        for symbol in eligible:
+            self._hl_snapshot_last_symbol_ts[symbol] = now
+        try:
+            snapshot = await refresher()
+        except Exception:
+            self._hl_disamb_snapshot_fallback_failure += 1
+            return
+        if not isinstance(snapshot, list):
+            self._hl_disamb_snapshot_fallback_failure += 1
+            return
+        self._hl_disamb_snapshot_fallback_success += 1
+        self._reconcile_tpsl(snapshot)
+        self._ingest_canonical_orders(snapshot, source="rest")
+        candidates = self._hl_ambiguous_candidates_from_rows(snapshot, source="rest")
+        if candidates:
+            await self._enrich_hl_ambiguous_orders(candidates)
+        # Confirm or mark timeout for outstanding local stop hints.
+        for symbol in eligible:
+            hint = self._tpsl_local_hints.get(symbol) or {}
+            hinted_sl = _coerce_float(hint.get("stop_loss"))
+            hinted_obs = _coerce_float(hint.get("stop_loss_observed_at"))
+            derived_sl = _coerce_float((self._tpsl_targets_by_symbol.get(symbol) or {}).get("stop_loss"))
+            if hinted_sl is None or hinted_obs is None:
+                continue
+            eps = max(1e-9, abs(float(hinted_sl)) * float(self._trigger_epsilon_ratio or 0.0005))
+            if derived_sl is not None and abs(float(derived_sl) - float(hinted_sl)) <= eps:
+                self._clear_local_tpsl_hint_kind(symbol=symbol, kind="stop_loss")
+                continue
+            age = max(0.0, time.time() - float(hinted_obs))
+            if age > float(self._tpsl_hint_ttl_seconds):
+                self._hl_disamb_sl_hint_timeout_count += 1
+
     @staticmethod
     def _is_tpsl_order(order: Dict[str, Any]) -> bool:
         """Detect TP/SL reduce-only orders even when isPositionTpsl flag is missing."""
@@ -630,64 +1476,51 @@ class OrderManager:
                         break
                 if price_match:
                     break
-            weak_helper_shape = (not bool(reduce_only)) and (not triggerish) and (not client_id)
-            if size_mismatch and not weak_helper_shape:
+            if size_mismatch:
                 continue
-            if bool(reduce_only) or triggerish or price_match or size_match or weak_helper_shape:
+            # Reduce-only alone is not sufficient evidence (valid close limits are
+            # also reduce-only). Require trigger/price correlation to transient
+            # helper hints emitted from our own submit path.
+            if bool(reduce_only) and (triggerish or price_match):
                 return True
         return False
 
     def _include_in_open_orders(self, order: Dict[str, Any]) -> bool:
         """Hide venue-specific conditional TP/SL orders from open-orders UI feed."""
-        status_raw = str(order.get("status") or order.get("state") or order.get("orderStatus") or "").strip().lower()
-        if status_raw:
-            terminal_exact = {
-                "filled",
-                "triggered",
-                "canceled",
-                "cancelled",
-                "rejected",
-                "expired",
-                "failed",
-                "closed",
-                "done",
-                "perpmarginrejected",
-            }
-            if status_raw in terminal_exact:
-                return False
-            if any(token in status_raw for token in ("cancel", "reject", "expire", "fail", "closed")):
-                return False
-            if status_raw.startswith("fill"):
-                return False
-            if status_raw == "triggered":
-                return False
-        venue = (getattr(self.gateway, "venue", "") or "").strip().lower()
-        if venue == "hyperliquid":
-            if self._matches_hl_known_target_helper(order):
-                return False
-            if self._matches_hl_transient_helper_hint(order):
-                return False
-            reduce_only = order.get("reduceOnly")
-            if reduce_only is None:
-                reduce_only = order.get("reduce_only")
-            order_type = str(order.get("type") or order.get("orderType") or order.get("order_type") or "").upper()
-            triggerish = bool(
-                order.get("isTrigger")
-                or order.get("triggerPrice")
-                or order.get("triggerPx")
-                or order_type.startswith(("STOP", "TAKE_PROFIT", "TRIGGER"))
-                or (
-                    isinstance(order.get("orderType"), dict)
-                    and isinstance(order.get("orderType", {}).get("trigger"), dict)
-                )
+        mode = self._resolve_order_classification_mode_effective()
+        if mode in {"v2"}:
+            venue = (getattr(self.gateway, "venue", "") or "").strip().lower()
+            forced_discretionary = self._matches_discretionary_intent_hint(
+                build_canonical_order(order, venue=(venue or "unknown"), source="view")
             )
-            # Hyperliquid can briefly emit TP/SL legs without isPositionTpsl=true immediately after submit.
-            # If it is reduce-only and trigger-like, treat it as a conditional helper and hide from open orders.
-            if bool(reduce_only) and triggerish:
+            intent = self._intent_for_order(order)
+            if intent != "discretionary":
                 return False
-        if self._is_tpsl_order(order):
-            return False
-        return True
+            if forced_discretionary:
+                return True
+            # Rollout safety: keep legacy HL helper suppression as a second guard so
+            # transient classifier misses cannot leak stop helpers into Open Orders.
+            if venue == "hyperliquid":
+                if self._matches_hl_known_target_helper(order):
+                    self._classification_guard_block_count += 1
+                    self._classification_guard_block_reasons["hl_known_target_helper"] = (
+                        self._classification_guard_block_reasons.get("hl_known_target_helper", 0) + 1
+                    )
+                    return False
+                if self._matches_hl_transient_helper_hint(order):
+                    self._classification_guard_block_count += 1
+                    self._classification_guard_block_reasons["hl_transient_helper_hint"] = (
+                        self._classification_guard_block_reasons.get("hl_transient_helper_hint", 0) + 1
+                    )
+                    return False
+                if self._is_tpsl_order(order):
+                    self._classification_guard_block_count += 1
+                    self._classification_guard_block_reasons["legacy_tpsl_shape"] = (
+                        self._classification_guard_block_reasons.get("legacy_tpsl_shape", 0) + 1
+                    )
+                    return False
+            return True
+        return self._legacy_include_in_open_orders(order)
 
     def _matches_hl_known_target_helper(self, order: Dict[str, Any]) -> bool:
         venue = (getattr(self.gateway, "venue", "") or "").strip().lower()
@@ -741,6 +1574,72 @@ class OrderManager:
             return True
         # No cached position yet; still hide known target helper by price match + no client id.
         return True
+
+    def _prune_discretionary_intent_hints(self) -> None:
+        if not self._discretionary_intent_hints:
+            return
+        now = time.time()
+        ttl = max(1.0, float(self._discretionary_hint_ttl_seconds or 120.0))
+        self._discretionary_intent_hints = [
+            hint
+            for hint in self._discretionary_intent_hints
+            if (now - float(hint.get("ts") or 0.0)) <= ttl
+        ]
+
+    def _record_discretionary_intent_hint(
+        self,
+        *,
+        symbol: Optional[str],
+        side: Optional[str],
+        size: Optional[float],
+        limit_price: Optional[float],
+        order_id: Optional[str] = None,
+        client_order_id: Optional[str] = None,
+    ) -> None:
+        self._prune_discretionary_intent_hints()
+        self._discretionary_intent_hints.append(
+            {
+                "ts": time.time(),
+                "symbol": self._normalize_symbol_value(symbol),
+                "side": str(side or "").strip().upper() or None,
+                "size": abs(float(size)) if size is not None else None,
+                "limit_price": float(limit_price) if limit_price is not None else None,
+                "order_id": str(order_id) if order_id else None,
+                "client_order_id": str(client_order_id) if client_order_id else None,
+            }
+        )
+
+    def _matches_discretionary_intent_hint(self, canonical: Dict[str, Any]) -> bool:
+        self._prune_discretionary_intent_hints()
+        if not self._discretionary_intent_hints:
+            return False
+        order_id = str(canonical.get("order_id") or "").strip()
+        client_order_id = str(canonical.get("client_order_id") or "").strip()
+        symbol = self._normalize_symbol_value(canonical.get("symbol"))
+        side = str(canonical.get("side") or "").strip().upper()
+        size = _coerce_float(canonical.get("size"))
+        size_abs = abs(float(size)) if size is not None else None
+        price = _coerce_float(canonical.get("limit_price"))
+        for hint in self._discretionary_intent_hints:
+            if order_id and str(hint.get("order_id") or "") == order_id:
+                return True
+            if client_order_id and str(hint.get("client_order_id") or "") == client_order_id:
+                return True
+            if symbol and str(hint.get("symbol") or "") and str(hint.get("symbol")) != symbol:
+                continue
+            hint_side = str(hint.get("side") or "").upper()
+            if hint_side and side and hint_side != side:
+                continue
+            hint_size = _coerce_float(hint.get("size"))
+            if hint_size is not None and size_abs is not None:
+                if abs(float(hint_size) - float(size_abs)) > max(1e-6, abs(float(hint_size)) * 0.03):
+                    continue
+            hint_price = _coerce_float(hint.get("limit_price"))
+            if hint_price is not None and price is not None:
+                if abs(float(hint_price) - float(price)) > max(1e-9, abs(float(hint_price)) * 5e-4):
+                    continue
+            return True
+        return False
 
     def _merge_tpsl_map(self, new_map: Dict[str, Dict[str, Optional[float]]], *, replace: bool = False) -> None:
         """Merge TP/SL values into the existing map, optionally replacing missing symbols."""
@@ -1185,6 +2084,17 @@ class OrderManager:
         self.positions = await self._enrich_positions(positions_raw, tpsl_map=self._tpsl_targets_by_symbol)
 
         raw_orders = await self.gateway.get_open_orders()
+        # Always ingest the latest fetched open-order snapshot so v2 classification
+        # and HL disambiguation run on startup/manual refresh paths.
+        await self.process_orders_raw_event(raw_orders or [], source="rest")
+        snapshot_getter = getattr(self.gateway, "get_account_orders_snapshot", None)
+        if callable(snapshot_getter):
+            try:
+                account_orders = snapshot_getter()
+                if isinstance(account_orders, list) and account_orders:
+                    self._ingest_canonical_orders(account_orders, source="rest")
+            except Exception:
+                pass
         normalized_orders: list[Dict[str, Any]] = []
         for order in raw_orders:
             if not self._include_in_open_orders(order):
@@ -1203,7 +2113,18 @@ class OrderManager:
 
     async def list_orders(self) -> list[Dict[str, Any]]:
         """Return open orders from gateway and update cache."""
+        snapshot_getter = getattr(self.gateway, "get_account_orders_snapshot", None)
+        if callable(snapshot_getter):
+            try:
+                account_orders = snapshot_getter()
+                if isinstance(account_orders, list) and account_orders:
+                    self._ingest_canonical_orders(account_orders, source="ws")
+            except Exception:
+                pass
         raw_orders = await self.gateway.get_open_orders()
+        # Ingest the fresh fetch every time list_orders is called so manual refresh
+        # can resolve ambiguous reduce-only rows via orderStatus enrichment.
+        await self.process_orders_raw_event(raw_orders or [], source="rest")
         normalized: list[Dict[str, Any]] = []
         for order in raw_orders:
             if not self._include_in_open_orders(order):
@@ -1227,6 +2148,30 @@ class OrderManager:
             k: v for k, v in self.pending_order_prices_client.items() if k in open_cids
         }
         return self.open_orders
+
+    async def ingest_orders_raw(self, raw_orders: list[Dict[str, Any]], *, source: str = "ws") -> Dict[str, int]:
+        """Ingest authoritative orders_raw payload for classification and recovery."""
+        return await self.process_orders_raw_event(raw_orders, source=source)
+
+    def normalize_open_orders_payload(self, orders_payload: list[Dict[str, Any]]) -> list[Dict[str, Any]]:
+        """Normalize an orders payload for UI publication based on current classification mode."""
+        normalized: list[Dict[str, Any]] = []
+        for order in orders_payload or []:
+            if not isinstance(order, dict):
+                continue
+            if not self._include_in_open_orders(order):
+                continue
+            norm = self._normalize_order(order)
+            if norm and not norm.get("id"):
+                norm["id"] = (
+                    order.get("_cache_id")
+                    or order.get("clientOrderId")
+                    or order.get("orderId")
+                    or order.get("order_id")
+                )
+            if norm:
+                normalized.append(norm)
+        return normalized
 
     async def list_symbols(self) -> list[Dict[str, Any]]:
         """Return cached symbol catalog for dropdowns (normalized to SymbolResponse)."""
@@ -1275,10 +2220,24 @@ class OrderManager:
         """Return exchange stream/reconcile health metrics for diagnostics."""
         getter = getattr(self.gateway, "get_stream_health_snapshot", None)
         payload = getter() if callable(getter) else {}
-        return {"venue": (getattr(self.gateway, "venue", "unknown") or "unknown"), **(payload or {})}
+        now = time.time()
+        if (
+            self._order_classification_mode_configured in {"shadow", "v2"}
+            and self._orders_raw_stale_cutoff_seconds > 0
+            and self._last_orders_raw_ts > 0
+            and (now - self._last_orders_raw_ts) >= self._orders_raw_stale_cutoff_seconds
+        ):
+            await self._recover_unknown_orders()
+        return {
+            "venue": (getattr(self.gateway, "venue", "unknown") or "unknown"),
+            **(payload or {}),
+            **self.get_order_classification_health(),
+        }
 
     async def list_positions(self) -> list[Dict[str, Any]]:
         """Return open positions from gateway and update cache, merging TP/SL from open orders when available."""
+        if (getattr(self.gateway, "venue", "") or "").strip().lower() == "hyperliquid":
+            await self._maybe_hl_tpsl_hint_fallback_snapshot()
         positions_raw = await self.gateway.get_open_positions(force_rest=False, publish=True)
         if not positions_raw:
             positions_raw = await self.gateway.get_open_positions(force_rest=True, publish=True)
@@ -1354,6 +2313,17 @@ class OrderManager:
             raw = resp.get("raw")
             def _extract_error_message(payload: Any) -> Optional[str]:
                 if isinstance(payload, dict):
+                    response_obj = payload.get("response")
+                    if isinstance(response_obj, dict):
+                        data_obj = response_obj.get("data")
+                        if isinstance(data_obj, dict):
+                            statuses = data_obj.get("statuses")
+                            if isinstance(statuses, list):
+                                for row in statuses:
+                                    if isinstance(row, dict):
+                                        err = row.get("error")
+                                        if err:
+                                            return str(err)
                     for key in ("retMsg", "ret_msg", "message", "detail", "msg"):
                         val = payload.get(key)
                         if val:
@@ -1383,6 +2353,15 @@ class OrderManager:
             self.pending_order_prices[str(order_id)] = limit_price
         if client_id and limit_price is not None:
             self.pending_order_prices_client[str(client_id)] = limit_price
+        close_side = "SELL" if str(target.get("side") or "").upper() in {"LONG", "BUY"} else "BUY"
+        self._record_discretionary_intent_hint(
+            symbol=str(target.get("symbol") or ""),
+            side=close_side,
+            size=close_size,
+            limit_price=limit_price,
+            order_id=str(order_id) if order_id else None,
+            client_order_id=str(client_id) if client_id else None,
+        )
         # logger.info(
         #     "close_position_submitted",
         #     extra={

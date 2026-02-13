@@ -2,8 +2,8 @@
 
 **ID**: 0002-intent-classifier-policy  
 **Date**: 2026-02-06  
-**Status**: Proposed  
-**Owners**: <fill>  
+**Status**: Accepted  
+**Owners**: Backend team  
 
 ## Context
 
@@ -23,6 +23,9 @@ Policy:
 - Run classification on `orders_raw` as the authoritative input.
 - Use multiple signals (flags + order kind + trigger + reduce-only + timestamps).
 - Maintain local hint store (TTL default 20s) to resolve ambiguity when WS rows are incomplete.
+  - Prefer `order_id` when present (Hyperliquid `oid` is the primary stable identifier).
+  - Use `client_order_id` when present, but do not assume it exists for HL helper legs across the full lifecycle.
+  - Use a strict-TTL fallback fingerprint for brief missing-marker windows: `(venue, symbol, side, tpsl_kind_if_known, trigger_price≈, size≈)`.
 - Unknowns are hidden from Open Orders by default and do not clear TP/SL.
 
 ## Options Considered
@@ -44,4 +47,3 @@ Policy:
 
 - Unit tests with recorded sequences including missing markers windows.
 - Ensure “unknown never shown as open order” invariant holds.
-
