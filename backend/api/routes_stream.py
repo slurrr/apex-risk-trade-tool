@@ -75,9 +75,11 @@ async def stream_updates(
 
     gateway = manager.gateway
     queue = gateway.register_subscriber()
-    is_apex_gateway = (getattr(gateway, "venue", "apex") or "").lower() == "apex"
     tpsl_refresh_lock = asyncio.Lock()
     pending_tpsl_refresh = False
+    last_tpsl_refresh_started_at = 0.0
+    tpsl_refresh_min_gap_apex_seconds = 2.0
+    tpsl_refresh_min_gap_hl_seconds = 3.0
     last_sent_by_type: dict[str, str] = {}
 
     async def _send_event(event_type: str, payload):
@@ -127,13 +129,21 @@ async def stream_updates(
         return normalized
 
     async def _force_tpsl_refresh():
-        nonlocal pending_tpsl_refresh
-        if not is_apex_gateway:
+        nonlocal pending_tpsl_refresh, last_tpsl_refresh_started_at
+        venue = (getattr(gateway, "venue", "") or "").lower()
+        min_gap = (
+            tpsl_refresh_min_gap_apex_seconds
+            if venue == "apex"
+            else tpsl_refresh_min_gap_hl_seconds
+        )
+        now = asyncio.get_event_loop().time()
+        if (now - float(last_tpsl_refresh_started_at or 0.0)) < float(min_gap):
             return
         async with tpsl_refresh_lock:
             if pending_tpsl_refresh:
                 return
             pending_tpsl_refresh = True
+            last_tpsl_refresh_started_at = now
 
         async def _run():
             nonlocal pending_tpsl_refresh
@@ -141,12 +151,19 @@ async def stream_updates(
                 snapshot = await gateway.refresh_account_orders_from_rest()
                 if snapshot:
                     try:
+                        ingest_fn = getattr(manager, "ingest_orders_raw", None)
+                        if callable(ingest_fn):
+                            await ingest_fn(snapshot, source="rest")
                         manager._reconcile_tpsl(snapshot)
                     except Exception:
                         pass
                     try:
+                        await _send_event("orders", _normalize_orders_for_ui(snapshot))
+                    except Exception:
+                        pass
+                    try:
                         positions = await manager.list_positions()
-                        await websocket.send_json({"type": "positions", "payload": positions})
+                        await _send_event("positions", positions)
                     except Exception:
                         pass
             except Exception as exc:
@@ -241,7 +258,7 @@ async def stream_updates(
                     await _emit_positions_from_cache()
                 except Exception:
                     pass
-                if refresh_needed and is_apex_gateway:
+                if refresh_needed:
                     flap_recorder = getattr(gateway, "record_tpsl_flap_suspected", None)
                     if callable(flap_recorder):
                         try:
@@ -261,9 +278,12 @@ async def stream_updates(
             elif event.get("type") == "orders":
                 # Forward orders event without touching TP/SL map (no TP/SL data here)
                 try:
+                    payload = event.get("payload") or []
+                    should_ingest_fn = getattr(manager, "should_ingest_orders_event_payload", None)
+                    can_ingest = bool(callable(should_ingest_fn) and should_ingest_fn(payload))
                     ingest_fn = getattr(manager, "ingest_orders_raw", None)
-                    if callable(ingest_fn):
-                        await ingest_fn(event.get("payload") or [], source="orders")
+                    if can_ingest and callable(ingest_fn):
+                        await ingest_fn(payload, source="orders")
                 except Exception:
                     pass
                 msg = {"type": "orders", "payload": _normalize_orders_for_ui(event.get("payload"))}

@@ -9,6 +9,7 @@
   const executeUiState = {
     current: null,
   };
+  let latestPositionsSnapshot = [];
   let executeSubmitInFlight = false;
 
   function getNormalizeTradePayloadBeforeSubmit() {
@@ -96,16 +97,36 @@
     if (!Array.isArray(positions) || !positions.length) return;
     const targetSymbol = (executeUiState.current.symbol || "").toUpperCase();
     const targetSide = normalizeSide(executeUiState.current.side);
-    const matched = positions.some((pos) => {
-      const sym = (pos?.symbol || "").toString().trim().toUpperCase();
-      const side = normalizePositionSide(pos?.side);
-      if (!sym || sym !== targetSymbol) return false;
-      if (!targetSide) return true;
-      return side === targetSide;
-    });
-    if (!matched) return;
+    const baselineSideSize = Number(executeUiState.current.baselineSideSize);
+    const baselineSymbolSize = Number(executeUiState.current.baselineSymbolSize);
+    const currentSideSize = aggregatePositionSize(positions, targetSymbol, targetSide);
+    const currentSymbolSize = aggregatePositionSize(positions, targetSymbol, null);
+    const sideDelta = Number.isFinite(baselineSideSize)
+      ? currentSideSize - baselineSideSize
+      : null;
+    const symbolDelta = Number.isFinite(baselineSymbolSize)
+      ? currentSymbolSize - baselineSymbolSize
+      : null;
+    const eps = 1e-9;
+    const hasEvidence = targetSide
+      ? (sideDelta !== null && sideDelta > eps)
+      : (symbolDelta !== null && symbolDelta > eps);
+    if (!hasEvidence) return;
     executeUiState.current.status = "filled";
     setExecutionStatus("filled", { animate: true });
+  }
+
+  function aggregatePositionSize(positions, symbol, sideOrNull) {
+    if (!Array.isArray(positions) || !symbol) return 0;
+    return positions.reduce((sum, pos) => {
+      const sym = (pos?.symbol || "").toString().trim().toUpperCase();
+      if (!sym || sym !== symbol) return sum;
+      const posSide = normalizePositionSide(pos?.side);
+      if (sideOrNull && posSide !== sideOrNull) return sum;
+      const size = Number(pos?.size);
+      if (!Number.isFinite(size)) return sum;
+      return sum + Math.abs(size);
+    }, 0);
   }
 
   function renderExecute(container, result, context = {}) {
@@ -135,6 +156,8 @@
       side,
       orderId: result.exchange_order_id || null,
       submittedAt: Date.now(),
+      baselineSideSize: aggregatePositionSize(latestPositionsSnapshot, displaySymbol.toUpperCase(), normalizeSide(side)),
+      baselineSymbolSize: aggregatePositionSize(latestPositionsSnapshot, displaySymbol.toUpperCase(), null),
     };
   }
 
@@ -143,6 +166,7 @@
     const executeResult = document.getElementById("execute-result");
     window.addEventListener("positions:update", (event) => {
       const positions = event?.detail?.positions;
+      latestPositionsSnapshot = Array.isArray(positions) ? positions : [];
       maybeMarkExecutionFilledFromPositions(positions);
     });
 

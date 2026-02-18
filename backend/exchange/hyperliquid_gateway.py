@@ -63,6 +63,8 @@ class HyperliquidGateway:
         self._subscribers: set[asyncio.Queue] = set()
         self._configs: dict[str, dict[str, Any]] = {}
         self._coin_to_asset: dict[str, int] = {}
+        # Upper-cased symbol coin -> wire/API coin name (case-sensitive for SDK lookups).
+        self._coin_aliases: dict[str, str] = {}
         self._mids_cache: dict[str, float] = {}
         self._mids_cached_at: float = 0.0
         self._ws_running = False
@@ -120,12 +122,14 @@ class HyperliquidGateway:
             )
 
     def _coin_from_symbol(self, symbol: str) -> str:
-        text = (symbol or "").strip().upper()
+        text = (symbol or "").strip()
         if not text:
             raise ValueError("symbol is required")
-        if "-" in text:
-            return text.split("-")[0]
-        return text
+        coin = text.split("-")[0] if "-" in text else text
+        coin_key = str(coin).strip().upper()
+        if coin_key in self._coin_aliases:
+            return str(self._coin_aliases[coin_key])
+        return coin_key
 
     def _symbol_from_coin(self, coin: str) -> str:
         return f"{coin.upper()}-USDC"
@@ -588,15 +592,22 @@ class HyperliquidGateway:
         account_value_f = _f(account_value)
         withdrawable_f = _f(withdrawable)
         # Prefer explicit available/free margin fields when present.
-        explicit_available = (
-            payload.get("availableMargin")
-            or payload.get("available_margin")
-            or payload.get("availableBalance")
-            or payload.get("freeCollateral")
-            or margin.get("availableMargin")
-            or margin.get("available_margin")
-            or margin.get("availableBalance")
-            or margin.get("freeCollateral")
+        # NOTE: 0 is a valid explicit value and must not fall through.
+        def _first_present(*values: Any) -> Any:
+            for value in values:
+                if value is not None:
+                    return value
+            return None
+
+        explicit_available = _first_present(
+            payload.get("availableMargin"),
+            payload.get("available_margin"),
+            payload.get("availableBalance"),
+            payload.get("freeCollateral"),
+            margin.get("availableMargin"),
+            margin.get("available_margin"),
+            margin.get("availableBalance"),
+            margin.get("freeCollateral"),
         )
         explicit_available_source = (
             "payload.availableMargin"
@@ -835,21 +846,28 @@ class HyperliquidGateway:
             universe = meta
         mapped: dict[str, dict[str, Any]] = {}
         coin_to_asset: dict[str, int] = {}
+        coin_aliases: dict[str, str] = {}
         for idx, item in enumerate(universe or []):
             if not isinstance(item, dict):
                 continue
-            coin = str(item.get("name") or item.get("coin") or "").upper().strip()
-            if not coin:
+            coin_wire = str(item.get("name") or item.get("coin") or "").strip()
+            if not coin_wire:
                 continue
-            coin_to_asset[coin] = idx
-            symbol = self._symbol_from_coin(coin)
+            coin_key = coin_wire.upper()
+            coin_aliases[coin_key] = coin_wire
+            # Keep both casings to avoid missing asset lookups.
+            coin_to_asset[coin_wire] = idx
+            coin_to_asset[coin_key] = idx
+            symbol = self._symbol_from_coin(coin_wire)
             sz_decimals_raw = item.get("szDecimals")
             try:
                 sz_decimals = int(sz_decimals_raw) if sz_decimals_raw is not None else 0
             except Exception:
                 sz_decimals = 0
             step_size = 10 ** (-max(0, sz_decimals))
-            mid = mids.get(coin)
+            mid = mids.get(coin_wire)
+            if mid is None:
+                mid = mids.get(coin_key)
             if mid is not None and mid > 0:
                 px_decimals = min(8, max(0, self._extract_price_decimals(mid)))
             else:
@@ -857,19 +875,20 @@ class HyperliquidGateway:
             tick_size = 10 ** (-px_decimals)
             mapped[symbol] = {
                 "symbol": symbol,
-                "coin": coin,
+                "coin": coin_wire,
                 "tickSize": float(tick_size),
                 "stepSize": float(step_size),
                 "minOrderSize": float(step_size),
                 "maxOrderSize": 0.0,
                 "maxLeverage": float(item.get("maxLeverage") or 0.0),
-                "baseAsset": coin,
+                "baseAsset": coin_wire,
                 "quoteAsset": "USDC",
                 "status": "ENABLED",
                 "raw": item,
             }
         self._configs = mapped
         self._coin_to_asset = coin_to_asset
+        self._coin_aliases = coin_aliases
 
     async def ensure_configs_loaded(self) -> None:
         if not self._configs:
@@ -1203,6 +1222,8 @@ class HyperliquidGateway:
         coin = self._coin_from_symbol(symbol)
         mids = await self._get_all_mids(force=False)
         mid = mids.get(coin)
+        if mid is None:
+            mid = mids.get(str(coin).upper())
         if mid is not None and mid > 0:
             return float(mid), "mid"
         raise ValueError(f"No reference price available for {coin}")
@@ -1212,6 +1233,7 @@ class HyperliquidGateway:
         return price
 
     async def fetch_klines(self, symbol: str, timeframe: str, limit: int = 200) -> list[Dict[str, Any]]:
+        await self.ensure_configs_loaded()
         coin = self._coin_from_symbol(symbol)
         interval = (timeframe or "").strip().lower()
         if interval not in self._TIMEFRAME_MS:
@@ -1250,6 +1272,7 @@ class HyperliquidGateway:
         return candles
 
     async def get_depth_snapshot(self, symbol: str, *, levels: int = 25) -> Dict[str, Any]:
+        await self.ensure_configs_loaded()
         coin = self._coin_from_symbol(symbol)
         book = await asyncio.to_thread(self._info.l2_snapshot, coin)
         raw_levels = book.get("levels") if isinstance(book, dict) else None
@@ -1375,7 +1398,9 @@ class HyperliquidGateway:
                 parsed = self._to_float(price)
                 if parsed is None:
                     continue
-                mids[str(coin).upper()] = parsed
+                coin_wire = str(coin)
+                mids[coin_wire] = parsed
+                mids[coin_wire.upper()] = parsed
         self._mids_cache = mids
         self._mids_cached_at = now
         return dict(mids)
@@ -1390,8 +1415,8 @@ class HyperliquidGateway:
         stop = kwargs.get("stop")
         if size <= 0 or entry_price <= 0:
             raise ValueError("Invalid size or entry price for Hyperliquid order.")
-        coin = self._coin_from_symbol(symbol)
         await self.ensure_configs_loaded()
+        coin = self._coin_from_symbol(symbol)
         asset = self._coin_to_asset.get(coin)
         if asset is None:
             raise ValueError(f"Unknown Hyperliquid asset for symbol {symbol}.")

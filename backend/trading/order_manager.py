@@ -307,6 +307,7 @@ class OrderManager:
         tracked = {}
         tracked.update(self._tpsl_targets_by_symbol.get(symbol) or {})
         tracked.update(self.position_targets.get(symbol) or {})
+        tracked.update(self._tpsl_local_hints.get(symbol) or {})
         if not tracked:
             return False
         trigger_price = _coerce_float(canonical.get("trigger_price") or canonical.get("limit_price"))
@@ -378,10 +379,23 @@ class OrderManager:
         if same_hl_order and incoming_enriched and not current_enriched:
             if current_intent == "unknown" or incoming_intent in {"discretionary", "tpsl_helper"}:
                 return incoming
+        if same_hl_order and current_intent == "unknown" and incoming_intent in {"discretionary", "tpsl_helper"}:
+            if not is_terminal_canonical(incoming):
+                return incoming
+        if same_hl_order and current_intent in {"discretionary", "tpsl_helper"} and incoming_intent == "unknown":
+            if not is_terminal_canonical(current):
+                return current
+        if same_hl_order and current_enriched and not incoming_enriched:
+            # Sticky enrichment: once we resolved an order with orderStatus evidence,
+            # do not regress back to weaker non-enriched rows unless terminal.
+            if not is_terminal_canonical(incoming):
+                return current
 
         cur_t = _order_time(current)
         in_t = _order_time(incoming)
         if in_t > cur_t:
+            if same_hl_order and current_enriched and not incoming_enriched and not is_terminal_canonical(incoming):
+                return current
             return incoming
         if in_t < cur_t:
             if same_hl_order and incoming_enriched and current_intent == "unknown":
@@ -394,6 +408,18 @@ class OrderManager:
         if in_src == "ws" and cur_src != "ws":
             return incoming
         return current
+
+    def should_ingest_orders_event_payload(self, payload: list[Dict[str, Any]]) -> bool:
+        """
+        Guard classifier inputs from weak venue `orders` feeds.
+        Only ingest when a venue can prove snapshot-grade semantics.
+        """
+        venue = (getattr(self.gateway, "venue", "") or "").strip().lower()
+        if venue == "hyperliquid":
+            return False
+        if venue == "apex":
+            return False
+        return False
 
     def _ingest_canonical_orders(
         self,
@@ -567,13 +593,13 @@ class OrderManager:
         venue = (getattr(self.gateway, "venue", "") or "").strip().lower()
         if venue != "hyperliquid" or not candidates:
             return
-        now = time.time()
-        self._cleanup_classification_windows(now)
+        self._cleanup_classification_windows(time.time())
         status_getter = getattr(self.gateway, "query_order_status_by_oid", None)
         if not callable(status_getter):
             return
         seen: set[str] = set()
         for candidate in candidates:
+            now = time.time()
             oid = str(candidate.get("oid") or "").strip()
             symbol = self._normalize_symbol_value(candidate.get("symbol"))
             if not oid:
@@ -604,9 +630,10 @@ class OrderManager:
             ):
                 self._hl_disamb_enrich_rate_limited += 1
                 continue
-            self._hl_order_status_last_global_ts = now
+            lookup_started_at = time.time()
+            self._hl_order_status_last_global_ts = lookup_started_at
             if symbol:
-                self._hl_order_status_last_symbol_ts[symbol] = now
+                self._hl_order_status_last_symbol_ts[symbol] = lookup_started_at
             self._hl_disamb_enrich_attempts += 1
             try:
                 enriched = await status_getter(oid)
@@ -1314,12 +1341,22 @@ class OrderManager:
             return False
         if bool(order.get("isPositionTpsl")):
             return True
-        order_type = (order.get("type") or order.get("orderType") or order.get("order_type") or "").upper()
-        if not (order_type.startswith("STOP") or order_type.startswith("TAKE_PROFIT")):
-            return False
         reduce_only = order.get("reduceOnly")
         if reduce_only is None:
             reduce_only = order.get("reduce_only")
+        raw_node = order.get("raw") if isinstance(order.get("raw"), dict) else {}
+        nested = raw_node.get("order") if isinstance(raw_node.get("order"), dict) else raw_node
+        nested_trigger_px = _coerce_float((nested or {}).get("triggerPx") if isinstance(nested, dict) else None)
+        nested_trigger_condition = str((nested or {}).get("triggerCondition") or "").strip().upper() if isinstance(nested, dict) else ""
+        nested_is_trigger = (nested or {}).get("isTrigger") if isinstance(nested, dict) else None
+        explicit_is_trigger = order.get("isTrigger")
+        if bool(reduce_only) and (explicit_is_trigger is True or nested_is_trigger is True):
+            return True
+        if bool(reduce_only) and nested_trigger_px is not None and nested_trigger_condition not in {"", "N/A"}:
+            return True
+        order_type = (order.get("type") or order.get("orderType") or order.get("order_type") or "").upper()
+        if not (order_type.startswith("STOP") or order_type.startswith("TAKE_PROFIT")):
+            return False
         return bool(reduce_only)
 
     def _prune_hl_transient_helper_hints(self, now: Optional[float] = None) -> None:
@@ -1426,6 +1463,8 @@ class OrderManager:
         venue = (getattr(self.gateway, "venue", "") or "").strip().lower()
         if venue != "hyperliquid":
             return False
+        if self._has_explicit_non_trigger_markers(order):
+            return False
         self._prune_hl_transient_helper_hints()
         if not self._hl_transient_helper_hints:
             return False
@@ -1436,7 +1475,10 @@ class OrderManager:
         reduce_only = order.get("reduceOnly")
         if reduce_only is None:
             reduce_only = order.get("reduce_only")
-        trigger_price = _coerce_float(order.get("triggerPrice") or order.get("triggerPx"))
+        raw_node = order.get("raw") if isinstance(order.get("raw"), dict) else {}
+        nested = raw_node.get("order") if isinstance(raw_node.get("order"), dict) else raw_node
+        nested_trigger_px = _coerce_float((nested or {}).get("triggerPx") if isinstance(nested, dict) else None)
+        trigger_price = _coerce_float(order.get("triggerPrice") or order.get("triggerPx") or nested_trigger_px)
         entry_price = _coerce_float(order.get("entry_price") or order.get("entryPrice") or order.get("price"))
         client_id = str(order.get("client_id") or order.get("clientOrderId") or order.get("clientId") or "").strip()
         triggerish = bool(
@@ -1447,6 +1489,9 @@ class OrderManager:
                 and isinstance(order.get("orderType", {}).get("trigger"), dict)
             )
         )
+        # Do not hide plain non-reduce orders from Open Orders via transient hints.
+        if not bool(reduce_only) and not triggerish:
+            return False
 
         for hint in self._hl_transient_helper_hints:
             if self._normalize_symbol_value(hint.get("symbol")) != symbol:
@@ -1476,12 +1521,13 @@ class OrderManager:
                         break
                 if price_match:
                     break
-            if size_mismatch:
+            if size_mismatch and bool(reduce_only):
                 continue
             # Reduce-only alone is not sufficient evidence (valid close limits are
             # also reduce-only). Require trigger/price correlation to transient
             # helper hints emitted from our own submit path.
-            if bool(reduce_only) and (triggerish or price_match):
+            helper_like_shape = bool(reduce_only) or (not client_id and (triggerish or price_match))
+            if helper_like_shape and (triggerish or price_match):
                 return True
         return False
 
@@ -1490,14 +1536,27 @@ class OrderManager:
         mode = self._resolve_order_classification_mode_effective()
         if mode in {"v2"}:
             venue = (getattr(self.gateway, "venue", "") or "").strip().lower()
-            forced_discretionary = self._matches_discretionary_intent_hint(
-                build_canonical_order(order, venue=(venue or "unknown"), source="view")
-            )
+            canonical_view = build_canonical_order(order, venue=(venue or "unknown"), source="view")
+            forced_discretionary = self._matches_discretionary_intent_hint(canonical_view)
             intent = self._intent_for_order(order)
-            if intent != "discretionary":
+            allow_unknown = intent == "unknown"
+            if intent != "discretionary" and not allow_unknown:
                 return False
             if forced_discretionary:
                 return True
+            if venue == "hyperliquid":
+                if (
+                    str(canonical_view.get("order_kind") or "").upper() in {"LIMIT", "MARKET"}
+                    and bool(canonical_view.get("reduce_only"))
+                    and bool((canonical_view.get("evidence") or {}).get("explicit_non_trigger_markers"))
+                    and self._helper_hint_for_canonical(canonical_view)
+                    and self._matches_fresh_local_tpsl_hint_price(canonical_view)
+                ):
+                    self._classification_guard_block_count += 1
+                    self._classification_guard_block_reasons["hl_fresh_local_hint_helper"] = (
+                        self._classification_guard_block_reasons.get("hl_fresh_local_hint_helper", 0) + 1
+                    )
+                    return False
             # Rollout safety: keep legacy HL helper suppression as a second guard so
             # transient classifier misses cannot leak stop helpers into Open Orders.
             if venue == "hyperliquid":
@@ -1525,6 +1584,13 @@ class OrderManager:
     def _matches_hl_known_target_helper(self, order: Dict[str, Any]) -> bool:
         venue = (getattr(self.gateway, "venue", "") or "").strip().lower()
         if venue != "hyperliquid":
+            return False
+        if self._has_explicit_non_trigger_markers(order):
+            return False
+        reduce_only = order.get("reduceOnly")
+        if reduce_only is None:
+            reduce_only = order.get("reduce_only")
+        if not bool(reduce_only):
             return False
         symbol = self._normalize_symbol_value(order.get("symbol"))
         if not symbol:
@@ -1574,6 +1640,28 @@ class OrderManager:
             return True
         # No cached position yet; still hide known target helper by price match + no client id.
         return True
+
+    @staticmethod
+    def _has_explicit_non_trigger_markers(order: Dict[str, Any]) -> bool:
+        if not isinstance(order, dict):
+            return False
+        raw_node = order.get("raw") if isinstance(order.get("raw"), dict) else {}
+        nested = raw_node.get("order") if isinstance(raw_node.get("order"), dict) else raw_node
+        nested_is_trigger = nested.get("isTrigger") if isinstance(nested, dict) else None
+        explicit_non_trigger = (order.get("isTrigger") is False) or (nested_is_trigger is False)
+        if not explicit_non_trigger:
+            return False
+        trigger_condition = str(order.get("triggerCondition") or ((nested or {}).get("triggerCondition") if isinstance(nested, dict) else "") or "").strip().upper()
+        if trigger_condition not in {"", "N/A"}:
+            return False
+        trigger_price = _coerce_float(
+            order.get("triggerPrice")
+            or order.get("triggerPx")
+            or ((nested or {}).get("triggerPx") if isinstance(nested, dict) else None)
+        )
+        if trigger_price is not None:
+            return False
+        return order.get("isPositionTpsl") is False
 
     def _prune_discretionary_intent_hints(self) -> None:
         if not self._discretionary_intent_hints:
@@ -1692,12 +1780,18 @@ class OrderManager:
                 if status_raw in {"canceled", "cancelled"} and self._is_tpsl_order(o):
                     sym_key = self._normalize_symbol_value(o.get("symbol") or o.get("market"))
                     if sym_key:
+                        preserve_tp = order_type.startswith("TAKE_PROFIT") and self._should_preserve_local_tpsl_hint_on_cancel(
+                            symbol=sym_key, kind="take_profit", status_raw=status_raw
+                        )
+                        preserve_sl = order_type.startswith("STOP") and self._should_preserve_local_tpsl_hint_on_cancel(
+                            symbol=sym_key, kind="stop_loss", status_raw=status_raw
+                        )
                         entry = self._tpsl_targets_by_symbol.get(sym_key, {}).copy()
                         hints = self.position_targets.get(sym_key, {}).copy()
-                        if order_type.startswith("TAKE_PROFIT"):
+                        if order_type.startswith("TAKE_PROFIT") and not preserve_tp:
                             entry.pop("take_profit", None)
                             hints.pop("take_profit", None)
-                        if order_type.startswith("STOP"):
+                        if order_type.startswith("STOP") and not preserve_sl:
                             entry.pop("stop_loss", None)
                             hints.pop("stop_loss", None)
                         if entry:
@@ -1710,8 +1804,8 @@ class OrderManager:
                             self.position_targets.pop(sym_key, None)
                         self._set_local_tpsl_hint(
                             symbol=sym_key,
-                            clear_tp=order_type.startswith("TAKE_PROFIT"),
-                            clear_sl=order_type.startswith("STOP"),
+                            clear_tp=bool(order_type.startswith("TAKE_PROFIT") and not preserve_tp),
+                            clear_sl=bool(order_type.startswith("STOP") and not preserve_sl),
                         )
                     needs_refresh = True
                     return needs_refresh
@@ -1750,12 +1844,18 @@ class OrderManager:
                 sym_key = self._normalize_symbol_value(o.get("symbol") or o.get("market"))
                 if not sym_key:
                     continue
+                preserve_tp = order_type.startswith("TAKE_PROFIT") and self._should_preserve_local_tpsl_hint_on_cancel(
+                    symbol=sym_key, kind="take_profit", status_raw=status_raw
+                )
+                preserve_sl = order_type.startswith("STOP") and self._should_preserve_local_tpsl_hint_on_cancel(
+                    symbol=sym_key, kind="stop_loss", status_raw=status_raw
+                )
                 entry = self._tpsl_targets_by_symbol.get(sym_key, {}).copy()
                 hints = self.position_targets.get(sym_key, {}).copy()
-                if order_type.startswith("TAKE_PROFIT"):
+                if order_type.startswith("TAKE_PROFIT") and not preserve_tp:
                     entry.pop("take_profit", None)
                     hints.pop("take_profit", None)
-                if order_type.startswith("STOP"):
+                if order_type.startswith("STOP") and not preserve_sl:
                     entry.pop("stop_loss", None)
                     hints.pop("stop_loss", None)
                 if entry:
@@ -1768,8 +1868,8 @@ class OrderManager:
                     self.position_targets.pop(sym_key, None)
                 self._set_local_tpsl_hint(
                     symbol=sym_key,
-                    clear_tp=order_type.startswith("TAKE_PROFIT"),
-                    clear_sl=order_type.startswith("STOP"),
+                    clear_tp=bool(order_type.startswith("TAKE_PROFIT") and not preserve_tp),
+                    clear_sl=bool(order_type.startswith("STOP") and not preserve_sl),
                 )
                 removed_symbol = True
         if active_map:
@@ -1779,6 +1879,52 @@ class OrderManager:
         if removed_symbol and not active_map:
             needs_refresh = True
         return needs_refresh
+
+    def _has_fresh_local_tpsl_hint(self, *, symbol: str, kind: str) -> bool:
+        sym_key = self._normalize_symbol_value(symbol)
+        if not sym_key:
+            return False
+        hint = self._tpsl_local_hints.get(sym_key) or {}
+        val = hint.get(kind)
+        ts = _coerce_float(hint.get(f"{kind}_observed_at"))
+        if val is None or ts is None:
+            return False
+        age = max(0.0, time.time() - float(ts))
+        fresh_cutoff = min(10.0, float(self._tpsl_hint_ttl_seconds or 15.0))
+        return age <= fresh_cutoff
+
+    def _matches_fresh_local_tpsl_hint_price(self, canonical: Dict[str, Any]) -> bool:
+        symbol = self._normalize_symbol_value(canonical.get("symbol"))
+        if not symbol:
+            return False
+        hint = self._tpsl_local_hints.get(symbol) or {}
+        observed_price = _coerce_float(canonical.get("trigger_price") or canonical.get("limit_price"))
+        if observed_price is None:
+            return False
+        tick, _step = self._get_symbol_tick_step(symbol)
+        eps = max(
+            float(tick or 0.0),
+            abs(float(observed_price)) * float(self._trigger_epsilon_ratio or 0.0005),
+            1e-6,
+        )
+        for kind in ("take_profit", "stop_loss"):
+            hint_px = _coerce_float(hint.get(kind))
+            if hint_px is None:
+                continue
+            if not self._has_fresh_local_tpsl_hint(symbol=symbol, kind=kind):
+                continue
+            if abs(float(observed_price) - float(hint_px)) <= eps:
+                return True
+        return False
+
+    def _strong_no_replacement_expected(self, *, status_raw: str) -> bool:
+        status = str(status_raw or "").strip().lower()
+        return status in {"triggered", "filled", "rejected", "failed", "expired", "closed", "done"}
+
+    def _should_preserve_local_tpsl_hint_on_cancel(self, *, symbol: str, kind: str, status_raw: str) -> bool:
+        if self._strong_no_replacement_expected(status_raw=status_raw):
+            return False
+        return self._has_fresh_local_tpsl_hint(symbol=symbol, kind=kind)
 
     async def preview_trade(
         self,
@@ -2677,6 +2823,44 @@ class OrderManager:
         tpsl: Dict[str, Dict[str, Any]] = {}
         tpsl_meta: Dict[str, Dict[str, int]] = {}
         debug_counts = {"total": 0, "position_tpsl": 0, "tp": 0, "sl": 0, "skipped_status": 0, "skipped_trigger": 0}
+        venue = (getattr(self.gateway, "venue", "") or "").strip().lower()
+        positions_view = list(self.positions or [])
+        if not positions_view:
+            gateway_positions = getattr(self.gateway, "_positions", None)
+            if isinstance(gateway_positions, list):
+                positions_view = [p for p in gateway_positions if isinstance(p, dict)]
+
+        def _looks_like_hl_reduce_only_helper(order: Dict[str, Any], symbol: str) -> bool:
+            if venue != "hyperliquid":
+                return False
+            order_type = str(order.get("type") or order.get("orderType") or order.get("order_type") or "").upper()
+            if order_type not in {"LIMIT", "MARKET"}:
+                return False
+            reduce_only = order.get("reduceOnly")
+            if reduce_only is None:
+                reduce_only = order.get("reduce_only")
+            if not bool(reduce_only):
+                return False
+            client_id = str(order.get("clientOrderId") or order.get("clientId") or order.get("client_id") or "").strip()
+            if client_id:
+                return False
+            side = str(order.get("side") or "").strip().upper()
+            size_val = _coerce_float(order.get("size") or order.get("qty") or order.get("quantity"))
+            pos = next(
+                (p for p in positions_view if self._normalize_symbol_value(p.get("symbol")) == symbol),
+                None,
+            )
+            if not isinstance(pos, dict):
+                return False
+            pos_side = str(pos.get("side") or pos.get("positionSide") or pos.get("direction") or "").strip().upper()
+            expected_close_side = "SELL" if pos_side in {"LONG", "BUY"} else "BUY"
+            if side and expected_close_side and side != expected_close_side:
+                return False
+            pos_size = _coerce_float(pos.get("size"))
+            if size_val is not None and pos_size is not None:
+                if abs(abs(float(size_val)) - abs(float(pos_size))) > max(1e-6, abs(float(pos_size)) * 0.2):
+                    return False
+            return True
 
         def _price_hint_for_symbol(symbol: str) -> Optional[float]:
             gateway = self.gateway
@@ -2703,16 +2887,24 @@ class OrderManager:
                 return None
             return None
 
-        def _select_target(symbol: str, field: str, value: Optional[float]) -> None:
+        def _select_target(symbol: str, field: str, value: Optional[float], candidate_ts: int = 0) -> None:
             if value is None:
                 return
             entry = tpsl.setdefault(symbol, {})
             meta = tpsl_meta.setdefault(symbol, {"take_profit_count": 0, "stop_loss_count": 0})
             count_key = "take_profit_count" if field == "take_profit" else "stop_loss_count"
+            ts_key = "take_profit_ts" if field == "take_profit" else "stop_loss_ts"
             meta[count_key] = int(meta.get(count_key, 0)) + 1
             chosen_val = _coerce_float(entry.get(field))
             if chosen_val is None:
                 entry[field] = value
+                if candidate_ts > 0:
+                    meta[ts_key] = candidate_ts
+                return
+            previous_ts = int(meta.get(ts_key, 0) or 0)
+            if candidate_ts > 0 and candidate_ts >= previous_ts:
+                entry[field] = value
+                meta[ts_key] = candidate_ts
                 return
             price_hint = _price_hint_for_symbol(symbol)
             if price_hint is None:
@@ -2735,6 +2927,8 @@ class OrderManager:
                 continue
             order_type = (order.get("type") or order.get("orderType") or order.get("order_type") or "").upper()
             is_position_tpsl = self._is_tpsl_order(order)
+            if not is_position_tpsl and _looks_like_hl_reduce_only_helper(order, symbol):
+                is_position_tpsl = True
             if not is_position_tpsl:
                 continue
             debug_counts["position_tpsl"] += 1
@@ -2748,6 +2942,9 @@ class OrderManager:
                 order.get("tp"),
                 order.get("triggerPrice") if order_type.startswith("TAKE_PROFIT") else None,
                 (order.get("openTpParams") or {}).get("triggerPrice"),
+                (((order.get("raw") or {}).get("order") or {}).get("triggerPx")
+                if str(order_type or "").startswith("TAKE_PROFIT")
+                else None),
             ]
             sl_candidates = [
                 order.get("slTriggerPrice"),
@@ -2758,18 +2955,82 @@ class OrderManager:
                 order.get("sl"),
                 order.get("triggerPrice") if order_type.startswith("STOP") else None,
                 (order.get("openSlParams") or {}).get("triggerPrice"),
+                (((order.get("raw") or {}).get("order") or {}).get("triggerPx")
+                if str(order_type or "").startswith("STOP")
+                else None),
             ]
 
             tp_val = _first_number(tp_candidates)
             sl_val = _first_number(sl_candidates)
+            candidate_ts = int(
+                _coerce_float(
+                    order.get("updatedTime")
+                    or order.get("updatedAt")
+                    or order.get("createdTime")
+                    or order.get("createdAt")
+                    or order.get("statusTimestamp")
+                    or order.get("timestamp")
+                )
+                or 0
+            )
+            if tp_val is None and sl_val is None:
+                raw_node = order.get("raw") if isinstance(order.get("raw"), dict) else {}
+                nested = raw_node.get("order") if isinstance(raw_node.get("order"), dict) else raw_node
+                generic_trigger = _first_number(
+                    [
+                        order.get("triggerPrice"),
+                        order.get("triggerPx"),
+                        (nested or {}).get("triggerPx") if isinstance(nested, dict) else None,
+                        order.get("price"),
+                        order.get("limitPrice"),
+                        order.get("limitPx"),
+                        (nested or {}).get("limitPx") if isinstance(nested, dict) else None,
+                    ]
+                )
+                if generic_trigger is not None:
+                    existing = self._tpsl_targets_by_symbol.get(symbol, {}) or {}
+                    cur_tp = _coerce_float(existing.get("take_profit"))
+                    cur_sl = _coerce_float(existing.get("stop_loss"))
+                    if cur_tp is not None and cur_sl is not None:
+                        if abs(float(generic_trigger) - float(cur_sl)) <= abs(float(generic_trigger) - float(cur_tp)):
+                            sl_val = generic_trigger
+                        else:
+                            tp_val = generic_trigger
+                    elif cur_sl is not None:
+                        sl_val = generic_trigger
+                    elif cur_tp is not None:
+                        tp_val = generic_trigger
+                    else:
+                        pos = next(
+                            (p for p in positions_view if self._normalize_symbol_value(p.get("symbol")) == symbol),
+                            None,
+                        )
+                        if isinstance(pos, dict):
+                            pos_side = str(pos.get("side") or pos.get("positionSide") or pos.get("direction") or "").strip().upper()
+                            entry_px = _coerce_float(
+                                pos.get("entry_price")
+                                or pos.get("entryPrice")
+                                or pos.get("avgEntryPrice")
+                            )
+                            if entry_px is not None:
+                                if pos_side in {"LONG", "BUY"}:
+                                    if float(generic_trigger) <= float(entry_px):
+                                        sl_val = generic_trigger
+                                    else:
+                                        tp_val = generic_trigger
+                                elif pos_side in {"SHORT", "SELL"}:
+                                    if float(generic_trigger) >= float(entry_px):
+                                        sl_val = generic_trigger
+                                    else:
+                                        tp_val = generic_trigger
             if tp_val is None and sl_val is None:
                 debug_counts["skipped_trigger"] += 1
             if "TAKE_PROFIT" in order_type or tp_val is not None:
-                _select_target(symbol, "take_profit", tp_val)
+                _select_target(symbol, "take_profit", tp_val, candidate_ts)
                 if tp_val is not None:
                     debug_counts["tp"] += 1
             if "STOP" in order_type or sl_val is not None:
-                _select_target(symbol, "stop_loss", sl_val)
+                _select_target(symbol, "stop_loss", sl_val, candidate_ts)
                 if sl_val is not None:
                     debug_counts["sl"] += 1
 

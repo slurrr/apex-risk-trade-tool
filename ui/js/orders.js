@@ -5,6 +5,7 @@
   const formatNumber = (window.TradeApp && window.TradeApp.formatNumber) || ((v) => v);
   let streamSocket = null;
   let streamToken = 0;
+  let reloadTimer = null;
 
   async function fetchOrders() {
     const resp = await fetch(`${API_BASE}/api/orders`);
@@ -105,6 +106,16 @@
     }
   }
 
+  function scheduleLoadOrders(delayMs = 200) {
+    if (reloadTimer) {
+      clearTimeout(reloadTimer);
+    }
+    reloadTimer = setTimeout(() => {
+      reloadTimer = null;
+      loadOrders();
+    }, Math.max(0, Number(delayMs) || 0));
+  }
+
   function startStream(attempt = 0, token = streamToken) {
     const errorBox = document.getElementById("orders-error");
     try {
@@ -123,8 +134,10 @@
           if (msg.type === "ticker" && window.TradeApp && typeof window.TradeApp.updateTickerCache === "function") {
             window.TradeApp.updateTickerCache(msg.symbol, msg.price);
           }
-          if (msg.type === "orders" && Array.isArray(msg.payload)) {
-            renderOrders(msg.payload);
+          if ((msg.type === "orders" || msg.type === "orders_raw") && Array.isArray(msg.payload)) {
+            // Always re-load via /api/orders so server-side classification/filtering
+            // decides what belongs in Open Orders.
+            scheduleLoadOrders(120);
           }
         } catch (err) {
           // ignore malformed frames

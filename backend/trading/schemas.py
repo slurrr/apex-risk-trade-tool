@@ -80,6 +80,9 @@ class OrderResponse(BaseModel):
     size: Optional[float] = None
     entry_price: Optional[float] = None
     status: Optional[str] = None
+    reduce_only: Optional[bool] = None
+    intent: Optional[str] = None
+    client_id: Optional[str] = None
     created_at: Optional[str] = None
 
 

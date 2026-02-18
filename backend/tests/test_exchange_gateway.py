@@ -617,6 +617,42 @@ def test_hyperliquid_private_account_orders_positions():
     assert orders[1]["triggerPrice"] == "2350"
 
 
+def test_hyperliquid_account_summary_respects_explicit_zero_available_margin():
+    gateway = FakeHyperliquidGateway()
+    summary = gateway._build_account_summary_from_payload(
+        {
+            "marginSummary": {
+                "accountValue": "1000",
+                "totalMarginUsed": "100",
+            },
+            "availableMargin": 0,
+            "withdrawable": "5",
+            "assetPositions": [],
+        }
+    )
+    assert summary["available_margin"] == 0.0
+    assert summary["sizing_available_margin"] == 0.0
+    assert summary["available_margin_source"] == "payload.availableMargin"
+
+
+def test_hyperliquid_account_summary_respects_zero_available_margin_in_margin_summary():
+    gateway = FakeHyperliquidGateway()
+    summary = gateway._build_account_summary_from_payload(
+        {
+            "marginSummary": {
+                "accountValue": "1000",
+                "totalMarginUsed": "100",
+                "availableMargin": 0,
+            },
+            "withdrawable": "5",
+            "assetPositions": [],
+        }
+    )
+    assert summary["available_margin"] == 0.0
+    assert summary["sizing_available_margin"] == 0.0
+    assert summary["available_margin_source"] == "marginSummary.availableMargin"
+
+
 class FakeHyperliquidTradeGateway(FakeHyperliquidGateway):
     def __init__(self) -> None:
         class _FakeExchange:
@@ -654,6 +690,31 @@ class FakeHyperliquidTradeGateway(FakeHyperliquidGateway):
         self._exchange = _FakeExchange()
 
 
+class FakeHyperliquidCaseSensitiveGateway(HyperliquidGateway):
+    def __init__(self) -> None:
+        class _FakeInfo:
+            def __init__(self) -> None:
+                self._coins = {"kSHIB", "kPEPE"}
+
+            def meta(self):
+                return {"universe": [{"name": "kSHIB", "szDecimals": 0}, {"name": "kPEPE", "szDecimals": 0}]}
+
+            def all_mids(self):
+                return {"kSHIB": "0.00001234", "kPEPE": "0.00123"}
+
+            def l2_snapshot(self, name: str):
+                if name not in self._coins:
+                    raise KeyError(name)
+                return {"levels": [[{"px": "0.00001230", "sz": "1000"}], [{"px": "0.00001240", "sz": "1200"}]]}
+
+            def candles_snapshot(self, name: str, interval: str, start_ms: int, end_ms: int):
+                if name not in self._coins:
+                    raise KeyError(name)
+                return [{"t": 1000, "o": "1", "h": "2", "l": "0.5", "c": "1.5", "v": "10"}]
+
+        super().__init__(base_url="https://example.invalid", user_address="0xabc", info_client=_FakeInfo())
+
+
 def test_hyperliquid_place_order_and_cancel():
     gateway = FakeHyperliquidTradeGateway()
     run(gateway.load_configs())
@@ -677,6 +738,25 @@ def test_hyperliquid_place_order_and_cancel():
 
     closed = run(gateway.place_close_order(symbol="BTC-USDT", side="LONG", size=0.01, close_type="market"))
     assert closed["exchange_order_id"] == "98765"
+
+
+def test_hyperliquid_case_sensitive_coin_symbols_support_depth_and_klines():
+    gateway = FakeHyperliquidCaseSensitiveGateway()
+    run(gateway.load_configs())
+
+    depth = run(gateway.get_depth_snapshot("KSHIB-USDC", levels=5))
+    assert depth["bids"][0]["px"] == 0.0000123
+
+    candles = run(gateway.fetch_klines("KSHIB-USDC", "15m", 5))
+    assert candles[0]["close"] == 1.5
+
+
+def test_hyperliquid_case_sensitive_coin_symbols_support_reference_price():
+    gateway = FakeHyperliquidCaseSensitiveGateway()
+    run(gateway.load_configs())
+    price, source = run(gateway.get_reference_price("KPEPE-USDC"))
+    assert source == "mid"
+    assert price == 0.00123
 
 
 def test_hyperliquid_update_targets_places_tp_and_sl_reduce_only():

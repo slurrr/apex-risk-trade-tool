@@ -37,6 +37,32 @@ def _coerce_int(value: Any) -> Optional[int]:
         return None
 
 
+def _is_zero_like(value: Any) -> bool:
+    try:
+        if value is None:
+            return False
+        if isinstance(value, str) and not value.strip():
+            return False
+        return abs(float(value)) <= 0.0
+    except (TypeError, ValueError):
+        return False
+
+
+def _extract_nested_hl_trigger(order: Dict[str, Any]) -> tuple[Optional[float], Optional[str], Optional[bool]]:
+    raw = order.get("raw")
+    if not isinstance(raw, dict):
+        return None, None, None
+    node = raw.get("order") if isinstance(raw.get("order"), dict) else raw
+    if not isinstance(node, dict):
+        return None, None, None
+    trigger_px = _coerce_float(node.get("triggerPx") or node.get("triggerPrice"))
+    trigger_condition = str(node.get("triggerCondition") or "").strip()
+    is_trigger = node.get("isTrigger")
+    if isinstance(is_trigger, bool):
+        return trigger_px, trigger_condition, is_trigger
+    return trigger_px, trigger_condition, None
+
+
 def canonical_status(value: Any) -> str:
     raw = str(value or "").strip().lower()
     if not raw:
@@ -86,11 +112,30 @@ def build_canonical_order(
     order_kind = canonical_order_kind(
         order.get("type") or order.get("orderType") or order.get("order_type")
     )
+    nested_trigger_price, nested_trigger_condition, nested_is_trigger = _extract_nested_hl_trigger(order)
     trigger_price = _coerce_float(
         order.get("triggerPrice")
         or order.get("triggerPx")
         or order_type_obj.get("triggerPrice")
+        or nested_trigger_price
     )
+    trigger_condition_text = str(order.get("triggerCondition") or nested_trigger_condition or "").strip().upper()
+    explicit_non_trigger_flag = (order.get("isTrigger") is False) or (nested_is_trigger is False)
+    trigger_px_candidates = [
+        order.get("triggerPrice"),
+        order.get("triggerPx"),
+        order_type_obj.get("triggerPrice"),
+        nested_trigger_price,
+    ]
+    if (
+        explicit_non_trigger_flag
+        and trigger_condition_text in {"", "N/A"}
+        and all(v is None or _is_zero_like(v) for v in trigger_px_candidates)
+        and (order.get("isPositionTpsl") is False)
+    ):
+        # Hyperliquid non-trigger reduce-only rows often carry triggerPx="0.0";
+        # normalize this sentinel to "no trigger" so they don't misclassify.
+        trigger_price = None
     reduce_only = order.get("reduceOnly")
     if reduce_only is None:
         reduce_only = order.get("reduce_only")
@@ -162,6 +207,16 @@ def build_canonical_order(
             "has_trigger_price": trigger_price is not None,
             "has_reduce_only": reduce_only is not None,
             "enriched_order_status": bool(order.get("__enriched_order_status")),
+            "is_trigger_flag": (order.get("isTrigger") is True) or (nested_is_trigger is True),
+            "explicit_non_trigger_markers": (
+                ((order.get("isTrigger") is False) or (nested_is_trigger is False))
+                and (
+                    trigger_condition_text
+                    in {"", "N/A"}
+                )
+                and (trigger_price is None)
+                and (order.get("isPositionTpsl") is False)
+            ),
         },
         "raw": order,
         "observed_at_ms": observed,
@@ -208,7 +263,6 @@ def classify_intent(
     is_tpsl_flag = canonical.get("is_tpsl_flag")
     has_trigger = canonical.get("trigger_price") is not None
     client_order_id = canonical.get("client_order_id")
-
     if status in {"FILLED", "CANCELED", "REJECTED", "TRIGGERED"}:
         reasons.append("terminal_status")
         return "unknown", "low", reasons
@@ -234,6 +288,14 @@ def classify_intent(
         # Ambiguous by shape alone: this can be either helper or discretionary
         # reduce-only close; require enrichment or local intent hint.
         reasons.append("hl_reduce_only_without_trigger_markers")
+        # Explicit non-trigger markers from venue payload are stronger evidence
+        # than local helper hints (which can race/stale during stop moves).
+        if bool((canonical.get("evidence") or {}).get("explicit_non_trigger_markers")):
+            reasons.append("hl_explicit_non_trigger_reduce_only")
+            return "discretionary", "medium", reasons
+        if helper_hint:
+            reasons.append("helper_hint")
+            return "tpsl_helper", "medium", reasons
         if bool((canonical.get("evidence") or {}).get("enriched_order_status")):
             reasons.append("enriched_discretionary")
             return "discretionary", "medium", reasons
@@ -241,6 +303,13 @@ def classify_intent(
     if helper_hint:
         reasons.append("helper_hint")
         return "tpsl_helper", "medium", reasons
+
+    # Sparse legacy rows can arrive without explicit order type markers.
+    # Treat non-reduce, non-trigger rows as discretionary rather than hiding
+    # them as unknown in v2 mode.
+    if order_kind == "UNKNOWN" and not has_trigger and reduce_only in {None, False}:
+        reasons.append("sparse_discretionary_shape")
+        return "discretionary", "medium", reasons
 
     if order_kind in {"LIMIT", "MARKET"} and not bool(reduce_only):
         reasons.append("plain_discretionary_shape")

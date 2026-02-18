@@ -20,6 +20,7 @@
   let pendingRender = null;
   let streamSocket = null;
   let streamToken = 0;
+  let pendingOrderDrivenRefresh = null;
   let currentPnlBasis = "notional";
   const lockEditing = () => {};
   const unlockEditing = () => {};
@@ -467,6 +468,19 @@
           if (msg.type === "positions" && Array.isArray(msg.payload)) {
             renderPositions(msg.payload);
             window.dispatchEvent(new CustomEvent("positions:update", { detail: { positions: msg.payload } }));
+          } else if ((msg.type === "orders" || msg.type === "orders_raw") && Array.isArray(msg.payload)) {
+            // Stop/TP updates can arrive as orders events without a positions frame.
+            // Coalesce rapid bursts and force a TP/SL resync for immediate UI correctness.
+            const hasReduceOnly = msg.payload.some((o) => o && (o.reduceOnly === true || o.reduce_only === true));
+            if (hasReduceOnly) {
+              if (pendingOrderDrivenRefresh) {
+                window.clearTimeout(pendingOrderDrivenRefresh);
+              }
+              pendingOrderDrivenRefresh = window.setTimeout(() => {
+                pendingOrderDrivenRefresh = null;
+                loadPositions(true);
+              }, 150);
+            }
           }
         } catch (err) {
           // ignore malformed frames
