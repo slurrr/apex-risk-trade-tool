@@ -10,6 +10,7 @@ class TradeRequest(BaseModel):
     risk_pct: float = Field(..., gt=0)
     side: Optional[str] = None
     tp: Optional[float] = Field(None, gt=0)
+    trace_id: Optional[str] = None
     preview: bool = True
     execute: bool = False
 
@@ -31,6 +32,7 @@ class TradePreviewResponse(BaseModel):
     warnings: list[str] = []
     entry_price: float
     stop_price: float
+    trace_id: Optional[str] = None
 
 
 class TradeExecuteResponse(TradePreviewResponse):
@@ -78,6 +80,9 @@ class OrderResponse(BaseModel):
     size: Optional[float] = None
     entry_price: Optional[float] = None
     status: Optional[str] = None
+    reduce_only: Optional[bool] = None
+    intent: Optional[str] = None
+    client_id: Optional[str] = None
     created_at: Optional[str] = None
 
 

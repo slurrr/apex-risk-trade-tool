@@ -11,7 +11,7 @@ from backend.api.routes_stream import router as stream_router
 from backend.api.routes_venue import configure_venue_controller, router as venue_router
 from backend.api.errors import error_response
 from backend.core.config import get_settings
-from backend.core.logging import init_logging
+from backend.core.logging import init_logging_advanced
 from backend.core.ui_mock import is_ui_mock_enabled
 from backend.exchange.exchange_gateway import ExchangeGateway
 from backend.exchange.hyperliquid_gateway import HyperliquidGateway
@@ -21,7 +21,15 @@ from backend.trading.order_manager import OrderManager
 
 def create_app() -> FastAPI:
     settings = get_settings()
-    init_logging(settings.log_level)
+    init_logging_advanced(
+        level=settings.log_level,
+        log_to_file=settings.log_to_file,
+        log_dir=settings.log_dir,
+        console_level=settings.log_console_level,
+        incident_level=settings.log_incident_level,
+        audit_trade_enabled=settings.log_audit_trade_enabled,
+        audit_stream_enabled=settings.log_audit_stream_enabled,
+    )
 
     apex_gateway = ExchangeGateway(settings)
     hyperliquid_gateway = HyperliquidGateway(

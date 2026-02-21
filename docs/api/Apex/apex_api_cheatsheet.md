@@ -98,7 +98,7 @@ Body: - `id`: clientOrderId
 #### TP/SL specifics (position protections)
 
 - **Source of truth**: private WS `ws_zk_accounts_v3` `orders` payload; only entries with `isPositionTpsl=true` and type starting `STOP_` or `TAKE_PROFIT_` are used. REST snapshots are not used for TP/SL data.
-- **Supplemental verification**: `GET /v3/history-orders` may include TP/SL-related fields for *historical* orders (e.g., after fills/triggers). Use it as a bounded, fallback verification signal (e.g., confirming target removal), not as the primary source of active TP/SL discovery.
+- **Supplemental verification**: `GET /v3/history-orders` may include TP/SL-related fields for *historical* orders (e.g., after fills/triggers). Use it as a bounded, fallback corroboration/backfill signal (never a sole removal trigger), not as the primary source of active TP/SL discovery.
 - **Create**: reduce-only TP = `TAKE_PROFIT_MARKET`, SL = `STOP_MARKET`; keep one active TP and one active SL per symbol.
 - **Cancel**: `POST /api/v3/delete-order` (body `id`) or `POST /api/v3/delete-client-order-id` (body `id`). Apex code `20016` (“already canceled”) is treated as success.
 - **Partial payloads**: merge active TP/SL entries across snapshots; canceled TP/SL entries remove only that side of the cache.

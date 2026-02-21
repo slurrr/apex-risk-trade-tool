@@ -8,6 +8,7 @@
   --border: #243040;
   --accent: #ecbc43;
   --accent-rgb: 236, 188, 67;
+  --accent-ink: #1a2433;
   --accent-press: #d8a529;
   --accent-muted: rgba(236, 188, 67, 0.28);
   --positive: #3ecf8e;
@@ -24,6 +25,7 @@
   --border: #dce3ef;
   --accent: #ecbc43;
   --accent-rgb: 236, 188, 67;
+  --accent-ink: #1a2433;
   --accent-press: #d8a529;
   --accent-muted: rgba(236, 188, 67, 0.34);
   --positive: #16a34a;
@@ -258,6 +260,18 @@ body {
   margin-bottom: 1rem;
 }
 
+#trade-form .trade-grid-column {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  align-self: stretch;
+  min-height: 100%;
+}
+
+#trade-form .trade-grid-column > .field:last-of-type {
+  margin-top: auto;
+}
+
 .field {
   display: flex;
   flex-direction: column;
@@ -326,13 +340,15 @@ body {
   letter-spacing: 0.08em;
 }
 
-.atr-timeframe-toggle {
+.atr-timeframe-toggle,
+.risk-preset-toggle {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 0.35rem;
 }
 
-.atr-timeframe-option {
+.atr-timeframe-option,
+.risk-preset-option {
   border: 1px solid var(--border);
   background: rgba(16, 23, 36, 0.4);
   color: var(--muted);
@@ -347,14 +363,30 @@ body {
   transition: background 0.15s ease, color 0.15s ease, box-shadow 0.2s ease;
 }
 
-.atr-timeframe-option:hover {
+.atr-timeframe-option:hover,
+.risk-preset-option:hover {
   color: var(--text);
 }
 
-.atr-timeframe-option.is-active {
+.atr-timeframe-option.is-active,
+.risk-preset-option.is-active {
   background: var(--accent);
-  color: #fff;
+  color: var(--accent-ink);
   box-shadow: 0 10px 20px rgba(var(--accent-rgb), 0.3);
+}
+
+.risk-preset {
+  margin-top: 0.35rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.risk-preset-label {
+  font-size: 0.75rem;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
 }
 
 .liquidity-panel {
@@ -407,7 +439,7 @@ body {
 
 .liquidity-chip.is-active {
   background: var(--accent);
-  color: #fff;
+  color: var(--accent-ink);
   box-shadow: 0 10px 20px rgba(var(--accent-rgb), 0.22);
 }
 
@@ -675,7 +707,7 @@ body {
 
 .side-option.is-active {
   background: var(--accent);
-  color: #fff;
+  color: var(--accent-ink);
   box-shadow: 0 10px 24px rgba(var(--accent-rgb), 0.35);
 }
 
@@ -704,7 +736,7 @@ html[data-theme="light"] .side-option {
 
 html[data-theme="light"] .side-option.is-active {
   background: var(--accent);
-  color: #fff;
+  color: var(--accent-ink);
 }
 
 html[data-theme="light"] .atr-timeframe-option {
@@ -712,9 +744,15 @@ html[data-theme="light"] .atr-timeframe-option {
   color: rgba(15, 23, 42, 0.72);
 }
 
-html[data-theme="light"] .atr-timeframe-option.is-active {
+html[data-theme="light"] .atr-timeframe-option.is-active,
+html[data-theme="light"] .risk-preset-option.is-active {
   background: var(--accent);
-  color: #fff;
+  color: var(--accent-ink);
+}
+
+html[data-theme="light"] .risk-preset-option {
+  background: rgba(15, 23, 42, 0.08);
+  color: rgba(15, 23, 42, 0.72);
 }
 
 html[data-theme="light"] .liquidity-panel {
@@ -728,7 +766,7 @@ html[data-theme="light"] .liquidity-chip {
 
 html[data-theme="light"] .liquidity-chip.is-active {
   background: var(--accent);
-  color: #fff;
+  color: var(--accent-ink);
 }
 
 .grid-actions {
@@ -750,7 +788,7 @@ html[data-theme="light"] .liquidity-chip.is-active {
 
 .btn.primary {
   background: var(--accent);
-  color: #fff;
+  color: var(--accent-ink);
   box-shadow: 0 10px 24px rgba(var(--accent-rgb), 0.35);
 }
 
@@ -832,6 +870,51 @@ html[data-theme="light"] .liquidity-chip.is-active {
 
 .trade-line.dim {
   color: var(--muted);
+}
+
+.trade-status-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.28rem;
+  margin-left: 0.28rem;
+  font-weight: 700;
+  color: var(--muted);
+}
+
+.trade-status-pill.is-filled {
+  color: var(--positive);
+}
+
+.trade-status-check {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1rem;
+  height: 1rem;
+  border-radius: 999px;
+  border: 1px solid rgba(62, 207, 142, 0.45);
+  background: rgba(62, 207, 142, 0.16);
+  font-size: 0.74rem;
+  line-height: 1;
+}
+
+.trade-status-check.is-pop {
+  animation: tradeStatusPop 320ms ease-out;
+}
+
+@keyframes tradeStatusPop {
+  0% {
+    transform: scale(0.68);
+    opacity: 0.25;
+  }
+  65% {
+    transform: scale(1.08);
+    opacity: 1;
+  }
+  100% {
+    transform: scale(1);
+    opacity: 1;
+  }
 }
 
 .trade-warnings {
@@ -1300,6 +1383,15 @@ html[data-theme="light"] .venue-switch-btn:not(.is-active):hover {
   }
   .trade-grid {
     grid-template-columns: 1fr;
+  }
+  #trade-form .trade-grid-column {
+    min-height: 0;
+  }
+  #trade-form .trade-grid-column > .field:first-of-type {
+    min-height: 0;
+  }
+  #trade-form .trade-grid-column > .field:last-of-type {
+    margin-top: 0;
   }
   .results-row {
     grid-template-columns: 1fr;

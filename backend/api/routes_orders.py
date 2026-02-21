@@ -41,3 +41,20 @@ async def cancel_order(order_id: str, manager: OrderManager = Depends(get_order_
             "cancel_order_failed", extra={"event": "cancel_order_failed", "order_id": order_id, "error": str(exc)}
         )
         return error_response(status_code=500, code="unexpected_error", detail="Cancel request failed")
+
+
+@router.get("/orders/debug", responses={500: {"model": ErrorResponse}})
+async def orders_debug(
+    intent: str = "unknown",
+    limit: int = 200,
+    include_raw: bool = False,
+    manager: OrderManager = Depends(get_order_manager),
+) -> dict:
+    """Debug endpoint for canonical order classification state."""
+    try:
+        if is_ui_mock_enabled():
+            return {"orders": [], "meta": {"mode": "mock"}}
+        return manager.get_orders_debug(intent=intent, limit=limit, include_raw=include_raw)
+    except Exception as exc:
+        logger.exception("orders_debug_failed", extra={"event": "orders_debug_failed", "error": str(exc)})
+        return error_response(status_code=500, code="unexpected_error", detail="Unable to fetch orders debug payload")

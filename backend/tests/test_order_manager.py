@@ -1,5 +1,6 @@
 import asyncio
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -264,6 +265,28 @@ def test_extract_tpsl_ignores_non_position_tpsl_orders():
     assert tpsl_map == {"BTC-USDT": {"take_profit": 100000.0}}
 
 
+def test_hl_select_more_recent_prefers_resolved_rest_over_unknown_ws_on_tie():
+    gateway = FakeGateway(venue="hyperliquid", orders=[])
+    manager = OrderManager(gateway)
+    current = {
+        "venue": "hyperliquid",
+        "order_id": "123",
+        "intent": "unknown",
+        "source": "ws",
+        "updated_at_ms": 1000,
+    }
+    incoming = {
+        "venue": "hyperliquid",
+        "order_id": "123",
+        "intent": "discretionary",
+        "source": "rest",
+        "updated_at_ms": 1000,
+    }
+    chosen = manager._select_more_recent_record(current, incoming)
+    assert chosen["intent"] == "discretionary"
+    assert chosen["source"] == "rest"
+
+
 def test_enrich_positions_uses_symbol_map_even_with_different_ids():
     gateway = FakeGateway(
         positions=[
@@ -294,6 +317,240 @@ def test_enrich_positions_uses_symbol_map_even_with_different_ids():
             "pnl": None,
         }
     ]
+
+
+def test_extract_tpsl_limit_shape_uses_existing_stop_context():
+    gateway = FakeGateway(
+        venue="hyperliquid",
+        positions=[
+            {"symbol": "NEAR-USDC", "positionSide": "LONG", "size": "2", "entryPrice": "1.00"},
+        ],
+    )
+    manager = OrderManager(gateway)
+    manager._tpsl_targets_by_symbol = {"NEAR-USDC": {"take_profit": 1.20, "stop_loss": 0.92}}
+    tpsl = manager._extract_tpsl_from_orders(
+        [
+            {
+                "orderId": "sl-2",
+                "symbol": "NEAR-USDC",
+                "side": "SELL",
+                "size": "2",
+                "status": "OPEN",
+                "type": "LIMIT",
+                "orderType": "LIMIT",
+                "reduceOnly": True,
+                "isPositionTpsl": False,
+                "triggerPrice": None,
+                "raw": {
+                    "order": {
+                        "isTrigger": True,
+                        "triggerCondition": "Price below 0.9244",
+                        "triggerPx": "0.9244",
+                        "orderType": "Limit",
+                    }
+                },
+            }
+        ]
+    )
+    assert tpsl.get("NEAR-USDC", {}).get("stop_loss") == pytest.approx(0.9244)
+
+
+def test_extract_tpsl_hl_reduce_only_limit_without_markers_uses_price_and_side():
+    gateway = FakeGateway(
+        venue="hyperliquid",
+        positions=[
+            {"symbol": "NEAR-USDC", "positionSide": "LONG", "size": "644.9", "entryPrice": "0.95"},
+        ],
+    )
+    manager = OrderManager(gateway)
+    tpsl = manager._extract_tpsl_from_orders(
+        [
+            {
+                "orderId": "320467277287",
+                "clientOrderId": None,
+                "symbol": "NEAR-USDC",
+                "side": "SELL",
+                "size": "644.9",
+                "price": "0.89481",
+                "status": "open",
+                "reduceOnly": True,
+                "type": "LIMIT",
+                "orderType": "LIMIT",
+                "triggerPrice": None,
+                "isPositionTpsl": False,
+                "isTrigger": False,
+            }
+        ]
+    )
+    assert tpsl.get("NEAR-USDC", {}).get("stop_loss") == pytest.approx(0.89481)
+
+
+def test_include_in_open_orders_allows_unknown_hl_non_helper(monkeypatch):
+    gateway = FakeGateway(venue="hyperliquid", orders=[])
+    manager = OrderManager(gateway)
+    monkeypatch.setattr(manager, "_resolve_order_classification_mode_effective", lambda: "v2")
+    monkeypatch.setattr(manager, "_intent_for_order", lambda order: "unknown")
+    order = {
+        "orderId": "entry-unknown-1",
+        "symbol": "BTC-USDC",
+        "side": "BUY",
+        "size": "1.0",
+        "status": "OPEN",
+        "type": "LIMIT",
+        "orderType": "LIMIT",
+        "reduceOnly": False,
+        "price": "100000",
+    }
+    assert manager._include_in_open_orders(order) is True
+
+
+def test_known_target_helper_does_not_hide_non_reduce_orders():
+    gateway = FakeGateway(venue="hyperliquid", orders=[])
+    manager = OrderManager(gateway)
+    manager._tpsl_targets_by_symbol = {"BTC-USDC": {"take_profit": 101000.0, "stop_loss": 99000.0}}
+    manager.positions = [
+        {"symbol": "BTC-USDC", "side": "LONG", "size": 1.0},
+    ]
+    order = {
+        "symbol": "BTC-USDC",
+        "side": "SELL",
+        "size": "1",
+        "price": "101000",
+        "type": "LIMIT",
+        "reduceOnly": False,
+        "clientOrderId": None,
+    }
+    assert manager._matches_hl_known_target_helper(order) is False
+
+
+def test_transient_helper_hint_does_not_hide_plain_non_reduce_orders():
+    gateway = FakeGateway(venue="hyperliquid", orders=[])
+    manager = OrderManager(gateway)
+    manager._hl_transient_helper_hints = [
+        {
+            "symbol": "BTC-USDC",
+            "side": "SELL",
+            "size": 1.0,
+            "trigger_price": 99000.0,
+            "limit_price": 99000.0,
+            "expires_at": time.time() + 10.0,
+        }
+    ]
+    order = {
+        "symbol": "BTC-USDC",
+        "side": "SELL",
+        "size": "1",
+        "price": "99000",
+        "type": "LIMIT",
+        "reduceOnly": False,
+        "clientOrderId": None,
+    }
+    assert manager._matches_hl_transient_helper_hint(order) is False
+
+
+def test_transient_helper_hint_does_not_hide_reduce_only_explicit_non_trigger():
+    gateway = FakeGateway(venue="hyperliquid", orders=[])
+    manager = OrderManager(gateway)
+    manager._hl_transient_helper_hints = [
+        {
+            "symbol": "NEAR-USDC",
+            "side": "SELL",
+            "size": 644.9,
+            "trigger_price": 0.89481,
+            "limit_price": 0.89481,
+            "expires_at": time.time() + 10.0,
+        }
+    ]
+    order = {
+        "orderId": "320467277287",
+        "symbol": "NEAR-USDC",
+        "side": "SELL",
+        "size": "644.9",
+        "price": "0.89481",
+        "status": "open",
+        "reduceOnly": True,
+        "type": "LIMIT",
+        "orderType": "LIMIT",
+        "triggerPrice": None,
+        "isPositionTpsl": False,
+        "isTrigger": False,
+        "triggerCondition": "N/A",
+    }
+    assert manager._matches_hl_transient_helper_hint(order) is False
+
+
+def test_known_target_helper_does_not_hide_reduce_only_explicit_non_trigger():
+    gateway = FakeGateway(venue="hyperliquid", orders=[])
+    manager = OrderManager(gateway)
+    manager._tpsl_targets_by_symbol = {"NEAR-USDC": {"stop_loss": 0.89481}}
+    manager.positions = [{"symbol": "NEAR-USDC", "side": "LONG", "size": 644.9}]
+    order = {
+        "orderId": "320467277287",
+        "symbol": "NEAR-USDC",
+        "side": "SELL",
+        "size": "644.9",
+        "price": "0.89481",
+        "status": "open",
+        "reduceOnly": True,
+        "type": "LIMIT",
+        "orderType": "LIMIT",
+        "triggerPrice": None,
+        "isPositionTpsl": False,
+        "isTrigger": False,
+        "triggerCondition": "N/A",
+    }
+    assert manager._matches_hl_known_target_helper(order) is False
+
+
+def test_include_in_open_orders_hides_explicit_non_trigger_when_fresh_local_hint_matches(monkeypatch):
+    gateway = FakeGateway(venue="hyperliquid", orders=[])
+    manager = OrderManager(gateway)
+    manager.positions = [{"symbol": "NEAR-USDC", "side": "LONG", "size": 644.9}]
+    manager._tpsl_targets_by_symbol = {"NEAR-USDC": {"stop_loss": 0.89481}}
+    manager._set_local_tpsl_hint(symbol="NEAR-USDC", stop_loss=0.89481)
+    monkeypatch.setattr(manager, "_resolve_order_classification_mode_effective", lambda: "v2")
+    monkeypatch.setattr(manager, "_intent_for_order", lambda order: "discretionary")
+    order = {
+        "orderId": "oid-fresh-hint-1",
+        "symbol": "NEAR-USDC",
+        "side": "SELL",
+        "size": "644.9",
+        "price": "0.89481",
+        "status": "OPEN",
+        "reduceOnly": True,
+        "type": "LIMIT",
+        "orderType": "LIMIT",
+        "triggerPrice": None,
+        "isPositionTpsl": False,
+        "isTrigger": False,
+        "triggerCondition": "N/A",
+    }
+    assert manager._include_in_open_orders(order) is False
+
+
+def test_include_in_open_orders_keeps_explicit_non_trigger_without_fresh_hint(monkeypatch):
+    gateway = FakeGateway(venue="hyperliquid", orders=[])
+    manager = OrderManager(gateway)
+    manager.positions = [{"symbol": "NEAR-USDC", "side": "LONG", "size": 644.9}]
+    manager._tpsl_targets_by_symbol = {"NEAR-USDC": {"stop_loss": 0.89481}}
+    monkeypatch.setattr(manager, "_resolve_order_classification_mode_effective", lambda: "v2")
+    monkeypatch.setattr(manager, "_intent_for_order", lambda order: "discretionary")
+    order = {
+        "orderId": "oid-no-hint-1",
+        "symbol": "NEAR-USDC",
+        "side": "SELL",
+        "size": "644.9",
+        "price": "0.89481",
+        "status": "OPEN",
+        "reduceOnly": True,
+        "type": "LIMIT",
+        "orderType": "LIMIT",
+        "triggerPrice": None,
+        "isPositionTpsl": False,
+        "isTrigger": False,
+        "triggerCondition": "N/A",
+    }
+    assert manager._include_in_open_orders(order) is True
 
 
 def test_modify_targets_seeds_map_and_hints_for_immediate_display(monkeypatch):
@@ -702,6 +959,353 @@ def test_list_orders_apex_hides_tpsl_orders():
     orders = asyncio.run(manager.list_orders())
     assert len(orders) == 1
     assert orders[0]["id"] == "entry-1"
+
+
+def test_list_orders_hides_terminal_and_rejected_status_rows():
+    gateway = FakeGateway(
+        venue="hyperliquid",
+        orders=[
+            {
+                "orderId": "open-1",
+                "symbol": "ASTER-USDC",
+                "side": "SELL",
+                "size": "100",
+                "status": "OPEN",
+                "type": "LIMIT",
+            },
+            {
+                "orderId": "rej-1",
+                "symbol": "ASTER-USDC",
+                "side": "SELL",
+                "size": "100",
+                "status": "perpMarginRejected",
+                "type": "LIMIT",
+            },
+            {
+                "orderId": "fill-1",
+                "symbol": "ASTER-USDC",
+                "side": "SELL",
+                "size": "100",
+                "status": "FILLED",
+                "type": "LIMIT",
+            },
+        ],
+    )
+    manager = OrderManager(gateway)
+    orders = asyncio.run(manager.list_orders())
+    assert len(orders) == 1
+    assert orders[0]["id"] == "open-1"
+
+
+def test_list_orders_hyperliquid_hides_reduce_only_trigger_rows_without_tpsl_flag():
+    gateway = FakeGateway(
+        venue="hyperliquid",
+        orders=[
+            {
+                "orderId": "entry-1",
+                "symbol": "ASTER-USDC",
+                "side": "SELL",
+                "size": "1200",
+                "status": "OPEN",
+                "type": "LIMIT",
+                "reduceOnly": False,
+            },
+            {
+                "orderId": "sl-transient-1",
+                "symbol": "ASTER-USDC",
+                "side": "BUY",
+                "size": "1200",
+                "status": "OPEN",
+                "type": "LIMIT",
+                "reduceOnly": True,
+                "isPositionTpsl": False,
+                "triggerPrice": "0.78",
+            },
+        ],
+    )
+    manager = OrderManager(gateway)
+    orders = asyncio.run(manager.list_orders())
+    assert len(orders) == 1
+    assert orders[0]["id"] == "entry-1"
+
+
+def test_extract_tpsl_uses_nested_raw_trigger_px_when_top_level_missing():
+    gateway = FakeGateway(venue="hyperliquid", orders=[])
+    manager = OrderManager(gateway)
+    tpsl = manager._extract_tpsl_from_orders(
+        [
+            {
+                "orderId": "sl-1",
+                "symbol": "NEAR-USDC",
+                "side": "SELL",
+                "size": "322.4",
+                "status": "OPEN",
+                "type": "STOP_MARKET",
+                "orderType": "STOP_MARKET",
+                "reduceOnly": True,
+                "isPositionTpsl": True,
+                "triggerPrice": None,
+                "raw": {
+                    "order": {
+                        "isTrigger": True,
+                        "triggerCondition": "Price below 0.9244",
+                        "triggerPx": "0.9244",
+                        "orderType": "Stop Market",
+                    }
+                },
+            }
+        ]
+    )
+    assert tpsl.get("NEAR-USDC", {}).get("stop_loss") == pytest.approx(0.9244)
+
+
+def test_list_orders_hyperliquid_hides_transient_helper_rows_via_recent_submit_hint():
+    gateway = FakeGateway(
+        venue="hyperliquid",
+        orders=[
+            {
+                "orderId": "entry-1",
+                "symbol": "XPL-USDC",
+                "side": "BUY",
+                "size": "11678",
+                "status": "OPEN",
+                "type": "LIMIT",
+                "reduceOnly": False,
+                "price": "0.082",
+            },
+            {
+                # Transient helper row missing explicit TP/SL markers.
+                "orderId": "sl-transient-1",
+                "symbol": "XPL-USDC",
+                "side": "SELL",
+                "size": "11678",
+                "status": "OPEN",
+                "type": "LIMIT",
+                "price": "0.080543",
+                "isPositionTpsl": False,
+            },
+        ],
+    )
+    manager = OrderManager(gateway)
+    manager._record_hl_transient_helper_hints(
+        {
+            "order_requests": [
+                {"coin": "XPL", "is_buy": True, "sz": 11678, "limit_px": 0.082, "reduce_only": False},
+                {
+                    "coin": "XPL",
+                    "is_buy": False,
+                    "sz": 11678,
+                    "limit_px": 0.080543,
+                    "reduce_only": True,
+                    "order_type": {"trigger": {"isMarket": True, "triggerPx": 0.080543, "tpsl": "sl"}},
+                },
+            ]
+        }
+    )
+    orders = asyncio.run(manager.list_orders())
+    assert len(orders) == 1
+    assert orders[0]["id"] == "entry-1"
+
+
+def test_update_targets_hyperliquid_hides_transient_helper_rows_via_single_leg_hint():
+    gateway = FakeGateway(
+        venue="hyperliquid",
+        positions=[
+            {
+                "positionId": "XPL-USDC",
+                "symbol": "XPL-USDC",
+                "positionSide": "LONG",
+                "size": "1000",
+                "entryPrice": "0.083",
+            }
+        ],
+        orders=[
+            {
+                "orderId": "sl-transient-1",
+                "symbol": "XPL-USDC",
+                "side": "SELL",
+                "size": "1000",
+                "status": "OPEN",
+                "type": "LIMIT",
+                "price": "0.0815",
+                "isPositionTpsl": False,
+            }
+        ],
+    )
+    manager = OrderManager(gateway)
+    asyncio.run(
+        manager.modify_targets(
+            position_id="XPL-USDC",
+            take_profit=None,
+            stop_loss=0.0815,
+            clear_tp=False,
+            clear_sl=False,
+        )
+    )
+    orders = asyncio.run(manager.list_orders())
+    assert orders == []
+
+
+def test_list_orders_hyperliquid_hides_transient_helper_rows_without_trigger_flags_when_size_nearby():
+    gateway = FakeGateway(
+        venue="hyperliquid",
+        orders=[
+            {
+                "orderId": "entry-1",
+                "symbol": "XPL-USDC",
+                "side": "BUY",
+                "size": "1000",
+                "status": "OPEN",
+                "type": "LIMIT",
+                "reduceOnly": False,
+                "price": "0.0830",
+            },
+            {
+                # Helper row shape seen in the wild: no trigger markers and no reduce-only flag.
+                "orderId": "sl-transient-1",
+                "symbol": "XPL-USDC",
+                "side": "SELL",
+                "size": "999.8",
+                "status": "OPEN",
+                "type": "LIMIT",
+                "price": "0.0815",
+                "isPositionTpsl": False,
+            },
+        ],
+    )
+    manager = OrderManager(gateway)
+    manager._record_hl_transient_helper_hints(
+        {
+            "order_requests": [
+                {
+                    "coin": "XPL",
+                    "is_buy": False,
+                    "sz": 1000,
+                    "limit_px": 0.0815,
+                    "reduce_only": True,
+                    "order_type": {"trigger": {"isMarket": True, "triggerPx": 0.0815, "tpsl": "sl"}},
+                }
+            ]
+        }
+    )
+    orders = asyncio.run(manager.list_orders())
+    assert len(orders) == 1
+    assert orders[0]["id"] == "entry-1"
+
+
+def test_list_orders_hyperliquid_hides_transient_helper_rows_without_markers_or_client_id():
+    gateway = FakeGateway(
+        venue="hyperliquid",
+        orders=[
+            {
+                "orderId": "entry-1",
+                "symbol": "XPL-USDC",
+                "side": "BUY",
+                "size": "1000",
+                "status": "OPEN",
+                "type": "LIMIT",
+                "reduceOnly": False,
+                "price": "0.0830",
+                "clientOrderId": "user-entry-1",
+            },
+            {
+                # Helper row occasionally arrives with no trigger/reduce/client-id markers.
+                "orderId": "sl-transient-1",
+                "symbol": "XPL-USDC",
+                "side": "SELL",
+                "size": "777",
+                "status": "OPEN",
+                "type": "LIMIT",
+                "price": "0.0815",
+                "isPositionTpsl": False,
+            },
+        ],
+    )
+    manager = OrderManager(gateway)
+    manager._record_hl_transient_helper_hints(
+        {
+            "order_requests": [
+                {
+                    "coin": "XPL",
+                    "is_buy": False,
+                    "sz": 1000,
+                    "limit_px": 0.0815,
+                    "reduce_only": True,
+                    "order_type": {"trigger": {"isMarket": True, "triggerPx": 0.0815, "tpsl": "sl"}},
+                }
+            ]
+        }
+    )
+    orders = asyncio.run(manager.list_orders())
+    assert len(orders) == 1
+    assert orders[0]["id"] == "entry-1"
+
+
+def test_list_orders_hyperliquid_hides_known_target_helper_without_markers():
+    gateway = FakeGateway(
+        venue="hyperliquid",
+        orders=[
+            {
+                "orderId": "entry-1",
+                "symbol": "XPL-USDC",
+                "side": "BUY",
+                "size": "100",
+                "status": "OPEN",
+                "type": "LIMIT",
+                "reduceOnly": False,
+                "price": "0.0830",
+                "clientOrderId": "user-entry-1",
+            },
+            {
+                "orderId": "sl-helper-1",
+                "symbol": "XPL-USDC",
+                "side": "SELL",
+                "size": "1000",
+                "status": "OPEN",
+                "type": "LIMIT",
+                "price": "0.0815",
+                "isPositionTpsl": False,
+            },
+        ],
+        positions=[
+            {"positionId": "XPL-USDC", "symbol": "XPL-USDC", "positionSide": "LONG", "size": "1000", "entryPrice": "0.083"},
+        ],
+    )
+    manager = OrderManager(gateway)
+    manager.position_targets["XPL-USDC"] = {"stop_loss": 0.0815}
+    manager._tpsl_targets_by_symbol["XPL-USDC"] = {"stop_loss": 0.0815}
+    manager.positions = [{"symbol": "XPL-USDC", "side": "LONG", "size": 1000.0}]
+    orders = asyncio.run(manager.list_orders())
+    assert len(orders) == 1
+    assert orders[0]["id"] == "entry-1"
+
+
+def test_list_orders_hyperliquid_keeps_user_order_even_if_price_matches_target_when_client_id_present():
+    gateway = FakeGateway(
+        venue="hyperliquid",
+        orders=[
+            {
+                "orderId": "manual-1",
+                "symbol": "XPL-USDC",
+                "side": "SELL",
+                "size": "100",
+                "status": "OPEN",
+                "type": "LIMIT",
+                "price": "0.0815",
+                "clientOrderId": "manual-user-order",
+            },
+        ],
+        positions=[
+            {"positionId": "XPL-USDC", "symbol": "XPL-USDC", "positionSide": "LONG", "size": "1000", "entryPrice": "0.083"},
+        ],
+    )
+    manager = OrderManager(gateway)
+    manager.position_targets["XPL-USDC"] = {"stop_loss": 0.0815}
+    manager._tpsl_targets_by_symbol["XPL-USDC"] = {"stop_loss": 0.0815}
+    manager.positions = [{"symbol": "XPL-USDC", "side": "LONG", "size": 1000.0}]
+    orders = asyncio.run(manager.list_orders())
+    assert len(orders) == 1
+    assert orders[0]["id"] == "manual-1"
 
 
 def test_list_positions_apex_backfills_tpsl_without_manual_refresh():

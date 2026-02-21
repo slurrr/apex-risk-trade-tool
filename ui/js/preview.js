@@ -8,10 +8,13 @@
   const getAtrTimeframe = window.TradeApp && window.TradeApp.getAtrTimeframe;
   const enforceTradeDirectionConsistency =
     (window.TradeApp && window.TradeApp.enforceTradeDirectionConsistency) || (() => ({ valid: true }));
+  const setSideValue = (window.TradeApp && window.TradeApp.setSideValue) || null;
   const warnUserPopup = (window.TradeApp && window.TradeApp.warnUserPopup) || ((msg) => window.alert(msg));
   const markStopInputInvalid = (window.TradeApp && window.TradeApp.markStopInputInvalid) || (() => {});
   const snapToStep = (window.TradeApp && window.TradeApp.snapToInputStep) || ((value) => value);
+  const createTradeTraceId = (window.TradeApp && window.TradeApp.createTradeTraceId) || (() => `trd-${Date.now()}`);
   const ATR_STATUS_DEFAULT = "ATR stop will populate once symbol, side, and entry price are set.";
+  let previewSubmitInFlight = false;
 
   function getActiveTickSize() {
     const tick = window.TradeApp && window.TradeApp.state && window.TradeApp.state.activeTickSize;
@@ -39,7 +42,26 @@
     lastAutoPrice: null,
     settingStopValue: false,
     emptyActiveLock: false,
+    inFlight: false,
   };
+  let formActionLock = false;
+
+  function setFormActionLock(locked) {
+    formActionLock = Boolean(locked);
+    const calcBtn = document.querySelector('#preview-form button[type="submit"]');
+    const executeBtn = document.getElementById("execute-button");
+    if (calcBtn) {
+      calcBtn.disabled = formActionLock || previewSubmitInFlight;
+    }
+    if (executeBtn) {
+      executeBtn.disabled = formActionLock;
+    }
+  }
+
+  function refreshFormActionLock() {
+    const locked = Boolean(previewSubmitInFlight || atrState.inFlight || atrState.timer);
+    setFormActionLock(locked);
+  }
 
   async function postPreview(payload) {
     const response = await fetch(`${API_BASE}/api/trade`, {
@@ -88,7 +110,7 @@
           <span class="trade-symbol">${symbol}</span>
         </div>
         <div class="trade-line strong">${formatCompact(result.notional, 2)}</div>
-        <div class="trade-line">${formatCompact(result.size)} @ ${formatCompact(result.entry_price)} ${formatCompact(result.notional, 2)}</div>
+        <div class="trade-line">${formatCompact(result.size)} @ ${formatCompact(result.entry_price)}</div>
         <div class="trade-line dim">SL: ${formatCompact(result.stop_price)} Risk: ${formatCompact(result.estimated_loss, 2)}</div>
         ${renderWarnings(result.warnings)}
       </div>
@@ -169,6 +191,7 @@
         clearTimeout(atrState.timer);
       }
       atrState.timer = window.setTimeout(() => runAtrAutofill(symbolInput, entryInput, sideSelect, stopInput), 250);
+      refreshFormActionLock();
     };
 
     symbolInput.addEventListener("input", schedule);
@@ -197,6 +220,27 @@
       clearManualOverride();
       atrState.lastAutoPrice = null;
       schedule();
+    });
+    window.addEventListener("trade:symbol-entry-prefilled", (evt) => {
+      const detail = evt?.detail || {};
+      const currentSymbol = validateSymbol(symbolInput.value);
+      const eventSymbol = validateSymbol(detail.symbol);
+      if (!currentSymbol || !eventSymbol || currentSymbol !== eventSymbol) {
+        return;
+      }
+      const preservedSide = normalizedSide(detail.side);
+      if (preservedSide) {
+        const preservedRaw = preservedSide === "long" ? "BUY" : "SELL";
+        if (setSideValue) {
+          setSideValue(preservedRaw, { force: true });
+        } else {
+          sideSelect.value = preservedRaw;
+          sideSelect.dispatchEvent(new Event("change", { bubbles: true }));
+        }
+      }
+      clearManualOverride();
+      atrState.lastAutoPrice = null;
+      runAtrAutofill(symbolInput, entryInput, sideSelect, stopInput, { force: true });
     });
 
     stopInput.addEventListener("input", () => {
@@ -270,34 +314,41 @@
     schedule();
   }
 
-  async function runAtrAutofill(symbolInput, entryInput, sideSelect, stopInput) {
+  async function runAtrAutofill(symbolInput, entryInput, sideSelect, stopInput, options = {}) {
+    const force = Boolean(options.force);
     if (!fetchAtrStop) return;
+    if (atrState.timer) {
+      clearTimeout(atrState.timer);
+      atrState.timer = null;
+    }
+    atrState.inFlight = true;
+    refreshFormActionLock();
     const symbol = validateSymbol(symbolInput.value);
     const side = normalizedSide(sideSelect.value);
     const entry = parseFloat(entryInput.value);
     const timeframe = getAtrTimeframe ? getAtrTimeframe() : null;
 
-    if (!symbol || !side || !Number.isFinite(entry) || entry <= 0) {
-      setAtrStatus("Select a symbol, side, and entry to auto-calc the stop.");
-      return;
-    }
-
-    if (atrState.emptyActiveLock && document.activeElement === stopInput && !(stopInput.value || "").trim()) {
-      setAtrStatus("Manual stop edit in progress.");
-      return;
-    }
-
-    if (manualOverrideActive(symbol)) {
-      setAtrStatus("Manual stop preserved. Clear the Stop field to use ATR suggestions again.");
-      return;
-    }
-    if (atrState.manualOverride && atrState.manualSymbol && atrState.manualSymbol !== symbol) {
-      clearManualOverride();
-    }
-
-    const token = ++atrState.token;
-    setAtrStatus("Calculating ATR stop...");
     try {
+      if (!symbol || !side || !Number.isFinite(entry) || entry <= 0) {
+        setAtrStatus("Select a symbol, side, and entry to auto-calc the stop.");
+        return;
+      }
+
+      if (!force && atrState.emptyActiveLock && document.activeElement === stopInput && !(stopInput.value || "").trim()) {
+        setAtrStatus("Manual stop edit in progress.");
+        return;
+      }
+
+      if (!force && manualOverrideActive(symbol)) {
+        setAtrStatus("Manual stop preserved. Clear the Stop field to use ATR suggestions again.");
+        return;
+      }
+      if (atrState.manualOverride && atrState.manualSymbol && atrState.manualSymbol !== symbol) {
+        clearManualOverride();
+      }
+
+      const token = ++atrState.token;
+      setAtrStatus("Calculating ATR stop...");
       const response = await fetchAtrStop(symbol, side, entry, timeframe);
       if (token !== atrState.token) return;
       if (response && typeof response.stop_loss_price === "number" && Number.isFinite(response.stop_loss_price)) {
@@ -323,7 +374,67 @@
         atrState.lastAutoPrice = null;
       }
       setAtrStatus(buildAtrErrorMessage(err), "error");
+    } finally {
+      atrState.inFlight = false;
+      refreshFormActionLock();
     }
+  }
+
+  async function normalizeTradePayloadBeforeSubmit(options = {}) {
+    const { traceId = null } = options;
+    const symbolInput = document.getElementById("symbol-input");
+    const entryInput = document.getElementById("entry_price");
+    const stopInput = document.getElementById("stop_price");
+    const riskInput = document.getElementById("risk_pct");
+    const sideInput = document.getElementById("side");
+    const tpInput = document.getElementById("tp");
+
+    const symbol = validateSymbol(symbolInput?.value);
+    if (!symbol) {
+      return { ok: false, message: "Select a valid symbol (e.g., BTC-USDT)." };
+    }
+
+    let directionCheck = enforceTradeDirectionConsistency({ autoFlip: false, animate: false });
+    if (!directionCheck.valid) {
+      if (directionCheck.expectedSide && symbolInput && entryInput && sideInput && stopInput) {
+        atrState.emptyActiveLock = false;
+        clearManualOverride();
+        atrState.lastAutoPrice = null;
+        await runAtrAutofill(symbolInput, entryInput, sideInput, stopInput, { force: true });
+        await new Promise((resolve) => window.requestAnimationFrame(() => resolve()));
+        directionCheck = enforceTradeDirectionConsistency({ autoFlip: false, animate: false });
+      }
+      if (!directionCheck.valid) {
+        return { ok: false, message: directionCheck.reason || "Invalid side/stop configuration." };
+      }
+    }
+
+    const payload = {
+      symbol,
+      entry_price: parseFloat(entryInput?.value),
+      stop_price: parseFloat(stopInput?.value),
+      risk_pct: parseFloat(riskInput?.value),
+      side: sideInput?.value || null,
+      tp: tpInput?.value ? parseFloat(tpInput.value) : null,
+      trace_id: traceId || createTradeTraceId(),
+    };
+
+    const tickSize = getActiveTickSize();
+    if (
+      tickSize &&
+      Number.isFinite(payload.entry_price) &&
+      Number.isFinite(payload.stop_price) &&
+      Math.abs(payload.entry_price - payload.stop_price) < tickSize
+    ) {
+      const formattedTick = formatTickSize(tickSize) || tickSize;
+      return {
+        ok: false,
+        message: `Entry and stop must differ by at least ${formattedTick}.`,
+        tickInvalid: true,
+      };
+    }
+
+    return { ok: true, payload };
   }
 
   function buildAtrErrorMessage(err) {
@@ -348,57 +459,45 @@
     const resultContainer = document.getElementById("preview-result");
     setupAtrAutofill();
 
+    if (!window.TradeApp) {
+      window.TradeApp = {};
+    }
+    window.TradeApp.normalizeTradePayloadBeforeSubmit = normalizeTradePayloadBeforeSubmit;
+    window.TradeApp.isFormActionLocked = () => formActionLock;
+
     if (!form) {
       return;
     }
 
     form.addEventListener("submit", async (event) => {
       event.preventDefault();
-      const symbol = validateSymbol(document.getElementById("symbol-input").value);
-      if (!symbol) {
-        renderError(resultContainer, "Select a valid symbol (e.g., BTC-USDT).");
+      if (previewSubmitInFlight) return;
+      previewSubmitInFlight = true;
+      const submitter = event.submitter;
+      if (submitter) submitter.disabled = true;
+      refreshFormActionLock();
+      const normalized = await normalizeTradePayloadBeforeSubmit();
+      if (!normalized.ok) {
+        if (normalized.tickInvalid) {
+          markStopInputInvalid(true);
+        }
+        renderError(resultContainer, normalized.message);
+        warnUserPopup(normalized.message);
+        previewSubmitInFlight = false;
+        refreshFormActionLock();
         return;
       }
-      const payload = {
-        symbol,
-        entry_price: parseFloat(document.getElementById("entry_price").value),
-        stop_price: parseFloat(document.getElementById("stop_price").value),
-        risk_pct: parseFloat(document.getElementById("risk_pct").value),
-        side: document.getElementById("side").value || null,
-        tp: document.getElementById("tp").value ? parseFloat(document.getElementById("tp").value) : null,
-        preview: true,
-        execute: false,
-      };
-      const directionCheck = enforceTradeDirectionConsistency({ autoFlip: true, animate: true });
-      if (!directionCheck.valid) {
-        const message = directionCheck.reason || "Invalid side/stop configuration.";
-        renderError(resultContainer, message);
-        warnUserPopup(message);
-        return;
-      }
-      if (directionCheck.corrected) {
-        payload.side = document.getElementById("side").value || null;
-      }
-      const tickSize = getActiveTickSize();
-      if (
-        tickSize &&
-        Number.isFinite(payload.entry_price) &&
-        Number.isFinite(payload.stop_price) &&
-        Math.abs(payload.entry_price - payload.stop_price) < tickSize
-      ) {
-        const formattedTick = formatTickSize(tickSize) || tickSize;
-        const message = `Entry and stop must differ by at least ${formattedTick}.`;
-        markStopInputInvalid(true);
-        renderError(resultContainer, message);
-        warnUserPopup(message);
-        return;
-      }
+      const payload = { ...normalized.payload, preview: true, execute: false };
+      const symbol = payload.symbol;
 
       try {
         const result = await postPreview(payload);
         renderResult(resultContainer, result, { symbol, side: payload.side });
       } catch (err) {
         renderError(resultContainer, err.message);
+      } finally {
+        previewSubmitInFlight = false;
+        refreshFormActionLock();
       }
     });
   });

@@ -4,11 +4,17 @@ import logging
 from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect
 
 from backend.api.routes_trade import get_order_manager
+from backend.core.logging import get_logger
 from backend.core.ui_mock import get_ui_mock_section, is_ui_mock_enabled
 from backend.trading.order_manager import OrderManager
 
 router = APIRouter(tags=["stream"])
 logger = logging.getLogger(__name__)
+stream_audit_logger = get_logger("audit.stream")
+
+
+def _audit_stream(event: str, **extra) -> None:
+    stream_audit_logger.info(event, extra={"event": event, **extra})
 
 
 @router.get("/api/stream/health")
@@ -21,9 +27,18 @@ async def stream_health(manager: OrderManager = Depends(get_order_manager)) -> d
             if isinstance(health, dict):
                 payload = dict(health)
                 payload.setdefault("venue", venue)
+                _audit_stream("stream_health_snapshot", venue=venue, ws_alive=payload.get("ws_alive"))
                 return payload
             return {"venue": venue, "ws_alive": True}
-        return await manager.get_stream_health()
+        payload = await manager.get_stream_health()
+        _audit_stream(
+            "stream_health_snapshot",
+            venue=payload.get("venue"),
+            ws_alive=payload.get("ws_alive"),
+            reconcile_count=payload.get("reconcile_count"),
+            last_reconcile_reason=payload.get("last_reconcile_reason"),
+        )
+        return payload
     except Exception as exc:
         logger.warning("stream_health_failed", extra={"event": "stream_health_failed", "error": str(exc)})
         return {"venue": (getattr(manager.gateway, "venue", "unknown") or "unknown"), "error": str(exc)}
@@ -36,6 +51,7 @@ async def stream_updates(
 ) -> None:
     """Push gateway events to the UI (orders, positions, ticker/account)."""
     await websocket.accept()
+    _audit_stream("stream_ws_client_connected", venue=(getattr(manager.gateway, "venue", "unknown") or "unknown"))
     if is_ui_mock_enabled():
         venue = (getattr(manager.gateway, "venue", "apex") or "apex").lower()
         account = get_ui_mock_section(venue, "account_summary", {})
@@ -51,15 +67,19 @@ async def stream_updates(
             while True:
                 await asyncio.sleep(30)
         except WebSocketDisconnect:
+            _audit_stream("stream_ws_client_disconnected", venue=venue, reason="mock_disconnect")
             return
         except Exception:
+            _audit_stream("stream_ws_client_disconnected", venue=venue, reason="mock_error")
             return
 
     gateway = manager.gateway
     queue = gateway.register_subscriber()
-    is_apex_gateway = (getattr(gateway, "venue", "apex") or "").lower() == "apex"
     tpsl_refresh_lock = asyncio.Lock()
     pending_tpsl_refresh = False
+    last_tpsl_refresh_started_at = 0.0
+    tpsl_refresh_min_gap_apex_seconds = 2.0
+    tpsl_refresh_min_gap_hl_seconds = 3.0
     last_sent_by_type: dict[str, str] = {}
 
     async def _send_event(event_type: str, payload):
@@ -79,19 +99,23 @@ async def stream_updates(
 
     async def _emit_positions_from_cache() -> None:
         cached_positions = list(getattr(gateway, "_ws_positions", {}).values())
-        if not cached_positions:
-            return
         normalized_positions = []
         for pos in cached_positions:
             norm = manager._normalize_position(pos, tpsl_map=manager._tpsl_targets_by_symbol)
             if norm:
                 normalized_positions.append(norm)
-        if normalized_positions:
-            await _send_event("positions", normalized_positions)
+        # Always emit a snapshot (including empty) so the UI can clear rows when
+        # the last open position disappears.
+        await _send_event("positions", normalized_positions)
 
     def _normalize_orders_for_ui(orders_payload) -> list[dict]:
+        if not isinstance(orders_payload, list):
+            return []
+        normalize_fn = getattr(manager, "normalize_open_orders_payload", None)
+        if callable(normalize_fn):
+            return normalize_fn(orders_payload)
         normalized: list[dict] = []
-        for order in orders_payload or []:
+        for order in orders_payload:
             if not isinstance(order, dict):
                 continue
             include_fn = getattr(manager, "_include_in_open_orders", None)
@@ -105,13 +129,21 @@ async def stream_updates(
         return normalized
 
     async def _force_tpsl_refresh():
-        nonlocal pending_tpsl_refresh
-        if not is_apex_gateway:
+        nonlocal pending_tpsl_refresh, last_tpsl_refresh_started_at
+        venue = (getattr(gateway, "venue", "") or "").lower()
+        min_gap = (
+            tpsl_refresh_min_gap_apex_seconds
+            if venue == "apex"
+            else tpsl_refresh_min_gap_hl_seconds
+        )
+        now = asyncio.get_event_loop().time()
+        if (now - float(last_tpsl_refresh_started_at or 0.0)) < float(min_gap):
             return
         async with tpsl_refresh_lock:
             if pending_tpsl_refresh:
                 return
             pending_tpsl_refresh = True
+            last_tpsl_refresh_started_at = now
 
         async def _run():
             nonlocal pending_tpsl_refresh
@@ -119,12 +151,19 @@ async def stream_updates(
                 snapshot = await gateway.refresh_account_orders_from_rest()
                 if snapshot:
                     try:
+                        ingest_fn = getattr(manager, "ingest_orders_raw", None)
+                        if callable(ingest_fn):
+                            await ingest_fn(snapshot, source="rest")
                         manager._reconcile_tpsl(snapshot)
                     except Exception:
                         pass
                     try:
+                        await _send_event("orders", _normalize_orders_for_ui(snapshot))
+                    except Exception:
+                        pass
+                    try:
                         positions = await manager.list_positions()
-                        await websocket.send_json({"type": "positions", "payload": positions})
+                        await _send_event("positions", positions)
                     except Exception:
                         pass
             except Exception as exc:
@@ -146,6 +185,9 @@ async def stream_updates(
             initial_orders = list(getattr(gateway, "_ws_orders", {}).values() or [])
         # reconcile TP/SL map from current account raw orders (authoritative on connect)
         try:
+            ingest_fn = getattr(manager, "ingest_orders_raw", None)
+            if callable(ingest_fn):
+                await ingest_fn(initial_orders, source="ws")
             manager._reconcile_tpsl(initial_orders)
         except Exception:
             pass
@@ -206,6 +248,9 @@ async def stream_updates(
                 # )
                 refresh_needed = False
                 try:
+                    ingest_fn = getattr(manager, "ingest_orders_raw", None)
+                    if callable(ingest_fn):
+                        await ingest_fn(raw_orders, source="ws")
                     refresh_needed = manager._reconcile_tpsl(raw_orders)
                 except Exception:
                     refresh_needed = False
@@ -213,7 +258,7 @@ async def stream_updates(
                     await _emit_positions_from_cache()
                 except Exception:
                     pass
-                if refresh_needed and is_apex_gateway:
+                if refresh_needed:
                     flap_recorder = getattr(gateway, "record_tpsl_flap_suspected", None)
                     if callable(flap_recorder):
                         try:
@@ -232,6 +277,15 @@ async def stream_updates(
                 # )
             elif event.get("type") == "orders":
                 # Forward orders event without touching TP/SL map (no TP/SL data here)
+                try:
+                    payload = event.get("payload") or []
+                    should_ingest_fn = getattr(manager, "should_ingest_orders_event_payload", None)
+                    can_ingest = bool(callable(should_ingest_fn) and should_ingest_fn(payload))
+                    ingest_fn = getattr(manager, "ingest_orders_raw", None)
+                    if can_ingest and callable(ingest_fn):
+                        await ingest_fn(payload, source="orders")
+                except Exception:
+                    pass
                 msg = {"type": "orders", "payload": _normalize_orders_for_ui(event.get("payload"))}
             elif event.get("type") == "account":
                 msg = {"type": "account", "payload": event.get("payload")}
@@ -242,9 +296,15 @@ async def stream_updates(
                 break
             except Exception as exc:
                 logger.warning("ws_send_failed", extra={"event": "ws_send_failed", "error": str(exc)})
+                _audit_stream(
+                    "stream_ws_send_failed",
+                    venue=(getattr(gateway, "venue", "unknown") or "unknown"),
+                    error=str(exc),
+                )
                 break
     except WebSocketDisconnect:
         # logger.info("ws_disconnect", extra={"event": "ws_disconnect"})
+        _audit_stream("stream_ws_client_disconnected", venue=(getattr(gateway, "venue", "unknown") or "unknown"), reason="disconnect")
         pass
     finally:
         gateway.unregister_subscriber(queue)

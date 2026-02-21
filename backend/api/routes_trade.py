@@ -19,6 +19,11 @@ router = APIRouter(prefix="/api", tags=["trade"])
 
 _manager: OrderManager | None = None
 logger = get_logger(__name__)
+trade_audit_logger = get_logger("audit.trade")
+
+
+def _audit_trade(event: str, **extra) -> None:
+    trade_audit_logger.info(event, extra={"event": event, **extra})
 
 
 def _active_venue(manager: OrderManager) -> str:
@@ -107,7 +112,20 @@ async def symbol_price(symbol: str, manager: OrderManager = Depends(get_order_ma
 )
 async def trade(request: TradeRequest, manager: OrderManager = Depends(get_order_manager)):
     """Preview trade sizing or execute when requested."""
+    trace_id = request.trace_id or f"srv-{int(time.time() * 1000)}"
     try:
+        _audit_trade(
+            "trade_request_received",
+            trace_id=trace_id,
+            execute=bool(request.execute),
+            symbol=request.symbol,
+            entry_price=request.entry_price,
+            stop_price=request.stop_price,
+            requested_side=request.side,
+            risk_pct=request.risk_pct,
+            tp=request.tp,
+            venue=_active_venue(manager),
+        )
         if is_ui_mock_enabled():
             side = (request.side or "").upper().strip()
             if side not in {"BUY", "SELL"}:
@@ -124,6 +142,7 @@ async def trade(request: TradeRequest, manager: OrderManager = Depends(get_order
                 "warnings": [],
                 "entry_price": float(request.entry_price),
                 "stop_price": float(request.stop_price),
+                "trace_id": trace_id,
             }
             if request.execute:
                 payload["executed"] = True
@@ -137,9 +156,23 @@ async def trade(request: TradeRequest, manager: OrderManager = Depends(get_order
                 risk_pct=request.risk_pct,
                 side=request.side,
                 tp=request.tp,
+                trace_id=trace_id,
             )
             sizing = exec_result["sizing"]
             warnings = exec_result.get("warnings", [])
+            _audit_trade(
+                "trade_submit_result",
+                trace_id=trace_id,
+                symbol=request.symbol,
+                requested_side=request.side,
+                resolved_side=sizing.side,
+                size=sizing.size,
+                notional=sizing.notional,
+                estimated_loss=sizing.estimated_loss,
+                exchange_order_id=exec_result.get("exchange_order_id"),
+                warning_count=len(warnings),
+                venue=_active_venue(manager),
+            )
             return {
                 "side": sizing.side,
                 "size": sizing.size,
@@ -150,6 +183,7 @@ async def trade(request: TradeRequest, manager: OrderManager = Depends(get_order
                 "stop_price": sizing.stop_price,
                 "executed": True,
                 "exchange_order_id": exec_result["exchange_order_id"],
+                "trace_id": trace_id,
             }
 
         # Preview flow
@@ -160,6 +194,19 @@ async def trade(request: TradeRequest, manager: OrderManager = Depends(get_order
             risk_pct=request.risk_pct,
             side=request.side,
             tp=request.tp,
+            trace_id=trace_id,
+        )
+        _audit_trade(
+            "trade_preview_result",
+            trace_id=trace_id,
+            symbol=request.symbol,
+            requested_side=request.side,
+            resolved_side=result.side,
+            size=result.size,
+            notional=result.notional,
+            estimated_loss=result.estimated_loss,
+            warning_count=len(warnings),
+            venue=_active_venue(manager),
         )
         return TradePreviewResponse(
             side=result.side,
@@ -169,8 +216,18 @@ async def trade(request: TradeRequest, manager: OrderManager = Depends(get_order
             warnings=warnings,
             entry_price=result.entry_price,
             stop_price=result.stop_price,
+            trace_id=trace_id,
         )
     except PositionSizingError as exc:
+        _audit_trade(
+            "trade_submit_failed",
+            trace_id=trace_id,
+            symbol=request.symbol,
+            execute=bool(request.execute),
+            error=str(exc),
+            error_type="PositionSizingError",
+            venue=_active_venue(manager),
+        )
         logger.warning(
             "trade_validation_failed",
             extra={
@@ -182,6 +239,15 @@ async def trade(request: TradeRequest, manager: OrderManager = Depends(get_order
         )
         return error_response(status_code=400, code="validation_error", detail=str(exc))
     except ValueError as exc:
+        _audit_trade(
+            "trade_submit_failed",
+            trace_id=trace_id,
+            symbol=request.symbol,
+            execute=bool(request.execute),
+            error=str(exc),
+            error_type="ValueError",
+            venue=_active_venue(manager),
+        )
         logger.warning(
             "trade_value_error",
             extra={
@@ -195,6 +261,15 @@ async def trade(request: TradeRequest, manager: OrderManager = Depends(get_order
     except HTTPException:
         raise
     except Exception as exc:
+        _audit_trade(
+            "trade_submit_failed",
+            trace_id=trace_id,
+            symbol=request.symbol,
+            execute=bool(request.execute),
+            error=str(exc),
+            error_type=type(exc).__name__,
+            venue=_active_venue(manager),
+        )
         logger.exception(
             "trade_request_failed",
             extra={"event": "trade_request_failed", "symbol": request.symbol, "execute": request.execute},
